@@ -1,0 +1,18 @@
+[package]
+name = "podup"
+description = "Host-side release tool: build, sign, and verify podd update bundles"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "podup"
+path = "src/main.rs"
+
+[dependencies]
+pod-update = { path = "../pod-update" }
+clap.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true

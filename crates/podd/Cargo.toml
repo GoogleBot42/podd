@@ -1,0 +1,19 @@
+[package]
+name = "podd"
+description = "Open control daemon for the Eight Sleep Pod (fork of opensleep)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "podd"
+path = "src/main.rs"
+
+[dependencies]
+pod-update = { path = "../pod-update" }
+
+# NOTE: the opensleep control core (tokio, tokio-serial, linux-embedded-hal,
+# rustfft, cbor4ii, rumqttc, …) and the axum web/API layer land here as the
+# fork is integrated. Kept minimal for now so the workspace builds standalone.

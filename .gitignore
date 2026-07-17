@@ -1,0 +1,10 @@
+/target
+**/*.rs.bk
+result
+result-*
+/dist
+/keys
+*.key
+node_modules
+ui/dist
+.direnv
