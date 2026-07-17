@@ -58,17 +58,37 @@ pub fn decode_verifying_key(s: &str) -> Result<VerifyingKey> {
     VerifyingKey::from_bytes(&arr).map_err(|_| Error::BadKey("invalid verifying key"))
 }
 
-/// A manifest plus a detached signature over its canonical bytes.
+/// A manifest with an *optional* detached signature over its canonical bytes.
+///
+/// Signing is optional by design: the device *owner* controls the trust root
+/// (see [`TrustPolicy`]). An unsigned manifest still carries per-artifact
+/// SHA-256 digests, so integrity is always enforced — only *authenticity*
+/// (proof of who built it) is what a signature adds.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignedManifest {
     pub manifest: Manifest,
-    /// key_id of the key that produced `signature`.
-    pub key_id: String,
-    /// base64 of the 64-byte Ed25519 signature.
-    pub signature: String,
+    /// key_id of the key that produced `signature` (absent if unsigned).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_id: Option<String>,
+    /// base64 of the 64-byte Ed25519 signature (absent if unsigned).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 impl SignedManifest {
+    /// Wrap a manifest with no signature.
+    pub fn unsigned(manifest: Manifest) -> Self {
+        Self {
+            manifest,
+            key_id: None,
+            signature: None,
+        }
+    }
+
+    pub fn is_signed(&self) -> bool {
+        self.signature.is_some()
+    }
+
     pub fn to_json_pretty(&self) -> Result<String> {
         Ok(serde_json::to_string_pretty(self)?)
     }
@@ -78,22 +98,36 @@ impl SignedManifest {
     }
 }
 
-/// Sign a manifest, producing a [`SignedManifest`].
+/// Who the device owner trusts to author updates. The owner sets this — there
+/// is no central authority.
+#[derive(Debug, Clone)]
+pub enum TrustPolicy {
+    /// Accept any manifest, signed or not. Artifact digests are STILL checked.
+    /// Intended for hacking on your own device / trusted local pushes.
+    AllowUnsigned,
+    /// Require a valid signature from one of these owner-chosen keys.
+    RequireSigned(Vec<VerifyingKey>),
+}
+
+/// Sign a manifest, producing a signed [`SignedManifest`].
 pub fn sign_manifest(manifest: &Manifest, sk: &SigningKey) -> Result<SignedManifest> {
     let bytes = manifest.canonical_bytes()?;
     let sig = sk.sign(&bytes);
     Ok(SignedManifest {
         manifest: manifest.clone(),
-        key_id: key_id(&sk.verifying_key()),
-        signature: B64.encode(sig.to_bytes()),
+        key_id: Some(key_id(&sk.verifying_key())),
+        signature: Some(B64.encode(sig.to_bytes())),
     })
 }
 
-/// Verify a [`SignedManifest`] against a set of trusted public keys.
-/// Returns the verified [`Manifest`] on success.
-pub fn verify_manifest(sm: &SignedManifest, trusted: &[VerifyingKey]) -> Result<Manifest> {
+/// Low-level signature check against an explicit key set. Returns the manifest
+/// if some trusted key verifies it. Errors if unsigned or if no key matches.
+pub fn verify_signature(sm: &SignedManifest, trusted: &[VerifyingKey]) -> Result<Manifest> {
+    let (Some(sig_b64), Some(kid)) = (&sm.signature, &sm.key_id) else {
+        return Err(Error::SignatureRequired);
+    };
     let bytes = sm.manifest.canonical_bytes()?;
-    let sig_bytes = B64.decode(&sm.signature)?;
+    let sig_bytes = B64.decode(sig_b64)?;
     let sig_arr: [u8; 64] = sig_bytes
         .as_slice()
         .try_into()
@@ -101,9 +135,24 @@ pub fn verify_manifest(sm: &SignedManifest, trusted: &[VerifyingKey]) -> Result<
     let sig = Signature::from_bytes(&sig_arr);
 
     for vk in trusted {
-        if key_id(vk) == sm.key_id && vk.verify(&bytes, &sig).is_ok() {
+        if key_id(vk) == *kid && vk.verify(&bytes, &sig).is_ok() {
             return Ok(sm.manifest.clone());
         }
     }
     Err(Error::SignatureInvalid(sm.key_id.clone()))
+}
+
+/// Verify a manifest under the owner's [`TrustPolicy`]. This is the entry point
+/// the device update-agent uses. Note: artifact *digest* verification is a
+/// separate, always-on step (see [`crate::manifest::Manifest::verify_artifact`]).
+pub fn verify_release(sm: &SignedManifest, policy: &TrustPolicy) -> Result<Manifest> {
+    match policy {
+        TrustPolicy::AllowUnsigned => {
+            // If a signature happens to be present, don't reject it; the owner
+            // opted out of authenticity checks. Integrity is enforced later via
+            // artifact digests regardless.
+            Ok(sm.manifest.clone())
+        }
+        TrustPolicy::RequireSigned(keys) => verify_signature(sm, keys),
+    }
 }

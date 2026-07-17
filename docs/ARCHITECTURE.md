@@ -77,9 +77,27 @@ already a dependency).
 
 ## Update system
 
-See `docs/REPLACEMENT_PLAN.md` §9. Four tiers (App / OS / MCU / bootloader), all
-signed (Ed25519, offline key), reproducible (content-addressed artifacts, nothing
-built on device), atomic with auto-rollback. `pod-update` is the shared core;
-`podup` builds/signs releases on the host; the `update` crate applies them on the
-device. App releases are read-only squashfs images swapped via a `current` symlink
-behind a canary health check.
+See `docs/REPLACEMENT_PLAN.md` §9. `pod-update` is the shared core; `podup`
+builds/(optionally)signs releases on the host; the `update` crate applies them on
+the device. App releases are read-only squashfs images swapped via a `current`
+symlink behind a canary health check. Integrity (SHA-256) is always enforced;
+authenticity (Ed25519 signature) is **owner-controlled and optional**
+(`TrustPolicy::{AllowUnsigned, RequireSigned(keys)}`) so anyone can update their
+own device or fork.
+
+### Scope — what the update system can change (and what it can't)
+
+| Tier | Component | `podup` builds it? | Applied by | Example |
+|---|---|---|---|---|
+| 2 | **App**: `podd` + web UI + config schema/migrations | yes (packs to squashfs) | device `update` agent (symlink swap, no reboot) | ship a new scheduler / UI |
+| 3 | **MCU Frozen fw** (`.bbin`) | yes (records blob) | `mcu-flash` (quiesce UART, flash, verify) | restore/replace STM32 fw |
+| 3 | **MCU Sensor fw** (`.bbin`) | yes | `mcu-flash` | " |
+| 1 | **OS image** (kernel+DTB+rootfs) — L2 | yes (records RAUC bundle) | RAUC/A-B + reboot | kernel/lib bump |
+| 0 | **Bootloader** | version recorded only | manual (never auto) | — |
+
+**Not in scope for `podup`:** personal runtime state (schedules/temps/history —
+device-local, never shipped or clobbered; only the config *schema* migrates); the
+initial eMMC install/provisioning (serial/UUU/mtkclient/SD — a separate flow);
+and *applying* updates (that's the device-side `update`/`mcu-flash` agents, not
+`podup`). A `podup release` can bundle any subset of {app, os, mcu-frozen,
+mcu-sensor} into one versioned manifest.

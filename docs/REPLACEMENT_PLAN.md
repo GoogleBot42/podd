@@ -499,9 +499,22 @@ live tree with no rollback → **atomic + auto-rollback**; on-device unverifiabl
 Nix build, version = content hash, nothing built on device**; no health gate → **canary health check**;
 no code/config/data split or version coherence → **coherent signed bundles + migrated config**.
 
-**Charter:** atomic · verified (your offline key; device refuses unsigned/mismatched) · reproducible ·
-version-coherent · **offline-installable** (LAN/USB/file; never depends on GitHub/cloud being up) ·
-observable + one-click reversible · fork-friendly (a fork drops in its own key + source).
+**Charter:** atomic · **integrity always enforced** (content-addressed SHA-256; a corrupt/truncated
+artifact is always rejected) · **authenticity is owner-controlled and optional** (see trust policy
+below) · reproducible · version-coherent · **offline-installable** (LAN/USB/file; never depends on
+GitHub/cloud being up) · observable + one-click reversible · fork-friendly.
+
+**Trust policy (owner-controlled — no central authority).** Signing is *optional*; the device owner
+sets which authors to trust, so anyone can update their own device or fork:
+- **Unsigned / dev mode** — accept any bundle (digests still checked). For hacking on your own device
+  or trusted local pushes.
+- **Your own key(s)** — `podup keygen` is self-service; put your public key(s) on your device and push
+  your own signed builds. Multiple trusted keys (yours + a friend's + optionally an upstream one).
+- **Off entirely.**
+Signatures add *authenticity* (proof of who built it), which matters for a remote auto-pull channel,
+not for `podup release`-ing your own build onto your own Pod. Suggested default: allow unsigned from a
+local file/USB, require a trusted signature only for a remote auto-pull channel. Implemented in
+`pod-update` as `TrustPolicy::{AllowUnsigned, RequireSigned(keys)}`.
 
 **Four tiers, matched to risk/cadence:**
 

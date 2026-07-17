@@ -39,10 +39,12 @@ enum Cmd {
     },
     /// Build + sign a release manifest (and pack the app payload).
     Release(ReleaseArgs),
-    /// Verify a signed manifest (and, with --dir, its artifacts) against a pubkey.
+    /// Verify a manifest (and, with --dir, its artifacts).
+    /// With --pubkey a valid signature is required; without it, unsigned is
+    /// accepted (artifact digests are checked either way).
     Verify {
         #[arg(long)]
-        pubkey: PathBuf,
+        pubkey: Option<PathBuf>,
         #[arg(long)]
         manifest: PathBuf,
         /// Directory containing the artifacts, to also check digests.
@@ -55,9 +57,10 @@ enum Cmd {
 struct ReleaseArgs {
     #[arg(long, default_value = "stable")]
     channel: String,
-    /// base64 signing key file (from `keygen`).
+    /// base64 signing key file (from `keygen`). OPTIONAL — omit to build an
+    /// unsigned release (fine for pushing your own builds to your own device).
     #[arg(long)]
-    key: PathBuf,
+    key: Option<PathBuf>,
     #[arg(long, default_value = "dist")]
     out_dir: PathBuf,
 
@@ -106,7 +109,7 @@ fn main() -> Result<()> {
             pubkey,
             manifest,
             dir,
-        } => verify(&pubkey, &manifest, dir.as_deref()),
+        } => verify(pubkey.as_deref(), &manifest, dir.as_deref()),
     }
 }
 
@@ -135,7 +138,6 @@ fn load_key(path: &Path) -> Result<sign::SigningKey> {
 
 fn release(a: ReleaseArgs) -> Result<()> {
     std::fs::create_dir_all(&a.out_dir)?;
-    let sk = load_key(&a.key)?;
     let mut m = Manifest::new(a.channel.clone(), now_unix());
 
     // Tier 2: app payload — pack the directory into a reproducible squashfs.
@@ -154,10 +156,22 @@ fn release(a: ReleaseArgs) -> Result<()> {
     add_prebuilt(&mut m, &a.out_dir, "mcu-frozen", ComponentKind::McuFrozen, a.mcu_frozen.as_deref(), a.mcu_frozen_version.as_deref())?;
     add_prebuilt(&mut m, &a.out_dir, "mcu-sensor", ComponentKind::McuSensor, a.mcu_sensor.as_deref(), a.mcu_sensor_version.as_deref())?;
 
-    let signed = sign::sign_manifest(&m, &sk)?;
+    let signed = match &a.key {
+        Some(path) => sign::sign_manifest(&m, &load_key(path)?)?,
+        None => sign::SignedManifest::unsigned(m.clone()),
+    };
     let manifest_path = a.out_dir.join("manifest.json");
     std::fs::write(&manifest_path, signed.to_json_pretty()?)?;
-    println!("wrote {} ({} component(s), key_id {})", manifest_path.display(), m.components.len(), signed.key_id);
+    let signed_note = match &signed.key_id {
+        Some(kid) => format!("signed by key_id {kid}"),
+        None => "UNSIGNED".to_string(),
+    };
+    println!(
+        "wrote {} ({} component(s), {})",
+        manifest_path.display(),
+        m.components.len(),
+        signed_note
+    );
     Ok(())
 }
 
@@ -187,11 +201,21 @@ fn add_prebuilt(
     Ok(())
 }
 
-fn verify(pubkey: &Path, manifest: &Path, dir: Option<&Path>) -> Result<()> {
-    let vk = sign::decode_verifying_key(&std::fs::read_to_string(pubkey)?)?;
+fn verify(pubkey: Option<&Path>, manifest: &Path, dir: Option<&Path>) -> Result<()> {
     let signed = sign::SignedManifest::from_json(&std::fs::read_to_string(manifest)?)?;
-    let m = sign::verify_manifest(&signed, &[vk])?;
-    println!("signature OK (key_id {}, channel {}, {} component(s))", signed.key_id, m.channel, m.components.len());
+    let policy = match pubkey {
+        Some(p) => sign::TrustPolicy::RequireSigned(vec![sign::decode_verifying_key(
+            &std::fs::read_to_string(p)?,
+        )?]),
+        None => sign::TrustPolicy::AllowUnsigned,
+    };
+    let m = sign::verify_release(&signed, &policy)?;
+    let auth = match (&policy, &signed.key_id) {
+        (sign::TrustPolicy::RequireSigned(_), Some(kid)) => format!("signature OK (key_id {kid})"),
+        _ if signed.is_signed() => "signed (not verified: --pubkey omitted)".to_string(),
+        _ => "UNSIGNED (accepted: no --pubkey given)".to_string(),
+    };
+    println!("{auth}; channel {}, {} component(s)", m.channel, m.components.len());
     if let Some(dir) = dir {
         for c in &m.components {
             m.verify_artifact(c, &dir.join(&c.artifact.filename))?;

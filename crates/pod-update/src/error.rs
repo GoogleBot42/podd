@@ -24,8 +24,11 @@ pub enum Error {
     #[error("signature is malformed")]
     BadSignature,
 
-    #[error("no trusted key produced a valid signature (key_id={0})")]
-    SignatureInvalid(String),
+    #[error("no trusted key produced a valid signature (key_id={0:?})")]
+    SignatureInvalid(Option<String>),
+
+    #[error("policy requires a signature but the manifest is unsigned")]
+    SignatureRequired,
 
     #[error("artifact size mismatch for {name}: manifest={expected} actual={actual}")]
     SizeMismatch {

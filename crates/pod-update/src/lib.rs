@@ -18,7 +18,9 @@ pub mod sign;
 
 pub use error::{Error, Result};
 pub use manifest::{Artifact, Component, ComponentKind, Manifest, SCHEMA_VERSION};
-pub use sign::{SignedManifest, generate_keypair, sign_manifest, verify_manifest};
+pub use sign::{
+    generate_keypair, sign_manifest, verify_release, verify_signature, SignedManifest, TrustPolicy,
+};
 
 #[cfg(test)]
 mod tests {
@@ -51,7 +53,7 @@ mod tests {
         let (sk, vk) = generate_keypair().unwrap();
         let m = sample_manifest();
         let signed = sign_manifest(&m, &sk).unwrap();
-        let verified = verify_manifest(&signed, &[vk]).unwrap();
+        let verified = verify_release(&signed, &TrustPolicy::RequireSigned(vec![vk])).unwrap();
         assert_eq!(verified, m);
     }
 
@@ -62,7 +64,7 @@ mod tests {
         let mut signed = sign_manifest(&m, &sk).unwrap();
         // Flip a version string after signing.
         signed.manifest.components[0].version = "9.9.9".into();
-        assert!(verify_manifest(&signed, &[vk]).is_err());
+        assert!(verify_release(&signed, &TrustPolicy::RequireSigned(vec![vk])).is_err());
     }
 
     #[test]
@@ -71,7 +73,33 @@ mod tests {
         let (_sk2, vk2) = generate_keypair().unwrap();
         let signed = sign_manifest(&sample_manifest(), &sk).unwrap();
         // Verifying against a *different* key must fail.
-        assert!(verify_manifest(&signed, &[vk2]).is_err());
+        assert!(verify_release(&signed, &TrustPolicy::RequireSigned(vec![vk2])).is_err());
+    }
+
+    #[test]
+    fn unsigned_accepted_only_when_policy_allows() {
+        let m = sample_manifest();
+        let unsigned = SignedManifest::unsigned(m.clone());
+        assert!(!unsigned.is_signed());
+        // Owner opted into unsigned → accepted.
+        assert_eq!(
+            verify_release(&unsigned, &TrustPolicy::AllowUnsigned).unwrap(),
+            m
+        );
+        // Owner requires a signature → unsigned rejected.
+        let (_sk, vk) = generate_keypair().unwrap();
+        assert!(matches!(
+            verify_release(&unsigned, &TrustPolicy::RequireSigned(vec![vk])),
+            Err(Error::SignatureRequired)
+        ));
+    }
+
+    #[test]
+    fn signed_manifest_also_accepted_under_allow_unsigned() {
+        let (sk, _vk) = generate_keypair().unwrap();
+        let signed = sign_manifest(&sample_manifest(), &sk).unwrap();
+        // AllowUnsigned accepts signed manifests too (owner opted out of auth).
+        assert!(verify_release(&signed, &TrustPolicy::AllowUnsigned).is_ok());
     }
 
     #[test]

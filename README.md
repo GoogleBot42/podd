@@ -54,6 +54,13 @@ cargo test            # unit tests (pod-update crypto/manifest logic)
 cargo build           # build podd (stub) + podup
 
 # End-to-end release flow (needs `mksquashfs` on PATH):
+
+# Unsigned — push your own build to your own device (digests still checked):
+podup release --channel dev --out-dir dist \
+    --app-src <built-app-dir> --app-version 0.1.0+abc123
+podup verify --manifest dist/manifest.json --dir dist
+
+# Signed — with your OWN self-generated key (optional):
 podup keygen --out-dir keys
 podup release --channel stable --key keys/signing.key --out-dir dist \
     --app-src <built-app-dir> --app-version 0.1.0+abc123 \
@@ -61,8 +68,11 @@ podup release --channel stable --key keys/signing.key --out-dir dist \
 podup verify --pubkey keys/signing.pub --manifest dist/manifest.json --dir dist
 ```
 
-The signing key is Ed25519; keep `signing.key` offline. The device bakes in the
-public key and refuses any manifest or artifact that doesn't verify.
+**Signing is optional and owner-controlled.** Artifact integrity (SHA-256) is
+always enforced; a signature adds *authenticity*. The device owner chooses the
+trust policy (`AllowUnsigned` / `RequireSigned(keys)`), so you can hack on your
+own device unsigned, or trust your own self-generated key(s) — no central
+authority. Keep any `signing.key` offline.
 
 ## License
 
