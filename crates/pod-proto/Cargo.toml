@@ -1,0 +1,22 @@
+[package]
+name = "pod-proto"
+description = "Eight Sleep Pod LSP serial protocol (framing/codec/CRC + Frozen/Sensor packet & command tables), extracted from opensleep"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+bytes.workspace = true
+memchr.workspace = true
+tokio-serial.workspace = true
+tokio-util.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+strum.workspace = true
+strum_macros.workspace = true
+cbor4ii.workspace = true
+jiff.workspace = true
+log.workspace = true
+hex-literal.workspace = true

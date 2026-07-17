@@ -12,8 +12,12 @@ name = "podd"
 path = "src/main.rs"
 
 [dependencies]
-pod-update = { path = "../pod-update" }
+podd-core = { path = "../podd-core" }
 
-# NOTE: the opensleep control core (tokio, tokio-serial, linux-embedded-hal,
-# rustfft, cbor4ii, rumqttc, …) and the axum web/API layer land here as the
-# fork is integrated. Kept minimal for now so the workspace builds standalone.
+anyhow.workspace = true
+env_logger.workspace = true
+log.workspace = true
+tokio.workspace = true
+
+# NOTE: the api/schedule/update layers (axum web/API, thermostat scheduler,
+# on-device update agent using `pod-update`) land here as the fork grows.

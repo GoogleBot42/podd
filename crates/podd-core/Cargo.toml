@@ -1,0 +1,27 @@
+[package]
+name = "podd-core"
+description = "The opensleep control core (Frozen/Sensor subsystems, LED, config, MQTT, reset), vendored for podd"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+pod-proto = { path = "../pod-proto" }
+
+anyhow.workspace = true
+embedded-hal.workspace = true
+futures-util.workspace = true
+jiff.workspace = true
+linux-embedded-hal.workspace = true
+log.workspace = true
+ron.workspace = true
+rumqttc.workspace = true
+serde.workspace = true
+strum.workspace = true
+strum_macros.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-serial.workspace = true
+tokio-util.workspace = true

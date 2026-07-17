@@ -1,0 +1,12 @@
+# Cross-compilation linker settings for the on-device aarch64 targets
+# (Variscite i.MX 8M Mini SOM). Carried over from opensleep.
+#
+# Native (host) builds don't use these. Release profile knobs live in the
+# workspace `Cargo.toml` ([profile.release]); cargo does not read profiles from
+# this file.
+
+[target.aarch64-unknown-linux-gnu]
+linker = "aarch64-linux-gnu-gcc"
+
+[target.aarch64-unknown-linux-musl]
+linker = "aarch64-linux-gnu-gcc"
