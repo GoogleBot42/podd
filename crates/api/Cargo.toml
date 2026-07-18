@@ -1,0 +1,32 @@
+[package]
+name = "api"
+description = "free-sleep-compatible HTTP API + static-SPA server for the podd daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+jiff.workspace = true
+log.workspace = true
+
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+futures.workspace = true
+tokio-stream.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+tower = { workspace = true, features = ["util"] }
+http-body-util = "0.1"
+
+[[example]]
+name = "mock_server"
+path = "examples/mock_server.rs"
