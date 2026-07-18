@@ -60,9 +60,33 @@ struct Args {
     seconds: u64,
 
     /// Also send ONE benign Ping (0x01) at start and print the Pong reply.
-    /// This is the only thing the probe ever writes.
     #[arg(long)]
     ping: bool,
+
+    /// Send an ARBITRARY raw frame (hex, e.g. "7E0101DCBD"), verbatim, then read
+    /// the reply. For deliberate poking of a quiet MCU (e.g. polling the frozen
+    /// subsystem). YOU are responsible for the bytes — use read/status/poll
+    /// commands only; do not send setpoint/flash/reset frames on a live bed.
+    #[arg(long)]
+    send: Option<String>,
+
+    /// If set with --send, resend the frame every N milliseconds during the read
+    /// window (to poll an MCU that only answers when asked).
+    #[arg(long)]
+    send_every_ms: Option<u64>,
+}
+
+/// Decode a hex string (spaces/`0x`/`,` ignored) into bytes.
+fn parse_hex(s: &str) -> anyhow::Result<Vec<u8>> {
+    let cleaned: String = s
+        .chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .collect();
+    anyhow::ensure!(cleaned.len() % 2 == 0, "hex must have an even number of digits");
+    (0..cleaned.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&cleaned[i..i + 2], 16).map_err(Into::into))
+        .collect()
 }
 
 /// Running tallies for the end-of-run summary.
@@ -102,20 +126,50 @@ async fn main() -> anyhow::Result<()> {
         println!("# sent Ping: {}", hex_spaced(&bytes));
     }
 
+    // Optional raw frame to send (and maybe repeat).
+    let send_bytes = match &args.send {
+        Some(s) => Some(parse_hex(s).context("invalid --send hex")?),
+        None => None,
+    };
+    if let Some(b) = &send_bytes {
+        port.write_all(b).await.context("failed --send")?;
+        port.flush().await.ok();
+        println!("# sent: {}", hex_spaced(b));
+    }
+    let mut next_send = args
+        .send_every_ms
+        .map(|ms| Instant::now() + Duration::from_millis(ms));
+
     let mut stats = Stats::default();
     let mut acc = BytesMut::with_capacity(4096);
     let mut chunk = [0u8; 1024];
     let deadline = Instant::now() + Duration::from_secs(args.seconds);
 
     loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
+        let now = Instant::now();
+        if now >= deadline {
             break;
         }
 
-        match tokio::time::timeout(remaining, port.read(&mut chunk)).await {
-            // timeout elapsed -> done reading
-            Err(_) => break,
+        // Resend the --send frame if a poll interval has elapsed.
+        if let (Some(b), Some(ns), Some(ms)) = (&send_bytes, next_send.as_mut(), args.send_every_ms) {
+            if now >= *ns {
+                port.write_all(b).await.ok();
+                port.flush().await.ok();
+                *ns = now + Duration::from_millis(ms);
+            }
+        }
+
+        // Read window = time to the deadline, capped by the next poll tick.
+        let mut read_timeout = deadline.saturating_duration_since(now);
+        if let Some(ns) = &next_send {
+            read_timeout = read_timeout.min(ns.saturating_duration_since(now));
+        }
+        read_timeout = read_timeout.max(Duration::from_millis(1));
+
+        match tokio::time::timeout(read_timeout, port.read(&mut chunk)).await {
+            // read window elapsed -> loop to re-check deadline / resend
+            Err(_) => continue,
             Ok(Ok(0)) => {
                 // EOF: unusual for a serial port, but stop cleanly
                 println!("# EOF on serial port");
