@@ -4,6 +4,16 @@
 **Scope:** how to install `podd` onto every Pod variant, get root/access, and recover/unbrick — with a
 concrete spec for the installer and CI to build.
 
+> **CORRECTION (2026-07-18):** This document originally grouped "Pod3-SD / Pod4" as one i.MX family
+> that both have an SD card. That is wrong. What matters is the **HUB**, not the app's `coverVersion`
+> (which describes the *cover*). The reference device analyzed here is a **Pod 3 "SD" hub** (i.MX8MM
+> Variscite "New-Rat", `mmcblk1` = a real SD on uSDHC2, `mmcblk2` = eMMC, U-Boot env on the SD) that
+> happens to have a **Pod 4 *cover*** attached. A genuine **Pod 4 *hub* has NO SD card** (all-eMMC,
+> env on eMMC), so the **recovery-SD auto-installer (§5) does NOT apply to a Pod 4 hub** — it's
+> specific to the Pod 3 SD hub. For a Pod 4 hub use the serial-root + in-band eMMC A/B install, with
+> USB `uuu`/SDP as the deep unbrick. Everything below that is labeled "CONFIRMED-DUMP" is the **Pod 3
+> SD hub**; Pod 4 hub and MediaTek specifics remain INFERRED (no dump).
+
 Confidence tags: **[CONFIRMED-DUMP]** proven from the owner's live backups this session; **[CONFIRMED-WEB]**
 primary/technical source; **[INFERRED]**; **[UNKNOWN]**.
 

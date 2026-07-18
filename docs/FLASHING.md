@@ -21,9 +21,9 @@ an hour for the one-time "get root" step.
 | Your situation | Do this |
 |---|---|
 | **Already rooted** (you run free-sleep / opensleep, have SSH) | Skip straight to [INSTALL.md](INSTALL.md) — it's literally one command. |
-| **Fresh Pod 3 or Pod 4 (i.MX, has an SD card inside)** | [Buy a serial adapter](#what-to-buy) → [get root over serial](#path-a-serial--u-boot--root-universal) → [INSTALL.md](INSTALL.md). |
-| **Fresh Pod 3 "no-SD" (MediaTek, FCC 2AYXT61100001)** | Same serial path, but the deep-recovery net is different and less-tested — read [the MediaTek notes](#mediatek-pod-3-no-sd-specifics) carefully. |
-| **You want maximum robustness on an i.MX Pod** | The recovery-SD auto-installer is designed but **not built yet** — use the serial path today. See [RECOVERY.md](RECOVERY.md). |
+| **Fresh i.MX hub with an SD card inside** (Pod 3 "SD" hub) | [Buy a serial adapter](#what-to-buy) → [get root over serial](#path-a-serial--u-boot--root-universal) → [INSTALL.md](INSTALL.md). The extra recovery-SD net applies here. |
+| **Fresh i.MX hub with NO SD** (Pod 4 hub) | Same serial path → [INSTALL.md](INSTALL.md). No recovery-SD net; deep unbrick is USB (uuu/SDP). |
+| **Fresh MediaTek "no-SD" hub (FCC 2AYXT61100001)** | Same serial path, but deep recovery differs and is less-tested — read [the MediaTek notes](#mediatek-pod-3-no-sd-specifics). |
 
 Related guides: **[INSTALL.md](INSTALL.md)** (installing once you have root) ·
 **[UPDATING.md](UPDATING.md)** (keeping it current) ·
@@ -31,31 +31,39 @@ Related guides: **[INSTALL.md](INSTALL.md)** (installing once you have root) ·
 
 ---
 
-## Step 1 — Identify your Pod
+## Step 1 — Identify your Pod (by the HUB, not the app)
 
-There are three meaningfully different Pods. Getting this right decides which
-recovery nets you have, so check before you buy anything.
+> **Important:** what matters for flashing is the **Hub** (the bedside control
+> unit), *not* the mattress **Cover**. The Eight Sleep app's `coverVersion`
+> ("Pod 3" / "Pod 4") describes the **cover** — and covers and hubs can be mixed.
+> For example, the reference device this project was built against reports a **Pod 4
+> cover** but runs on a **Pod 3 (SD) hub**. Identify your hub by its board, below —
+> don't trust the app's generation label.
 
-| Variant | Chip / board | Storage | How to recognize it |
+There are three meaningfully different **hubs**. Getting this right decides which
+recovery nets you have.
+
+| Hub | Chip / board | Storage | How to recognize it |
 |---|---|---|---|
-| **Pod 3 with SD** / **Pod 4** (the "i.MX family") | NXP i.MX8M Mini on a Variscite module | eMMC **plus a bootable microSD** inside | Best supported. Has all four recovery nets. |
-| **Pod 3 "no-SD"** | MediaTek MT8365 "Genio 350" | eMMC only, **no SD** | **FCC ID `2AYXT61100001`** on the label. Fewer recovery nets. |
-| **Pod 4** | i.MX8M Mini (like Pod 3-SD) with a different sensor MCU | eMMC + microSD | Treated as part of the i.MX family for flashing; only its `config.ron` differs. |
+| **Pod 3 "SD" hub** | NXP i.MX8M Mini, Variscite module ("New-Rat") | eMMC **plus a bootable microSD** inside | A microSD card sits on the Variscite module (often glued in). Best supported — has the extra recovery-SD net. **[CONFIRMED — this is the analyzed hardware.]** |
+| **Pod 4 hub** | i.MX8M Mini (inferred; not yet dumped) | eMMC only, **no SD** | Newer units; **no SD card** inside. U-Boot env lives on eMMC, not an SD. Serial-root + in-band eMMC install; deep unbrick is USB (uuu/SDP). **[INFERRED — no dump yet.]** |
+| **MediaTek "no-SD" hub** | MediaTek MT8365 "Genio 350" | eMMC only, **no SD** | **FCC ID `2AYXT61100001`**; an extra USB-C port (J13) on the control board. Deep unbrick via mtkclient. **[INFERRED — no dump yet.]** |
 
-How to tell which one you have, cheapest checks first:
+How to tell which hub you have, cheapest checks first:
 
-1. **The Eight Sleep app / cover version.** The in-app `coverVersion` (and the
-   generation you bought it as — "Pod 3" vs "Pod 4") is the first clue. Pod 4 is
-   the newer hardware; Pod 3 shipped in both an SD and a no-SD board revision.
-2. **The FCC ID on the sticker.** If the label reads **`2AYXT61100001`**, it's the
-   **MediaTek no-SD Pod 3**. (You can look FCC IDs up at fccid.io.)
-3. **Opening it and looking.** Once open (Step 4), an i.MX unit has a microSD card
-   slot on the Variscite module (often with a glued-in card). The MediaTek unit has
-   no SD slot and an extra USB-C port (labelled J13) on the control board.
+1. **FCC ID on the sticker.** `2AYXT61100001` → the **MediaTek no-SD** hub.
+2. **The app's cover version is only a hint, not proof** — a "Pod 4" cover may be on
+   a Pod 3 hub. Use it only to guess, then confirm by opening.
+3. **Open it and look** (Step 4): an **i.MX** hub uses a Variscite module; if it has
+   a **microSD card** inside, it's the **Pod 3 SD hub** (recovery-SD net available);
+   if it's i.MX with **no SD**, treat it as a **Pod 4 hub** (no recovery-SD; USB
+   unbrick). A **MediaTek** hub has no SD and an extra **USB-C (J13)** port.
 
-> If you're unsure, treat it as **MediaTek** until proven otherwise — that's the
-> more conservative assumption because it has fewer safety nets, so you'll stage
-> the right recovery tools before touching anything.
+> **Honesty note:** only the **Pod 3 SD hub** has been directly analyzed (it's the
+> reference device). The **Pod 4** and **MediaTek** hub details are inferred from
+> research + community reports, not a firmware dump — treat their specifics
+> (especially deep-recovery) as unverified, and stage recovery tools before you start.
+> If unsure, assume you have the fewest safety nets and prepare accordingly.
 
 ---
 
