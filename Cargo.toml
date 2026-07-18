@@ -12,6 +12,7 @@ members = [
     "crates/podd",
     "crates/pod-probe",
     "crates/api",
+    "crates/pod-updater",
 ]
 
 [workspace.package]
@@ -55,6 +56,11 @@ strum_macros = "0.27.2"
 async-trait = "0.1.88"
 hex-literal = "1.0.0"
 csv = "1.3.1"
+
+# device-side update agent (crates/pod-updater). rustls-only HTTP client so
+# there is no OpenSSL/system-TLS dependency on the device; reuses the hyper 1.x
+# stack already pulled in by axum.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 
 # web API (crates/api) — free-sleep-compatible HTTP + static SPA server.
 axum = "0.8"

@@ -75,9 +75,22 @@ async fn main() -> anyhow::Result<()> {
     let store = StateStore::from_watch(shared.status.clone(), store_config);
     let control = Arc::new(PoddControl::new(shared.commands.clone())) as Arc<dyn PodControl>;
 
-    // Run the managers and the HTTP server together; whichever fails first
-    // brings the process down (systemd restarts it). On a dev box with no
-    // UARTs, `core_fut` errors out here — expected, not a panic.
-    tokio::try_join!(core_fut, api::serve(api_addr, store, control, spa_dir))?;
+    // The on-device update agent: polls a signed release channel and applies
+    // Tier-2 (app) updates atomically with a health-checked rollback; Tier-1
+    // (OS) / Tier-3 (MCU) stay behind dry-run gates. Configured from the
+    // environment (see `pod_updater::UpdaterConfig::from_env`); default is
+    // enabled + manual + dry-run, so on a dev box (no sources, no release dir)
+    // it simply idles and never tears the process down.
+    let updater_fut = pod_updater::run_from_env();
+
+    // Run the managers, the HTTP server, and the update agent together;
+    // whichever fails first brings the process down (systemd restarts it). On a
+    // dev box with no UARTs, `core_fut` errors out here — expected, not a panic.
+    // `updater_fut` only ever resolves on shutdown, never on a transient error.
+    tokio::try_join!(
+        core_fut,
+        api::serve(api_addr, store, control, spa_dir),
+        updater_fut,
+    )?;
     Ok(())
 }
