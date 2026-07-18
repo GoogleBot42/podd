@@ -1,7 +1,8 @@
 use bytes::BytesMut;
 
 use crate::packet::{
-    self, BedSide, HardwareInfo, Packet, PacketError, invalid_structure, validate_packet_size,
+    self, BedSide, HardwareInfo, Packet, PacketError, invalid_structure, validate_packet_at_least,
+    validate_packet_size,
 };
 
 #[derive(Debug, PartialEq)]
@@ -19,6 +20,11 @@ pub enum FrozenPacket {
     GetTemperature(GetTemperature),
     PrimingStarted,
     GetFirmware,
+    /// A framed, CRC-valid packet whose opcode this parser does not (yet)
+    /// decode — e.g. Pod-4 frozen state packets `0x54`/`0x55`. Carried as the
+    /// raw opcode so the transport layer treats it as known-but-unparsed
+    /// (no error) instead of logging a spurious failure.
+    Unknown(u8),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -70,10 +76,9 @@ impl Packet for FrozenPacket {
                 .map(FrozenPacket::JumpingToFirmware),
             0xC0 => Self::parse_target_update(buf),
             0xD2 => Self::parse_priming_started(buf),
-            _ => Err(PacketError::Unexpected {
-                subsystem_name: "Frozen",
-                buf: buf.freeze(),
-            }),
+            // Framed + CRC-valid but not decoded (e.g. Pod-4 0x54/0x55). Do not
+            // error — surface as Unknown so the codec doesn't log a failure.
+            other => Ok(FrozenPacket::Unknown(other)),
         }
     }
 }
@@ -88,7 +93,9 @@ impl FrozenPacket {
     }
 
     fn parse_heartbeat(buf: BytesMut) -> Result<Self, PacketError> {
-        validate_packet_size("Frozen/Heartbeat", &buf, 3)?;
+        // Pod 3 sends 3 bytes; Pod 4 sends 9 (trailing bytes unused here). Accept
+        // any frame with at least the two status bytes.
+        validate_packet_at_least("Frozen/Heartbeat", &buf, 3)?;
         Ok(FrozenPacket::Heartbeat(buf[1], buf[2]))
     }
 
@@ -127,7 +134,10 @@ impl FrozenPacket {
     /// C1 00 01 0A 15 02 0A 0F 03 07 F5 04 09 3A
     /// 0  1  2  3  4  5  6  7  8  9  10 11 12 13
     fn parse_get_temperature(buf: BytesMut) -> Result<Self, PacketError> {
-        validate_packet_size("Frozen/GetTemperature", &buf, 27)?;
+        // 14-byte reply: op + 4x [index u8, temp u16-BE] (matches the layout
+        // below and the live Pod-4 0xC1 frames). The previous `27` was wrong and
+        // rejected every real reply.
+        validate_packet_size("Frozen/GetTemperature", &buf, 14)?;
 
         let indices_valid =
             buf[1] == 0 && buf[2] == 1 && buf[5] == 2 && buf[8] == 3 && buf[11] == 4;
@@ -152,7 +162,7 @@ impl FrozenPacket {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::{Bytes, BytesMut};
+    use bytes::BytesMut;
     use hex_literal::hex;
 
     #[test]
@@ -290,19 +300,48 @@ mod tests {
 
     #[test]
     fn test_unexpected() {
+        // Undecoded opcodes are surfaced as Unknown (no error) so the codec
+        // doesn't log spurious failures for Pod-4 state packets like 0x54/0x55.
         assert_eq!(
             FrozenPacket::parse(BytesMut::from(&[0x99, 0x01, 0x02][..])),
-            Err(PacketError::Unexpected {
-                subsystem_name: "Frozen",
-                buf: Bytes::from(&[0x99, 0x01, 0x02][..])
-            })
+            Ok(FrozenPacket::Unknown(0x99))
         );
         assert_eq!(
             FrozenPacket::parse(BytesMut::from(&[0xFF][..])),
-            Err(PacketError::Unexpected {
-                subsystem_name: "Frozen",
-                buf: Bytes::from(&[0xFF][..])
-            })
+            Ok(FrozenPacket::Unknown(0xFF))
+        );
+    }
+
+    #[test]
+    fn test_pod4_frozen_frames() {
+        // 9-byte heartbeat (Pod 4) parses as Heartbeat(0,1).
+        assert_eq!(
+            FrozenPacket::parse(BytesMut::from(&hex!("53 00 01 00 00 00 00 00 00")[..])),
+            Ok(FrozenPacket::Heartbeat(0x00, 0x01))
+        );
+        // 14-byte 0xC1 GetTemperature reply (live Pod 4).
+        assert_eq!(
+            FrozenPacket::parse(BytesMut::from(&hex!("C1 00 01 09 60 02 09 2E 03 08 CA 04 09 27")[..])),
+            Ok(FrozenPacket::GetTemperature(GetTemperature {
+                left_temp: 0x0960,
+                right_temp: 0x092E,
+                unknown_temp: 0x08CA,
+                heatsink_temp: 0x0927,
+            }))
+        );
+        // 0x54 / 0x55 Pod-4 state packets -> Unknown, not an error.
+        assert_eq!(
+            FrozenPacket::parse(BytesMut::from(&[0x54, 0x01, 0x00][..])),
+            Ok(FrozenPacket::Unknown(0x54))
+        );
+    }
+
+    #[test]
+    fn test_unexpected_old() {
+        // (kept for reference of the short-buffer edge; heartbeat needs >=3)
+        assert_eq!(
+            FrozenPacket::parse(BytesMut::from(&[0xFF][..])),
+            Ok(FrozenPacket::Unknown(0xFF))
         );
     }
 }
