@@ -30,6 +30,57 @@ pub enum SensorPacket {
     Temperature(TemperatureData),
     /// unknown value
     AlarmSet(u8),
+    /// Pod 4 (STM32G0) dual-channel ADS piezo stream, opcode 0x34
+    Pod4Piezo(Pod4PiezoData),
+    /// Pod 4 (STM32G0) 4-channel auxiliary stream, opcode 0x35
+    Pod4Aux(Pod4AuxData),
+}
+
+/// Pod 4 piezo packet (opcode `0x34`, observed fixed len 214).
+///
+/// Header (14 bytes): `34 | subtype | freq:u32 | timestamp_ms:u32 | gain:u32`.
+/// Body: interleaved `left,right` signed samples, each a big-endian `i32`
+/// (a 24-bit ADS ADC value sign-extended to 32 bits, high half `0xFFF9` in the
+/// captured unoccupied case). 25 samples per channel at 500 Hz per 50 ms frame.
+#[derive(Debug, PartialEq, Clone)]
+pub struct Pod4PiezoData {
+    /// Firmware subtype/format byte. CONFIRMED constant `0x41` in all captures.
+    pub subtype: u8,
+    /// Sampling frequency in Hz. CONFIRMED = 500 (matches 25 samples / 50 ms frame).
+    pub freq: u32,
+    /// Device uptime in milliseconds (shared free-running counter across opcodes).
+    /// CONFIRMED against the `[ambient] temp ... 850118` ASCII log timestamps.
+    pub timestamp_ms: u32,
+    /// ADS piezo gain. CONFIRMED = 400 == free-sleep telemetry gainLeft/gainRight.
+    /// May be two `u16` `(0, 400)`; exposed raw as `u32` (see report).
+    pub gain: u32,
+    /// Left piezo channel, oldest-first (even interleave slots).
+    pub left: Vec<i32>,
+    /// Right piezo channel, oldest-first (odd interleave slots).
+    pub right: Vec<i32>,
+}
+
+/// Pod 4 auxiliary sensor packet (opcode `0x35`, observed fixed len 176).
+///
+/// Header (16 bytes): `35 | subtype | reserved[8] | rate_hz:u16 | timestamp_ms:u32`.
+/// Body: 4 interleaved channels, each sample a big-endian `i32`. 10 samples per
+/// channel at 200 Hz per 50 ms frame.
+///
+/// PHYSICAL MEANING UNKNOWN: candidates are the LIS 3-axis accelerometer or raw
+/// FDC1004 capacitance (`meas0..3`). In the unoccupied capture channels 0/1 sit at
+/// ~`0x7FFF/0x8000` and channels 2/3 near `0x03xx`. Needs a labeled capture to fix.
+#[derive(Debug, PartialEq, Clone)]
+pub struct Pod4AuxData {
+    /// Firmware subtype/format byte. CONFIRMED constant `0x02` in all captures.
+    pub subtype: u8,
+    /// Reserved header bytes. CONFIRMED all-zero in all captures.
+    pub reserved: [u8; 8],
+    /// Sample rate in Hz. CONFIRMED = 200 (matches 10 samples / 50 ms frame).
+    pub rate_hz: u16,
+    /// Device uptime in milliseconds (shared counter, same units as piezo/cap).
+    pub timestamp_ms: u32,
+    /// 4 interleaved channels, oldest-first.
+    pub channels: [Vec<i32>; 4],
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -69,6 +120,8 @@ impl Packet for SensorPacket {
             0x31 => Self::parse_init(buf),
             0x32 => Self::parse_piezo(buf),
             0x33 => Self::parse_capacitance(buf),
+            0x34 => Self::parse_pod4_piezo(buf),
+            0x35 => Self::parse_pod4_aux(buf),
             0x81 => packet::parse_pong("Sensor/Pong", buf).map(SensorPacket::Pong),
             0x82 => packet::parse_hardware_info("Sensor/HardwareInfo", buf)
                 .map(SensorPacket::HardwareInfo),
@@ -247,6 +300,95 @@ impl SensorPacket {
             right_samples,
         }))
     }
+
+    /// Pod 4 dual-channel ADS piezo (opcode 0x34).
+    /// Header is 14 bytes; the body is interleaved `left,right` big-endian `i32`.
+    const POD4_PIEZO_HEADER: usize = 14;
+    fn parse_pod4_piezo(buf: BytesMut) -> Result<Self, PacketError> {
+        validate_packet_at_least("Sensor/Pod4Piezo", &buf, Self::POD4_PIEZO_HEADER)?;
+
+        let body = buf.len() - Self::POD4_PIEZO_HEADER;
+        // must be a whole number of left/right i32 pairs (8 bytes)
+        if body % 8 != 0 {
+            return Err(invalid_structure(
+                "Sensor/Pod4Piezo",
+                format!("body {body} is not a multiple of 8 (l/r i32 pair)"),
+                buf,
+            ));
+        }
+
+        let subtype = buf[1];
+        let freq = u32::from_be_bytes([buf[2], buf[3], buf[4], buf[5]]);
+        let timestamp_ms = u32::from_be_bytes([buf[6], buf[7], buf[8], buf[9]]);
+        let gain = u32::from_be_bytes([buf[10], buf[11], buf[12], buf[13]]);
+
+        let pairs = body / 8;
+        let mut left = Vec::with_capacity(pairs);
+        let mut right = Vec::with_capacity(pairs);
+        for pair in 0..pairs {
+            let idx = Self::POD4_PIEZO_HEADER + (pair << 3);
+            left.push(i32::from_be_bytes([
+                buf[idx],
+                buf[idx + 1],
+                buf[idx + 2],
+                buf[idx + 3],
+            ]));
+            right.push(i32::from_be_bytes([
+                buf[idx + 4],
+                buf[idx + 5],
+                buf[idx + 6],
+                buf[idx + 7],
+            ]));
+        }
+
+        Ok(SensorPacket::Pod4Piezo(Pod4PiezoData {
+            subtype,
+            freq,
+            timestamp_ms,
+            gain,
+            left,
+            right,
+        }))
+    }
+
+    /// Pod 4 4-channel auxiliary stream (opcode 0x35).
+    /// Header is 16 bytes; the body is 4 interleaved channels of big-endian `i32`.
+    const POD4_AUX_HEADER: usize = 16;
+    const POD4_AUX_CHANNELS: usize = 4;
+    fn parse_pod4_aux(buf: BytesMut) -> Result<Self, PacketError> {
+        validate_packet_at_least("Sensor/Pod4Aux", &buf, Self::POD4_AUX_HEADER)?;
+
+        let body = buf.len() - Self::POD4_AUX_HEADER;
+        // must be a whole number of 4-channel i32 groups (16 bytes)
+        if body % (Self::POD4_AUX_CHANNELS * 4) != 0 {
+            return Err(invalid_structure(
+                "Sensor/Pod4Aux",
+                format!("body {body} is not a multiple of 16 (4x i32)"),
+                buf,
+            ));
+        }
+
+        let subtype = buf[1];
+        let reserved: [u8; 8] = buf[2..10].try_into().unwrap();
+        let rate_hz = u16::from_be_bytes([buf[10], buf[11]]);
+        let timestamp_ms = u32::from_be_bytes([buf[12], buf[13], buf[14], buf[15]]);
+
+        let records = body / 4;
+        let mut channels: [Vec<i32>; 4] = Default::default();
+        for rec in 0..records {
+            let idx = Self::POD4_AUX_HEADER + (rec << 2);
+            let val = i32::from_be_bytes([buf[idx], buf[idx + 1], buf[idx + 2], buf[idx + 3]]);
+            channels[rec % Self::POD4_AUX_CHANNELS].push(val);
+        }
+
+        Ok(SensorPacket::Pod4Aux(Pod4AuxData {
+            subtype,
+            reserved,
+            rate_hz,
+            timestamp_ms,
+            channels,
+        }))
+    }
 }
 
 #[cfg(test)]
@@ -415,6 +557,121 @@ mod tests {
             Ok(SensorPacket::AlarmSet(0x01))
         );
         assert!(SensorPacket::parse(BytesMut::from(&[0xAC][..])).is_err());
+    }
+
+    // --- Pod 4 (STM32G0) real captured frames ---
+    // Source: backup/captures/cap_ttymxc0_921600_10s.bin, first frame of each opcode.
+    // CRC-validated by the throwaway analyzer before hardcoding here.
+
+    /// Real Pod-4 capacitance frame (opcode 0x33) — parses with the Pod-3 layout.
+    #[test]
+    fn test_pod4_capacitance_real() {
+        let data = hex!(
+            "33 00 0C E8 8C 00 00 00 00 00 04 3D"
+            "01 04 FF 02 06 91 03 06 4E 04 05 33"
+            "05 03 8D"
+        );
+        assert_eq!(
+            SensorPacket::parse(BytesMut::from(&data[..])),
+            Ok(SensorPacket::Capacitance(CapacitanceData {
+                // 845964 ms uptime
+                sequence: 0x000C_E88C,
+                // both sides unoccupied
+                values: [1085, 1279, 1681, 1614, 1331, 909],
+            }))
+        );
+    }
+
+    /// Real Pod-4 dual-channel piezo frame (opcode 0x34, len 214).
+    #[test]
+    fn test_pod4_piezo_real() {
+        let data = hex!(
+            "34 41 00 00 01 F4 00 0C E8 03 00 00"
+            "01 90 FF F9 6E D0 FF F9 2A B3 FF F9"
+            "6F EE FF F9 2A B3 FF F9 6E 19 FF F9"
+            "30 6F FF F9 6F 29 FF F9 31 7C FF F9"
+            "6E 22 FF F9 31 7C FF F9 6E 3C FF F9"
+            "32 D5 FF F9 6C 36 FF F9 34 E3 FF F9"
+            "6A 3F FF F9 37 DD FF F9 69 74 FF F9"
+            "35 F0 FF F9 69 80 FF F9 34 66 FF F9"
+            "69 75 FF F9 35 24 FF F9 69 54 FF F9"
+            "32 7A FF F9 6A 20 FF F9 2D 78 FF F9"
+            "6B 2F FF F9 2C 11 FF F9 6B F1 FF F9"
+            "2D C4 FF F9 6D AE FF F9 32 25 FF F9"
+            "6E 36 FF F9 32 61 FF F9 6B E9 FF F9"
+            "31 35 FF F9 69 66 FF F9 2F 54 FF F9"
+            "68 FC FF F9 2D 62 FF F9 69 FC FF F9"
+            "2D 8D FF F9 6A 62 FF F9 2D CF FF F9"
+            "6C 03 FF F9 2C 1E FF F9 6D 44 FF F9"
+            "2A 5D FF F9 6E 64 FF F9 29 37"
+        );
+        let parsed = SensorPacket::parse(BytesMut::from(&data[..])).unwrap();
+        match parsed {
+            SensorPacket::Pod4Piezo(p) => {
+                assert_eq!(p.subtype, 0x41);
+                assert_eq!(p.freq, 500);
+                assert_eq!(p.timestamp_ms, 0x000C_E803); // 845827 ms
+                assert_eq!(p.gain, 400); // == telemetry gainLeft/gainRight
+                assert_eq!(p.left.len(), 25);
+                assert_eq!(p.right.len(), 25);
+                // first interleaved pair, big-endian i32 (24-bit ADS sign-extended)
+                assert_eq!(p.left[0], -430384); // 0xFFF9_6ED0
+                assert_eq!(p.right[0], -447821); // 0xFFF9_2AB3
+                // both channels smooth & bounded around their bias
+                for &v in p.left.iter().chain(p.right.iter()) {
+                    assert!((-460_000..-420_000).contains(&v), "sample out of range: {v}");
+                }
+            }
+            other => panic!("Wrong packet type: {other:?}"),
+        }
+
+        // truncated / misaligned body must error
+        assert!(SensorPacket::parse(BytesMut::from(&hex!("34 41 00 00 01 F4")[..])).is_err());
+    }
+
+    /// Real Pod-4 4-channel auxiliary frame (opcode 0x35, len 176).
+    #[test]
+    fn test_pod4_aux_real() {
+        let data = hex!(
+            "35 02 00 00 00 00 00 00 00 00 00 C8"
+            "00 0C E7 EF 00 00 80 00 00 00 7F FF"
+            "00 00 03 3E 00 00 03 5E 00 00 7F FF"
+            "00 00 7F FF 00 00 03 3E 00 00 03 5E"
+            "00 00 7F FF 00 00 7F FF 00 00 03 3E"
+            "00 00 03 5E 00 00 80 00 00 00 80 00"
+            "00 00 03 4F 00 00 03 5E 00 00 7F FF"
+            "00 00 7F FF 00 00 03 4F 00 00 03 5E"
+            "00 00 7F FF 00 00 7F FF 00 00 03 4F"
+            "00 00 03 5E 00 00 7F FF 00 00 7F FE"
+            "00 00 03 4F 00 00 03 5E 00 00 7F FF"
+            "00 00 80 00 00 00 03 4F 00 00 03 53"
+            "00 00 7F FF 00 00 7F FF 00 00 03 4F"
+            "00 00 03 53 00 00 7F FE 00 00 7F FF"
+            "00 00 03 4F 00 00 03 53"
+        );
+        let parsed = SensorPacket::parse(BytesMut::from(&data[..])).unwrap();
+        match parsed {
+            SensorPacket::Pod4Aux(a) => {
+                assert_eq!(a.subtype, 0x02);
+                assert_eq!(a.reserved, [0u8; 8]);
+                assert_eq!(a.rate_hz, 200);
+                assert_eq!(a.timestamp_ms, 0x000C_E7EF); // 845807 ms
+                assert_eq!(a.channels[0].len(), 10);
+                assert_eq!(a.channels[3].len(), 10);
+                // ch0/ch1 sit near +0x8000, ch2/ch3 near +0x03xx
+                assert_eq!(a.channels[0][0], 0x8000); // 32768
+                assert_eq!(a.channels[1][0], 0x7FFF); // 32767
+                assert_eq!(a.channels[2][0], 0x033E); // 830
+                assert_eq!(a.channels[3][0], 0x035E); // 862
+            }
+            other => panic!("Wrong packet type: {other:?}"),
+        }
+
+        // misaligned body must error
+        assert!(
+            SensorPacket::parse(BytesMut::from(&hex!("35 02 00 00 00 00 00 00 00 00 00 C8 00 00 00 00 00")[..]))
+                .is_err()
+        );
     }
 
     #[test]
