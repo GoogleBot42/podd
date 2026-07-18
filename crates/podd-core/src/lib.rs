@@ -191,8 +191,14 @@ async fn run_inner(
         device_label,
     );
 
-    if mqtt_man.wait_for_conn().await.is_err() {
-        anyhow::bail!("Fatal error starting MQTT. Shutting down...");
+    // MQTT must NEVER gate the hardware. Give the broker a brief chance to
+    // connect, but do not block the frozen/sensor managers if it is unreachable
+    // — it keeps retrying concurrently via `mqtt_man.run()` in the select! below,
+    // and telemetry to the api/StateBus flows regardless of MQTT.
+    match tokio::time::timeout(std::time::Duration::from_secs(3), mqtt_man.wait_for_conn()).await {
+        Ok(Ok(())) => log::info!("MQTT connected"),
+        Ok(Err(())) => log::warn!("MQTT connect failed (continuing without it)"),
+        Err(_) => log::warn!("MQTT not connected within 3s (continuing; retrying in background)"),
     }
 
     tokio::select! {
