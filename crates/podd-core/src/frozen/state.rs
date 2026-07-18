@@ -13,6 +13,9 @@ pub struct FrozenState {
     pub right_target: Option<FrozenTarget>,
     pub hardware_info: Option<HardwareInfo>,
     pub is_priming: bool,
+    /// Water tank present/full. Defaults false via derive; the manager seeds it
+    /// `true` at boot and the firmware "water empty/full" messages update it.
+    pub water_full: bool,
 }
 
 const TOPIC_MODE: &str = "opensleep/state/frozen/mode";
@@ -103,8 +106,10 @@ impl FrozenState {
             FrozenPacket::Message(msg) => {
                 if msg == "FW: water empty -> full" {
                     log::warn!("Water tank reinserted");
+                    self.water_full = true;
                 } else if msg == "FW: water full -> empty" {
                     log::warn!("Water tank removed");
+                    self.water_full = false;
                 } else if let Some(stripped) = msg.strip_prefix("FW: [priming] ") {
                     // done because empty
                     // done

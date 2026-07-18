@@ -1,7 +1,8 @@
+use crate::bus::{Command, DeviceSnapshot, StatusTx};
 use crate::config::{Config, SidesConfig};
 use crate::frozen::state::FrozenState;
 use crate::led::{IS31FL3194Config, IS31FL3194Controller};
-use pod_proto::codec::PacketCodec;
+use pod_proto::codec::{CommandTrait, PacketCodec};
 use pod_proto::frozen::packet::FrozenTarget;
 use pod_proto::frozen::{FrozenCommand, FrozenPacket};
 use pod_proto::packet::BedSide;
@@ -11,7 +12,7 @@ use jiff::{SignedDuration, Timestamp, civil::Time, tz::TimeZone};
 use linux_embedded_hal::I2cdev;
 use rumqttc::AsyncClient;
 use thiserror::Error;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio::time::{Duration, Instant, interval, sleep};
 use tokio_serial::SerialStream;
 use tokio_util::codec::Framed;
@@ -38,12 +39,16 @@ pub enum FrozenError {
 
 type Writer = SplitSink<Framed<SerialStream, PacketCodec<FrozenPacket>>, FrozenCommand>;
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     port: &str,
     baud: u32,
     mut config_rx: watch::Receiver<Config>,
     mut led: IS31FL3194Controller<I2cdev>,
     mut client: AsyncClient,
+    status: StatusTx,
+    mut cmd_rx: mpsc::Receiver<Command>,
+    dry_run: bool,
 ) -> Result<(), FrozenError> {
     log::info!("Initializing Frozen Subsystem...");
 
@@ -60,7 +65,9 @@ pub async fn run(
     let (mut writer, mut reader) = create_framed_port::<FrozenPacket>(port, baud)?.split();
 
     let mut state = FrozenState::default();
+    state.water_full = true; // assume present until firmware says otherwise
     state.publish_reset(&mut client).await;
+    publish_frozen(&status, &state);
 
     // grab hwinfo @ boot
     send_command(&mut writer, FrozenCommand::Ping).await;
@@ -77,6 +84,7 @@ pub async fn run(
             Some(result) = reader.next() => match result {
                 Ok(packet) => {
                     state.handle_packet(&mut client, packet).await;
+                    publish_frozen(&status, &state);
 
                     if state.is_active() != was_active {
                         if was_active {
@@ -137,7 +145,93 @@ pub async fn run(
                 prime = cfg.prime;
                 side_config = cfg.profile.clone();
             }
+
+            // api / scheduler commands routed to the Frozen subsystem.
+            Some(cmd) = cmd_rx.recv() => {
+                handle_command(&mut writer, &state, dry_run, cmd).await;
+            }
         }
+    }
+}
+
+/// Publish the Frozen subsystem's live telemetry into the state watch.
+/// Read-only: derives the snapshot from already-parsed state (SAFE).
+fn publish_frozen(status: &StatusTx, state: &FrozenState) {
+    status.send_modify(|s: &mut DeviceSnapshot| {
+        if let Some(t) = &state.temp {
+            s.left.current_temp_c = Some(t.left_temp as f64 / 100.0);
+            s.right.current_temp_c = Some(t.right_temp as f64 / 100.0);
+        }
+        if let Some(tar) = &state.left_target {
+            s.left.target_temp_c = Some(tar.temp as f64 / 100.0);
+            s.left.is_on = tar.enabled;
+        }
+        if let Some(tar) = &state.right_target {
+            s.right.target_temp_c = Some(tar.temp as f64 / 100.0);
+            s.right.is_on = tar.enabled;
+        }
+        s.is_priming = state.is_priming;
+        s.water_level = state.water_full;
+    });
+}
+
+/// °F -> centidegrees Celsius, for building Frozen setpoint frames.
+fn f_to_centi_c(f: i32) -> u16 {
+    (((f as f64 - 32.0) * 5.0 / 9.0) * 100.0).round().clamp(0.0, u16::MAX as f64) as u16
+}
+
+/// Translate a bus [`Command`] into a Frozen control frame.
+///
+/// **The actual MCU write is gated behind `dry_run` (default true).** While
+/// dry-running we log the intended frame + bytes and send nothing, so the
+/// managed thermostat/scheduler stays in charge of the bed. Flipping this off is
+/// the live cutover — see `TODO(live-cutover)`.
+async fn handle_command(writer: &mut Writer, state: &FrozenState, dry_run: bool, cmd: Command) {
+    let frame = match cmd {
+        Command::SetTargetTempF { side, f } => Some(FrozenCommand::SetTargetTemperature {
+            side,
+            tar: FrozenTarget {
+                enabled: true,
+                temp: f_to_centi_c(f),
+            },
+        }),
+        Command::SetPower {
+            side,
+            on,
+            duration_s: _,
+        } => {
+            // Preserve the last known target temp for the side; the firmware
+            // ignores temp when disabling. duration_s is not yet honored.
+            let last = match side {
+                BedSide::Left => state.left_target.clone(),
+                BedSide::Right => state.right_target.clone(),
+            };
+            Some(FrozenCommand::SetTargetTemperature {
+                side,
+                tar: FrozenTarget {
+                    enabled: on,
+                    temp: last.map(|t| t.temp).unwrap_or(2750),
+                },
+            })
+        }
+        Command::Prime => Some(FrozenCommand::Prime),
+        other => {
+            log::warn!("Frozen subsystem received unroutable command: {other:?}");
+            None
+        }
+    };
+
+    let Some(frame) = frame else { return };
+
+    if dry_run {
+        log::warn!(
+            "[dry-run] Frozen would send {frame}: {:02X?} // TODO(live-cutover)",
+            frame.to_bytes()
+        );
+    } else {
+        // TODO(live-cutover): live setpoint/control write to the Frozen MCU.
+        // Gate behind the safety supervisor (heartbeat, setpoint clamp, faults).
+        send_command(writer, frame).await;
     }
 }
 

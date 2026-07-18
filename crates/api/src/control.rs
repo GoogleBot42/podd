@@ -5,9 +5,13 @@
 //! scheduler. [`MockControl`] records calls for tests and the example server so
 //! the whole API is exercisable without any hardware.
 
-use crate::wire::{AlarmJob, Side};
+use crate::wire::{AlarmJob, Side, VibrationPattern};
 use async_trait::async_trait;
+use podd_core::bus::{AlarmSpec, Command};
+use pod_proto::packet::BedSide;
+use pod_proto::sensor::command::AlarmPattern;
 use std::sync::Mutex;
+use tokio::sync::mpsc;
 
 /// Async command interface the API uses to drive the pod. Decoupled from
 /// hardware on purpose: the API crate never touches `podd-core` or a UART.
@@ -148,5 +152,113 @@ impl PodControl for MockControl {
         } else {
             anyhow::bail!("invalid command: {command}")
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PoddControl — the real hardware seam
+// ---------------------------------------------------------------------------
+
+/// Default "power on" session length (seconds). free-sleep uses 43200s (12h).
+const POWER_ON_SECONDS: u32 = 43200;
+
+fn to_bed_side(side: Side) -> BedSide {
+    match side {
+        Side::Left => BedSide::Left,
+        Side::Right => BedSide::Right,
+    }
+}
+
+/// Map the wire vibration pattern to a firmware alarm pattern. The firmware has
+/// no distinct "rise" ramp, so `Rise` degrades to `Single`.
+fn to_alarm_pattern(p: VibrationPattern) -> AlarmPattern {
+    match p {
+        VibrationPattern::Double => AlarmPattern::Double,
+        VibrationPattern::Rise => AlarmPattern::Single,
+    }
+}
+
+/// The real [`PodControl`]: maps each API command to a [`Command`] and pushes it
+/// onto the bus's mpsc into `podd-core`'s managers. Whether a command actually
+/// reaches an MCU is decided downstream by the managers' `dry_run` gate.
+pub struct PoddControl {
+    commands: mpsc::Sender<Command>,
+}
+
+impl PoddControl {
+    pub fn new(commands: mpsc::Sender<Command>) -> Self {
+        Self { commands }
+    }
+
+    async fn send(&self, cmd: Command) -> anyhow::Result<()> {
+        self.commands
+            .send(cmd)
+            .await
+            .map_err(|e| anyhow::anyhow!("command channel closed: {e}"))
+    }
+}
+
+#[async_trait]
+impl PodControl for PoddControl {
+    async fn set_target_temp(&self, side: Side, temp_f: i32) -> anyhow::Result<()> {
+        self.send(Command::SetTargetTempF {
+            side: to_bed_side(side),
+            f: temp_f,
+        })
+        .await
+    }
+
+    async fn set_power(&self, side: Side, on: bool) -> anyhow::Result<()> {
+        self.send(Command::SetPower {
+            side: to_bed_side(side),
+            on,
+            duration_s: if on { POWER_ON_SECONDS } else { 0 },
+        })
+        .await
+    }
+
+    async fn clear_alarm(&self, side: Side) -> anyhow::Result<()> {
+        self.send(Command::ClearAlarm {
+            side: to_bed_side(side),
+        })
+        .await
+    }
+
+    async fn prime(&self) -> anyhow::Result<()> {
+        self.send(Command::Prime).await
+    }
+
+    async fn fire_alarm(&self, job: AlarmJob) -> anyhow::Result<()> {
+        self.send(Command::FireAlarm(AlarmSpec {
+            side: to_bed_side(job.side),
+            intensity: job.vibration_intensity.clamp(0, 100) as u8,
+            duration_s: job.duration.max(0) as u32,
+            pattern: to_alarm_pattern(job.vibration_pattern),
+        }))
+        .await
+    }
+
+    async fn apply_device_settings(&self, settings: serde_json::Value) -> anyhow::Result<()> {
+        // Opaque settings block; carried as bytes for the managers to decode at
+        // cutover. (JSON bytes today; the live path will CBOR-encode.)
+        let bytes = serde_json::to_vec(&settings)?;
+        self.send(Command::SetSettingsCbor(bytes)).await
+    }
+
+    async fn reboot(&self) -> anyhow::Result<()> {
+        self.send(Command::Reboot).await
+    }
+
+    async fn update(&self) -> anyhow::Result<()> {
+        self.send(Command::Update).await
+    }
+
+    async fn execute(&self, command: &str, arg: Option<&str>) -> anyhow::Result<String> {
+        self.send(Command::Execute {
+            command: command.to_string(),
+            arg: arg.map(|s| s.to_string()),
+        })
+        .await?;
+        Ok(format!("queued {command}"))
     }
 }

@@ -5,9 +5,13 @@
 //! presence snapshot live only in memory behind `RwLock`s — later they are fed
 //! by `podd-core`'s live state bus; for now they are seeded with sane defaults.
 
-use crate::wire::{DeviceStatus, PresenceState, Schedules, Settings};
+use crate::wire::{
+    c_to_f, f_to_level, DeviceStatus, PresenceState, Schedules, Settings, SidePresence, SideStatus,
+};
+use podd_core::bus::{DeviceSnapshot, SideSnapshot};
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
+use tokio::sync::watch;
 
 /// Where `Settings` / `Schedules` are persisted. `None` = in-memory only
 /// (used by tests and the API-only mode).
@@ -79,6 +83,57 @@ impl StateStore {
         Self::new(StoreConfig::default())
     }
 
+    /// Build a store whose device-status + presence are driven live by
+    /// podd-core's state watch, while `Settings`/`Schedules` stay file-backed
+    /// via `config`.
+    ///
+    /// Seeds from the current snapshot, then spawns a task that re-applies every
+    /// subsequent update. Returns an `Arc` (the updater task holds a clone).
+    pub fn from_watch(mut rx: watch::Receiver<DeviceSnapshot>, config: StoreConfig) -> Arc<Self> {
+        let store = Arc::new(Self::new(config));
+        store.apply_snapshot(&rx.borrow_and_update());
+
+        let updater = store.clone();
+        tokio::spawn(async move {
+            while rx.changed().await.is_ok() {
+                let snap = rx.borrow_and_update().clone();
+                updater.apply_snapshot(&snap);
+            }
+            log::info!("device-status watch closed; updater exiting");
+        });
+
+        store
+    }
+
+    /// Fold a live [`DeviceSnapshot`] into the in-memory device status + presence.
+    pub fn apply_snapshot(&self, snap: &DeviceSnapshot) {
+        // Device status: rebuild from the snapshot, preserving the fields
+        // podd-core doesn't own (free_sleep/version, wifi, hub, taps defaults).
+        {
+            let mut status = self.status.write().unwrap();
+            let mut next = DeviceStatus {
+                left: side_from_snapshot(&snap.left, &status.left),
+                right: side_from_snapshot(&snap.right, &status.right),
+                water_level: if snap.water_level { "true" } else { "false" }.to_string(),
+                is_priming: snap.is_priming,
+                cover_version: snap.cover_version.clone(),
+                ..status.clone()
+            };
+            next.settings.gain_left = snap.gains.0 as f64;
+            next.settings.gain_right = snap.gains.1 as f64;
+            next.settings.led_brightness = snap.led_brightness as i64;
+            *status = next;
+        }
+
+        // Presence: only bump `lastUpdatedAt` when a side's presence flips.
+        {
+            let mut presence = self.presence.write().unwrap();
+            let now = jiff::Timestamp::now().to_string();
+            apply_presence_side(&mut presence.left, snap.presence_left, &now);
+            apply_presence_side(&mut presence.right, snap.presence_right, &now);
+        }
+    }
+
     // ---- settings ----
 
     pub fn settings(&self) -> Settings {
@@ -127,5 +182,31 @@ impl StateStore {
     pub fn with_presence_mut<R>(&self, f: impl FnOnce(&mut PresenceState) -> R) -> R {
         let mut guard = self.presence.write().unwrap();
         f(&mut guard)
+    }
+}
+
+/// Map a bus [`SideSnapshot`] (°C) onto the wire [`SideStatus`] (°F + level),
+/// falling back to the previous side's values for anything the snapshot leaves
+/// unknown (`None` current/target temps).
+fn side_from_snapshot(side: &SideSnapshot, prev: &SideStatus) -> SideStatus {
+    let current_f = side.current_temp_c.map(c_to_f);
+    let target_f = side.target_temp_c.map(|c| c_to_f(c).round() as i32);
+    SideStatus {
+        current_temperature_f: current_f.unwrap_or(prev.current_temperature_f),
+        current_temperature_level: f_to_level(
+            current_f.unwrap_or(prev.current_temperature_f),
+        ),
+        target_temperature_f: target_f.unwrap_or(prev.target_temperature_f),
+        seconds_remaining: side.seconds_remaining,
+        is_on: side.is_on,
+        is_alarm_vibrating: side.is_alarm_vibrating,
+        taps: prev.taps.clone(),
+    }
+}
+
+fn apply_presence_side(side: &mut SidePresence, present: bool, now: &str) {
+    if side.present != present {
+        side.present = present;
+        side.last_updated_at = now.to_string();
     }
 }

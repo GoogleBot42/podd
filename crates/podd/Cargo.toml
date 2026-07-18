@@ -13,11 +13,12 @@ path = "src/main.rs"
 
 [dependencies]
 podd-core = { path = "../podd-core" }
+api = { path = "../api" }
 
 anyhow.workspace = true
 env_logger.workspace = true
 log.workspace = true
 tokio.workspace = true
 
-# NOTE: the api/schedule/update layers (axum web/API, thermostat scheduler,
-# on-device update agent using `pod-update`) land here as the fork grows.
+# NOTE: the schedule/update layers (thermostat scheduler, on-device update agent
+# using `pod-update`) land here as the fork grows.

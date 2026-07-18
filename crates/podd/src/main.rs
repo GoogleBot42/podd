@@ -12,11 +12,23 @@
 //!   - the on-device update agent (Tier-2 atomic release swaps, using
 //!     `pod-update` to verify signed manifests).
 //!
-//! Today this binary is a thin entry point: it parses a config path, inits
-//! logging, and hands off to [`podd_core::run`]. The api/schedule/update
-//! layers land here as they are built.
+//! This binary now wires the two seams together: it [`start`](podd_core::start)s
+//! the control core (which returns the state bus [`Shared`](podd_core::bus::Shared)),
+//! builds the `api` layer's live [`StateStore`](api::StateStore) +
+//! [`PoddControl`](api::PoddControl) from it, and runs the managers' future and
+//! the HTTP server concurrently.
+//!
+//! MCU control writes stay gated behind `dry_run` (default true): the UI sees
+//! **live telemetry** and its commands flow to the managers, but the managers
+//! *log* control frames instead of sending them until the live cutover. Set
+//! `PODD_DRY_RUN=false` to arm real writes (do this only when podd replaces the
+//! stock stack).
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
+
+use api::{PoddControl, PodControl, StateStore, StoreConfig};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -28,7 +40,44 @@ async fn main() -> anyhow::Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("./config.ron"));
 
-    log::info!("podd starting (config: {})", config_path.display());
+    // API bind address (default 0.0.0.0:3000) and optional SPA dir.
+    let api_addr: SocketAddr = std::env::var("PODD_API_ADDR")
+        .unwrap_or_else(|_| "0.0.0.0:3000".to_string())
+        .parse()?;
+    let spa_dir = std::env::var("PODD_SPA_DIR").ok().map(PathBuf::from);
 
-    podd_core::run(&config_path).await
+    // MCU control writes are logged, not sent, unless explicitly armed.
+    let dry_run = !matches!(
+        std::env::var("PODD_DRY_RUN").ok().as_deref(),
+        Some("false") | Some("0")
+    );
+
+    // Settings/schedules stay file-backed, next to the config by default.
+    let base_dir = config_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let store_config = StoreConfig {
+        settings_path: Some(base_dir.join("settings.json")),
+        schedules_path: Some(base_dir.join("schedules.json")),
+    };
+
+    log::info!(
+        "podd starting (config: {}, api: {api_addr}, dry_run: {dry_run})",
+        config_path.display()
+    );
+
+    // Start the control core: creates the bus synchronously (no hardware yet).
+    let (shared, core_fut) = podd_core::start(config_path, dry_run);
+
+    // Live status store (fed by the watch) + real control (feeds the mpsc).
+    let store = StateStore::from_watch(shared.status.clone(), store_config);
+    let control = Arc::new(PoddControl::new(shared.commands.clone())) as Arc<dyn PodControl>;
+
+    // Run the managers and the HTTP server together; whichever fails first
+    // brings the process down (systemd restarts it). On a dev box with no
+    // UARTs, `core_fut` errors out here — expected, not a panic.
+    tokio::try_join!(core_fut, api::serve(api_addr, store, control, spa_dir))?;
+    Ok(())
 }

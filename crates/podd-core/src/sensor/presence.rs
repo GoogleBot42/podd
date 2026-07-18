@@ -58,6 +58,11 @@ impl PresenseManager {
         }
     }
 
+    /// The latest debounced presence state (all-false until the first update).
+    pub fn presence_state(&self) -> PresenceState {
+        self.last_state.clone().unwrap_or_default()
+    }
+
     pub fn update(&mut self, data: &CapacitanceData) {
         if self.config.is_some() {
             self.update_presence(data);

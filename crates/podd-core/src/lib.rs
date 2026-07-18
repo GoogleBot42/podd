@@ -10,6 +10,7 @@
 //!
 //! Upstream's `src/main.rs` startup has been converted into [`run`].
 
+pub mod bus;
 pub mod config;
 pub mod frozen;
 pub mod led;
@@ -17,15 +18,50 @@ pub mod mqtt;
 pub mod reset;
 pub mod sensor;
 
-use std::path::Path;
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use config::Config;
+use config::{Config, Cover};
 use tokio::sync::{mpsc, watch};
 
+use crate::bus::{Command, DeviceSnapshot, Shared, StatusTx};
 use crate::{led::IS31FL3194Controller, mqtt::MqttManager, reset::ResetController};
 
 pub const NAME: &str = "podd";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Command channel depth (api/scheduler -> managers).
+const COMMAND_QUEUE: usize = 64;
+
+/// Create the state bus and return the consumer-facing [`Shared`] handle
+/// alongside the long-lived future that drives the control core.
+///
+/// The channels are created synchronously and eagerly, so a caller (e.g. the
+/// `podd` binary) can hand [`Shared`] to the `api` layer *before* any hardware
+/// is touched. All hardware init (STM32 reset, LED, MQTT connect) and the
+/// managers' `select!` loop live inside the returned future, which resolves
+/// with an error if the hardware is missing (a dev box has no UARTs — that is
+/// expected and non-fatal to *building*/wiring the stack).
+///
+/// `dry_run` gates MCU *writes*: when true (the default for the live cutover),
+/// command frames are logged rather than sent. Telemetry publishing is always
+/// live (read-only, safe).
+pub fn start(
+    config_path: PathBuf,
+    dry_run: bool,
+) -> (Shared, impl Future<Output = anyhow::Result<()>>) {
+    let (status_tx, status_rx) = watch::channel(DeviceSnapshot::default());
+    let (cmd_tx, cmd_rx) = mpsc::channel(COMMAND_QUEUE);
+
+    let shared = Shared {
+        status: status_rx,
+        commands: cmd_tx,
+    };
+
+    let fut = run_inner(config_path, Arc::new(status_tx), cmd_rx, dry_run);
+    (shared, fut)
+}
 
 /// Runs the control core: load config, reset the STM32 subsystems, then drive
 /// the Frozen + Sensor subsystems and the MQTT manager in a `select!`.
@@ -37,8 +73,60 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Device paths/bauds/I2C bus/addresses come from the config's `device`
 /// section (see [`config::DeviceConfig`]); an absent section falls back to the
 /// historical hard-coded defaults.
+///
+/// Convenience wrapper over [`start`] for callers that don't need the [`Shared`]
+/// bus (the dropped command sender simply disables the command path). Defaults
+/// to `dry_run = true`.
 pub async fn run(config_path: &Path) -> anyhow::Result<()> {
+    let (_shared, fut) = start(config_path.to_path_buf(), true);
+    fut.await
+}
+
+/// Route a command to the manager that owns it. System-level commands and
+/// not-yet-mapped ones are logged (dry-run) here.
+async fn dispatch_commands(
+    mut cmd_rx: mpsc::Receiver<Command>,
+    frozen_tx: mpsc::Sender<Command>,
+    sensor_tx: mpsc::Sender<Command>,
+) {
+    while let Some(cmd) = cmd_rx.recv().await {
+        match &cmd {
+            Command::SetTargetTempF { .. } | Command::SetPower { .. } | Command::Prime => {
+                if frozen_tx.send(cmd).await.is_err() {
+                    log::warn!("frozen command channel closed; dropping command");
+                }
+            }
+            Command::ClearAlarm { .. } | Command::FireAlarm(_) => {
+                if sensor_tx.send(cmd).await.is_err() {
+                    log::warn!("sensor command channel closed; dropping command");
+                }
+            }
+            // Not yet mapped to a manager op — plumbing only.
+            Command::SetSettingsCbor(bytes) => {
+                log::warn!(
+                    "SetSettingsCbor({} bytes) not yet applied // TODO(live-cutover)",
+                    bytes.len()
+                );
+            }
+            Command::Reboot | Command::Update | Command::Execute { .. } => {
+                log::warn!("system command {cmd:?} not yet implemented // TODO(live-cutover)");
+            }
+        }
+    }
+    log::info!("command dispatcher exiting (all senders dropped)");
+}
+
+async fn run_inner(
+    config_path: PathBuf,
+    status_tx: StatusTx,
+    cmd_rx: mpsc::Receiver<Command>,
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    let config_path = config_path.as_path();
     log::info!("Starting {NAME} v{VERSION}...");
+    if dry_run {
+        log::warn!("dry_run=true: MCU control writes are LOGGED, not sent (safe telemetry mode)");
+    }
 
     // read device label (best-effort; Eight's `sewer` writes this)
     // TODO: make this path config / drop it
@@ -69,6 +157,22 @@ pub async fn run(config_path: &Path) -> anyhow::Result<()> {
         config.timezone.iana_name().unwrap_or("ERROR")
     );
 
+    // Seed the snapshot's static/config-derived fields (cover version).
+    let cover_version = match device.cover {
+        Some(Cover::Pod3) => "Pod 3",
+        Some(Cover::Pod4) => "Pod 4",
+        None => "unknown",
+    };
+    status_tx.send_modify(|s| {
+        s.cover = device.cover;
+        s.cover_version = cover_version.to_string();
+    });
+
+    // Fan the single public command channel out to per-manager channels.
+    let (frozen_cmd_tx, frozen_cmd_rx) = mpsc::channel(COMMAND_QUEUE);
+    let (sensor_cmd_tx, sensor_cmd_rx) = mpsc::channel(COMMAND_QUEUE);
+    tokio::spawn(dispatch_commands(cmd_rx, frozen_cmd_tx, sensor_cmd_tx));
+
     // reset the STM32s via the PCAL6416A I2C expander, then hand the bus to the LED
     let mut resetter = ResetController::new(&device.i2c_bus, device.pcal6416a_addr)
         .map_err(|e| anyhow::anyhow!("failed to init ResetController: {e}"))?;
@@ -97,7 +201,10 @@ pub async fn run(config_path: &Path) -> anyhow::Result<()> {
             device.frozen_baud,
             config_rx.clone(),
             led,
-            mqtt_man.client.clone()
+            mqtt_man.client.clone(),
+            status_tx.clone(),
+            frozen_cmd_rx,
+            dry_run,
         ) => {
             match res {
                 Ok(_) => log::error!("Frozen task unexpectedly exited"),
@@ -112,7 +219,10 @@ pub async fn run(config_path: &Path) -> anyhow::Result<()> {
             config_tx,
             config_rx,
             calibrate_rx,
-            mqtt_man.client.clone()
+            mqtt_man.client.clone(),
+            status_tx.clone(),
+            sensor_cmd_rx,
+            dry_run,
         ) => {
             match res {
                 Ok(_) => log::error!("Sensor task unexpectedly exited"),

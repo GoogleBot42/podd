@@ -210,6 +210,184 @@ async fn unknown_api_route_404() {
     assert_eq!(v, json!({ "error": { "message": "Not Found" } }));
 }
 
+// ---------------------------------------------------------------------------
+// state-bus wiring: live watch -> StateStore -> GET /deviceStatus
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn device_status_reflects_watch_snapshot() {
+    use podd_core::bus::DeviceSnapshot;
+
+    let mut snap = DeviceSnapshot::default();
+    snap.left.current_temp_c = Some(30.0); // 86 °F
+    snap.left.target_temp_c = Some(25.0); // 77 °F
+    snap.left.is_on = true;
+    snap.water_level = false;
+    snap.is_priming = true;
+    snap.presence_left = true;
+    snap.cover_version = "Pod 4".to_string();
+
+    let (tx, rx) = tokio::sync::watch::channel(snap);
+    let store = StateStore::from_watch(rx, StoreConfig::default());
+    let control = Arc::new(MockControl::new());
+    let app = router(store.clone(), control as Arc<dyn PodControl>, None);
+
+    let resp = app
+        .clone()
+        .oneshot(get("/api/deviceStatus"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = body_json(resp).await;
+    assert_eq!(v["waterLevel"], "false");
+    assert_eq!(v["isPriming"], true);
+    assert_eq!(v["coverVersion"], "Pod 4");
+    assert_eq!(v["left"]["isOn"], true);
+    assert_eq!(v["left"]["targetTemperatureF"], 77);
+    assert!((v["left"]["currentTemperatureF"].as_f64().unwrap() - 86.0).abs() < 0.5);
+
+    // presence also tracks the snapshot
+    let resp = app.oneshot(get("/api/metrics/presence")).await.unwrap();
+    let v = body_json(resp).await;
+    assert_eq!(v["left"]["present"], true);
+    assert_eq!(v["right"]["present"], false);
+
+    drop(tx); // keep the sender alive until here
+}
+
+#[tokio::test]
+async fn device_status_updates_on_watch_change() {
+    use podd_core::bus::DeviceSnapshot;
+    use std::time::Duration;
+
+    let (tx, rx) = tokio::sync::watch::channel(DeviceSnapshot::default());
+    let store = StateStore::from_watch(rx, StoreConfig::default());
+
+    // Seed is reflected immediately (no priming yet).
+    assert!(!store.device_status().is_priming);
+
+    // Push an update and let the background updater task apply it.
+    tx.send_modify(|s| {
+        s.is_priming = true;
+        s.right.is_on = true;
+    });
+    let mut applied = false;
+    for _ in 0..50 {
+        if store.device_status().is_priming {
+            applied = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(applied, "watch update was not applied to the store");
+    assert!(store.device_status().right.is_on);
+}
+
+// ---------------------------------------------------------------------------
+// command wiring: PoddControl -> mpsc Command
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn poddcontrol_maps_calls_to_commands() {
+    use api::wire::{AlarmJob, Side, VibrationPattern};
+    use podd_core::bus::{AlarmSpec, Command};
+    use pod_proto::packet::BedSide;
+    use pod_proto::sensor::command::AlarmPattern;
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    let control = api::PoddControl::new(tx);
+
+    control.set_target_temp(Side::Left, 72).await.unwrap();
+    assert_eq!(
+        rx.recv().await.unwrap(),
+        Command::SetTargetTempF {
+            side: BedSide::Left,
+            f: 72
+        }
+    );
+
+    control.set_power(Side::Right, true).await.unwrap();
+    assert_eq!(
+        rx.recv().await.unwrap(),
+        Command::SetPower {
+            side: BedSide::Right,
+            on: true,
+            duration_s: 43200
+        }
+    );
+
+    control.set_power(Side::Right, false).await.unwrap();
+    assert_eq!(
+        rx.recv().await.unwrap(),
+        Command::SetPower {
+            side: BedSide::Right,
+            on: false,
+            duration_s: 0
+        }
+    );
+
+    control.prime().await.unwrap();
+    assert_eq!(rx.recv().await.unwrap(), Command::Prime);
+
+    control.clear_alarm(Side::Left).await.unwrap();
+    assert_eq!(
+        rx.recv().await.unwrap(),
+        Command::ClearAlarm {
+            side: BedSide::Left
+        }
+    );
+
+    control
+        .fire_alarm(AlarmJob {
+            vibration_intensity: 80,
+            vibration_pattern: VibrationPattern::Double,
+            duration: 30,
+            side: Side::Right,
+            force: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        rx.recv().await.unwrap(),
+        Command::FireAlarm(AlarmSpec {
+            side: BedSide::Right,
+            intensity: 80,
+            duration_s: 30,
+            pattern: AlarmPattern::Double,
+        })
+    );
+
+    control.reboot().await.unwrap();
+    assert_eq!(rx.recv().await.unwrap(), Command::Reboot);
+}
+
+#[tokio::test]
+async fn post_device_status_through_poddcontrol_reaches_channel() {
+    use podd_core::bus::Command;
+    use pod_proto::packet::BedSide;
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    let control = Arc::new(api::PoddControl::new(tx)) as Arc<dyn PodControl>;
+    let store = Arc::new(StateStore::in_memory());
+    let app = router(store, control, None);
+
+    let resp = app
+        .oneshot(post_json(
+            "/api/deviceStatus",
+            &json!({ "left": { "targetTemperatureF": 68 } }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        rx.recv().await.unwrap(),
+        Command::SetTargetTempF {
+            side: BedSide::Left,
+            f: 68
+        }
+    );
+}
+
 #[tokio::test]
 async fn malformed_json_400() {
     let (app, _c, _s) = build();

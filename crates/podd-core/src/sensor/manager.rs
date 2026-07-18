@@ -1,10 +1,11 @@
 use std::io::ErrorKind;
 use std::time::Duration;
 
+use crate::bus::{Command, DeviceSnapshot, StatusTx};
 use crate::config::{Config, SidesConfig};
 use crate::sensor::presence::PresenseManager;
 use crate::sensor::state::{PIEZO_FREQ, PIEZO_GAIN, SensorState};
-use pod_proto::codec::PacketCodec;
+use pod_proto::codec::{CommandTrait, PacketCodec};
 use pod_proto::packet::BedSide;
 use pod_proto::sensor::command::{AlarmCommand, AlarmPattern};
 use pod_proto::sensor::{SensorCommand, SensorPacket};
@@ -48,6 +49,7 @@ pub enum SensorError {
     Timeout,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     port: &str,
     bootloader_baud: u32,
@@ -56,6 +58,9 @@ pub async fn run(
     mut config_rx: watch::Receiver<Config>,
     mut calibrate_rx: mpsc::Receiver<()>,
     mut client: AsyncClient,
+    status: StatusTx,
+    mut cmd_rx: mpsc::Receiver<Command>,
+    dry_run: bool,
 ) -> Result<(), SensorError> {
     log::info!("Initializing Sensor Subsystem...");
 
@@ -85,6 +90,7 @@ pub async fn run(
                     }
 
                     state.handle_packet(&mut client, packet).await;
+                    publish_sensor(&status, &state, &presense_man.presence_state());
 
                     last_recv = Instant::now();
                 }
@@ -110,8 +116,27 @@ pub async fn run(
                 scheduler.away_mode = cfg.away_mode;
                 scheduler.sides_config = cfg.profile.clone();
             }
+
+            // api / scheduler commands routed to the Sensor subsystem.
+            Some(cmd) = cmd_rx.recv() => {
+                scheduler.handle_command(dry_run, cmd).await;
+            }
         }
     }
+}
+
+/// Publish the Sensor subsystem's live telemetry into the state watch.
+/// Read-only: derives the snapshot from already-parsed state (SAFE).
+fn publish_sensor(status: &StatusTx, state: &SensorState, presence: &crate::sensor::presence::PresenceState) {
+    status.send_modify(|s: &mut DeviceSnapshot| {
+        s.presence_left = presence.left;
+        s.presence_right = presence.right;
+        if let Some((l, r)) = state.piezo_gain {
+            s.gains = (l, r);
+        }
+        s.left.is_alarm_vibrating = state.alarm_left_running;
+        s.right.is_alarm_vibrating = state.alarm_right_running;
+    });
 }
 
 impl CommandScheduler {
@@ -245,6 +270,47 @@ impl CommandScheduler {
         }
 
         Ok(false)
+    }
+
+    /// Translate a bus [`Command`] into a Sensor control frame.
+    ///
+    /// **The actual MCU write is gated behind `dry_run` (default true).** While
+    /// dry-running we log the intended frame + bytes and send nothing. Flipping
+    /// this off is part of the live cutover — see `TODO(live-cutover)`.
+    async fn handle_command(&mut self, dry_run: bool, cmd: Command) {
+        let frame = match cmd {
+            Command::ClearAlarm { side } => Some(SensorCommand::SetAlarm(AlarmCommand {
+                side,
+                intensity: 0,
+                duration: 0,
+                pattern: AlarmPattern::Double,
+            })),
+            Command::FireAlarm(spec) => Some(SensorCommand::SetAlarm(AlarmCommand {
+                side: spec.side,
+                intensity: spec.intensity,
+                duration: spec.duration_s,
+                pattern: spec.pattern,
+            })),
+            other => {
+                log::warn!("Sensor subsystem received unroutable command: {other:?}");
+                None
+            }
+        };
+
+        let Some(frame) = frame else { return };
+
+        if dry_run {
+            log::warn!(
+                "[dry-run] Sensor would send {:?}: {:02X?} // TODO(live-cutover)",
+                frame,
+                frame.to_bytes()
+            );
+        } else {
+            // TODO(live-cutover): live alarm write to the Sensor MCU.
+            if let Err(e) = self.writer.send(frame).await {
+                log::error!("Failed to send sensor command: {e}");
+            }
+        }
     }
 }
 
