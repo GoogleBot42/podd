@@ -142,3 +142,26 @@ Tests: `cargo test -p pod-proto` → 54 passed (51 prior + 3). Full workspace �
    header `gain` field tracks the setting (and whether it is one u32 or two u16).
 6. **Empty-bed vs firm-press on each cap pad** — labels each of the 6 0x33 channels to a
    physical location (head/torso/foot × L/R).
+
+---
+
+## RESOLVED (2026-07-18) — physical side mapping, from live per-side occupancy
+
+Captured the sensor stream with a person on the **left** side, on the **right** side,
+and empty (`backup/captures/cap_ttymxc0_921600_{left,right,10s}.bin`), and diffed
+channel amplitudes (`scratchpad/analyze_sides.rs`). Empty cap baseline
+≈ `[1084,1279,1679,1614,1332,909]`.
+
+- **0x33 capacitance → sides:** left occupancy drove **channel 1** hardest
+  (1279→3381), right occupancy drove **channel 4** hardest (1332→5106); channels
+  2 and 3 are the secondary left/right responders; channels 0 and 5 barely move.
+  Layout: `[edge, LEFT, left2, right2, RIGHT, edge]`. Exposed as
+  `CapacitanceData::left()` (ch1) / `right()` (ch4). **CONFIRMED.**
+- **0x34 piezo → sides:** the **first/even** interleave slot is the **RIGHT** piezo
+  (stddev 760→414831 when on the right), the **second/odd** slot is the **LEFT**
+  piezo (stddev 1001→1873356 when on the left) — i.e. inverted vs opensleep's Pod-3
+  order. `Pod4PiezoData.left/.right` corrected accordingly. **CONFIRMED.**
+
+Still unmapped: within-side pad geometry (head/torso/foot) of the secondary cap
+channels; 0x35 aux identity (accelerometer vs FDC); bed-thermistor scale (polled,
+not in the passive stream).

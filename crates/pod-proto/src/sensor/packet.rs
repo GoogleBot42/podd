@@ -54,9 +54,11 @@ pub struct Pod4PiezoData {
     /// ADS piezo gain. CONFIRMED = 400 == free-sleep telemetry gainLeft/gainRight.
     /// May be two `u16` `(0, 400)`; exposed raw as `u32` (see report).
     pub gain: u32,
-    /// Left piezo channel, oldest-first (even interleave slots).
+    /// Left piezo channel, oldest-first. Physically the **odd/second** interleave
+    /// slot (CONFIRMED by live per-side occupancy test on a Pod 4, 2026-07-18).
     pub left: Vec<i32>,
-    /// Right piezo channel, oldest-first (odd interleave slots).
+    /// Right piezo channel, oldest-first. Physically the **even/first** interleave
+    /// slot (CONFIRMED by live per-side occupancy test on a Pod 4, 2026-07-18).
     pub right: Vec<i32>,
 }
 
@@ -86,8 +88,24 @@ pub struct Pod4AuxData {
 #[derive(Debug, PartialEq, Clone)]
 pub struct CapacitanceData {
     pub sequence: u32,
-    /// ordered LTR
+    /// Six capacitance channels. Physical side mapping CONFIRMED on a live Pod 4
+    /// by per-side occupancy (2026-07-18, vs empty baseline ~[1084,1279,1679,1614,
+    /// 1332,909]): a person on the **left** drove channel **1** hardest (~+2100,
+    /// with 2 secondary); a person on the **right** drove channel **4** hardest
+    /// (~+3800, with 3 secondary). So `[edge, LEFT, left2, right2, RIGHT, edge]`.
+    /// Channels 0 and 5 barely respond (edge/reference).
     pub values: [u16; 6],
+}
+
+impl CapacitanceData {
+    /// Primary left-side presence capacitance (channel 1). Higher = occupied.
+    pub fn left(&self) -> u16 {
+        self.values[1]
+    }
+    /// Primary right-side presence capacitance (channel 4). Higher = occupied.
+    pub fn right(&self) -> u16 {
+        self.values[4]
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -327,13 +345,17 @@ impl SensorPacket {
         let mut right = Vec::with_capacity(pairs);
         for pair in 0..pairs {
             let idx = Self::POD4_PIEZO_HEADER + (pair << 3);
-            left.push(i32::from_be_bytes([
+            // Physical side mapping CONFIRMED on live Pod 4 (occupancy test
+            // 2026-07-18: one person on each side vs empty baseline): the
+            // FIRST/even interleave slot is the RIGHT piezo, the SECOND/odd slot
+            // is the LEFT piezo. (opensleep's Pod-3 order was the opposite.)
+            right.push(i32::from_be_bytes([
                 buf[idx],
                 buf[idx + 1],
                 buf[idx + 2],
                 buf[idx + 3],
             ]));
-            right.push(i32::from_be_bytes([
+            left.push(i32::from_be_bytes([
                 buf[idx + 4],
                 buf[idx + 5],
                 buf[idx + 6],
@@ -615,8 +637,9 @@ mod tests {
                 assert_eq!(p.left.len(), 25);
                 assert_eq!(p.right.len(), 25);
                 // first interleaved pair, big-endian i32 (24-bit ADS sign-extended)
-                assert_eq!(p.left[0], -430384); // 0xFFF9_6ED0
-                assert_eq!(p.right[0], -447821); // 0xFFF9_2AB3
+                // First/even interleave slot = RIGHT, second/odd = LEFT (live Pod 4).
+                assert_eq!(p.right[0], -430384); // 0xFFF9_6ED0 (even slot -> right)
+                assert_eq!(p.left[0], -447821); // 0xFFF9_2AB3 (odd slot -> left)
                 // both channels smooth & bounded around their bias
                 for &v in p.left.iter().chain(p.right.iter()) {
                     assert!((-460_000..-420_000).contains(&v), "sample out of range: {v}");
