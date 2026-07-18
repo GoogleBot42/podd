@@ -1,0 +1,32 @@
+[Unit]
+Description=podd - open Eight Sleep Pod control daemon
+Documentation=https://github.com/eightsleep/podd
+# Come up after the network so the API bind and any MQTT/updater fetches work.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# `current` is a symlink to the active release dir under /opt/podd/releases.
+# The positional arg is the persistent config, kept OUTSIDE `current` so an
+# app-tier update swap never clobbers the owner's configuration.
+ExecStart=/opt/podd/current/rootfs/podd /opt/podd/config.ron
+WorkingDirectory=/opt/podd
+Restart=always
+RestartSec=3
+
+# API bind + static SPA served from the active release's bundled UI.
+Environment=PODD_API_ADDR=0.0.0.0:3000
+Environment=PODD_SPA_DIR=/opt/podd/current/rootfs/ui
+# SAFETY: MCU control writes are LOGGED, not sent, until you deliberately arm
+# them. Leave this true until podd has fully replaced Eight's stack. Set to
+# false (and restart) only when you are ready for podd to drive the hardware.
+Environment=PODD_DRY_RUN=true
+Environment=RUST_LOG=info
+# On-device update agent: enabled but MANUAL + dry-run by default. Configure a
+# source/trust policy via PODD_UPDATER_* (see pod_updater::UpdaterConfig) with a
+# systemd drop-in to turn on automatic app updates.
+Environment=PODD_UPDATER_ENABLED=true
+
+[Install]
+WantedBy=multi-user.target

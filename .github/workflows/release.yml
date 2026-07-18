@@ -1,0 +1,66 @@
+name: release
+
+# Build + (optionally) sign the podd userland bundle and publish it to the
+# GitHub Release for the tag, named exactly how pod-updater's GitHub source
+# resolves it: releases/latest/download/manifest.json + app-<version>.squashfs.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag to build (e.g. v0.1.0)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  # Primary deliverable: the signed/unsigned userland bundle (flashing §6b item 1).
+  userland-bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Build release bundle
+        env:
+          VERSION: ${{ github.event.inputs.version || github.ref_name }}
+          CHANNEL: stable
+          # Optional signing secrets. If PODD_SIGNING_KEY is unset the manifest
+          # is published UNSIGNED (artifact digests are still enforced).
+          PODD_SIGNING_KEY: ${{ secrets.PODD_SIGNING_KEY }}
+          PODD_SIGNING_PUB: ${{ secrets.PODD_SIGNING_PUB }}
+        run: ./scripts/build-release.sh
+
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.version || github.ref_name }}
+        run: |
+          set -eu
+          # Create the release if it doesn't exist yet, else upload/overwrite.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "$TAG" --generate-notes dist/* --verify-tag
+          else
+            gh release upload "$TAG" dist/* --clobber
+          fi
+
+  # Full-firmware / recovery-SD artifacts (flashing §5 + §6b items 2-4).
+  # GATED OFF: depends on the L2 rootfs (not built yet). Enable by removing
+  # `if: false` once scripts/build-recovery-sd.sh has its inputs. Also runnable
+  # manually to print its plan.
+  recovery-sd:
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Recovery-SD build plan (stub)
+        run: ./scripts/build-recovery-sd.sh --plan
+      # TODO(flashing-method §5): build the L2 podd-rootfs.tar.gz, then assemble
+      # podd-recovery-sd.img.gz (imx-boot@0x8400 + env@0x400000 + installer
+      # rootfs) and upload it as a release asset here.
