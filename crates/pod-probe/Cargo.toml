@@ -1,0 +1,21 @@
+[package]
+name = "pod-probe"
+description = "Read-only serial probe for validating pod-proto against live Pod MCUs (Frozen/Sensor UARTs)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "pod-probe"
+path = "src/main.rs"
+
+[dependencies]
+pod-proto = { path = "../pod-proto" }
+
+anyhow.workspace = true
+bytes.workspace = true
+clap.workspace = true
+hex.workspace = true
+tokio.workspace = true

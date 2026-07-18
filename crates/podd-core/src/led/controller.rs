@@ -2,20 +2,29 @@ use embedded_hal::i2c::I2c;
 
 use super::model::*;
 
+/// Default IS31FL3194 I2C address (see [`crate::config::device::LED_ADDR`]).
+const DEFAULT_ADDR: u8 = 0x53;
+
 /// I2C wrapper for the IS31FL3194 LED controller
 /// Forced to RGB mode
 pub struct IS31FL3194Controller<T: I2c> {
     pub(crate) dev: T,
+    addr: u8,
 }
 
 impl<T: I2c> IS31FL3194Controller<T> {
+    /// Construct with the default I2C address (`0x53`).
     pub fn new(dev: T) -> IS31FL3194Controller<T> {
-        Self { dev }
+        Self::new_with_addr(dev, DEFAULT_ADDR)
+    }
+
+    /// Construct with an explicit I2C address (from `device` config).
+    pub fn new_with_addr(dev: T, addr: u8) -> IS31FL3194Controller<T> {
+        Self { dev, addr }
     }
 
     fn write_reg(&mut self, reg: u8, value: u8) -> Result<(), T::Error> {
-        const ADDR: u8 = 0x53;
-        self.dev.write(ADDR, &[reg, value])?;
+        self.dev.write(self.addr, &[reg, value])?;
         Ok(())
     }
 

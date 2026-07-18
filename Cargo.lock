@@ -1095,6 +1095,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "pod-probe"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "clap",
+ "hex",
+ "pod-proto",
+ "tokio",
+]
+
+[[package]]
 name = "pod-proto"
 version = "0.0.1"
 dependencies = [

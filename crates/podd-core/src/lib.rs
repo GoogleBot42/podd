@@ -34,8 +34,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// futures returns first brings the process down (systemd is expected to
 /// restart it).
 ///
-/// TODO: the device paths/bauds/I2C bus are still hard-coded (see
-/// [`frozen::PORT`], [`sensor::PORT`], and `reset.rs`); make them config.
+/// Device paths/bauds/I2C bus/addresses come from the config's `device`
+/// section (see [`config::DeviceConfig`]); an absent section falls back to the
+/// historical hard-coded defaults.
 pub async fn run(config_path: &Path) -> anyhow::Result<()> {
     log::info!("Starting {NAME} v{VERSION}...");
 
@@ -50,6 +51,18 @@ pub async fn run(config_path: &Path) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("config path is not valid UTF-8: {config_path:?}"))?;
     let config = Config::load(config_path_str).await?;
     log::info!("`{}` loaded", config_path.display());
+    // Hardware wiring (device paths/bauds/I2C). Borrowed by the subsystem tasks
+    // below, so keep it alive for the whole `run` scope.
+    let device = config.device.clone();
+    log::info!(
+        "Device: frozen {}@{}, sensor {}@{}(bl)/{}(fw), i2c {}",
+        device.frozen_port,
+        device.frozen_baud,
+        device.sensor_port,
+        device.sensor_bootloader_baud,
+        device.sensor_firmware_baud,
+        device.i2c_bus,
+    );
     let (config_tx, config_rx) = watch::channel(config.clone());
     log::info!(
         "Using timezone: {}",
@@ -57,13 +70,13 @@ pub async fn run(config_path: &Path) -> anyhow::Result<()> {
     );
 
     // reset the STM32s via the PCAL6416A I2C expander, then hand the bus to the LED
-    let mut resetter =
-        ResetController::new().map_err(|e| anyhow::anyhow!("failed to init ResetController: {e}"))?;
+    let mut resetter = ResetController::new(&device.i2c_bus, device.pcal6416a_addr)
+        .map_err(|e| anyhow::anyhow!("failed to init ResetController: {e}"))?;
     resetter
         .reset_subsystems()
         .await
         .map_err(|e| anyhow::anyhow!("failed to reset subsystems: {e}"))?;
-    let led = IS31FL3194Controller::new(resetter.take());
+    let led = IS31FL3194Controller::new_with_addr(resetter.take(), device.led_addr);
 
     let (calibrate_tx, calibrate_rx) = mpsc::channel(32);
 
@@ -80,7 +93,8 @@ pub async fn run(config_path: &Path) -> anyhow::Result<()> {
 
     tokio::select! {
         res = frozen::run(
-            frozen::PORT,
+            &device.frozen_port,
+            device.frozen_baud,
             config_rx.clone(),
             led,
             mqtt_man.client.clone()
@@ -92,7 +106,9 @@ pub async fn run(config_path: &Path) -> anyhow::Result<()> {
         }
 
         res = sensor::run(
-            sensor::PORT,
+            &device.sensor_port,
+            device.sensor_bootloader_baud,
+            device.sensor_firmware_baud,
             config_tx,
             config_rx,
             calibrate_rx,

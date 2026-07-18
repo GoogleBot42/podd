@@ -16,9 +16,6 @@ use tokio::time::{Duration, Instant, interval, sleep};
 use tokio_serial::SerialStream;
 use tokio_util::codec::Framed;
 
-pub const PORT: &str = "/dev/ttymxc2";
-const BAUD: u32 = 38400;
-
 const HWINFO_INT: Duration = Duration::from_secs(1);
 const TEMP_INT: Duration = Duration::from_secs(10);
 const MAX_WAKE_ATTEMPTS: u32 = 5;
@@ -42,7 +39,8 @@ pub enum FrozenError {
 type Writer = SplitSink<Framed<SerialStream, PacketCodec<FrozenPacket>>, FrozenCommand>;
 
 pub async fn run(
-    port: &'static str,
+    port: &str,
+    baud: u32,
     mut config_rx: watch::Receiver<Config>,
     mut led: IS31FL3194Controller<I2cdev>,
     mut client: AsyncClient,
@@ -59,7 +57,7 @@ pub async fn run(
     let mut side_config = cfg.profile.clone();
     drop(cfg);
 
-    let (mut writer, mut reader) = create_framed_port::<FrozenPacket>(port, BAUD)?.split();
+    let (mut writer, mut reader) = create_framed_port::<FrozenPacket>(port, baud)?.split();
 
     let mut state = FrozenState::default();
     state.publish_reset(&mut client).await;

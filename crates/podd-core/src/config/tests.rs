@@ -1,6 +1,14 @@
 use super::*;
+use crate::config::device::{self, DeviceConfig};
 
 // TODO more testing (esp for MQTT)
+
+/// Parse a `DeviceConfig` from a RON snippet using the same options as
+/// [`Config::load`] (so `IMPLICIT_SOME` applies to `Option` fields).
+fn parse_device(src: &str) -> DeviceConfig {
+    let opts = ron::Options::default().with_default_extension(Extensions::IMPLICIT_SOME);
+    opts.from_str(src).unwrap()
+}
 
 #[tokio::test]
 async fn test_load_solo_config() {
@@ -13,6 +21,79 @@ async fn test_load_solo_config() {
         }
         _ => panic!("Expected solo profile"),
     }
+    // no `device` section => historical hard-coded defaults (Pod 3 fw baud)
+    assert_eq!(config.device, DeviceConfig::default());
+    assert_eq!(config.device.frozen_port, device::FROZEN_PORT);
+    assert_eq!(config.device.frozen_baud, device::FROZEN_BAUD);
+    assert_eq!(config.device.sensor_firmware_baud, device::SENSOR_FIRMWARE_BAUD_POD3);
+}
+
+#[test]
+fn test_device_defaults_when_empty() {
+    // an empty `device: ()` section still fills in every default
+    let dev = parse_device("()");
+    assert_eq!(dev, DeviceConfig::default());
+    assert_eq!(dev.cover, None);
+    assert_eq!(dev.sensor_firmware_baud, device::SENSOR_FIRMWARE_BAUD_POD3);
+    assert_eq!(dev.pcal6416a_addr, 0x20);
+    assert_eq!(dev.led_addr, 0x53);
+}
+
+#[test]
+fn test_device_cover_pod4_selects_baud() {
+    let dev = parse_device("(cover: pod4)");
+    assert_eq!(dev.cover, Some(device::Cover::Pod4));
+    // cover picks the 921600 firmware baud default
+    assert_eq!(dev.sensor_firmware_baud, device::SENSOR_FIRMWARE_BAUD_POD4);
+    // everything else still defaulted
+    assert_eq!(dev.frozen_port, device::FROZEN_PORT);
+}
+
+#[test]
+fn test_device_cover_pod3_selects_baud() {
+    let dev = parse_device("(cover: pod3)");
+    assert_eq!(dev.cover, Some(device::Cover::Pod3));
+    assert_eq!(dev.sensor_firmware_baud, device::SENSOR_FIRMWARE_BAUD_POD3);
+}
+
+#[test]
+fn test_device_explicit_override_beats_cover() {
+    // explicit sensor_firmware_baud wins even with cover: pod4
+    let dev = parse_device("(cover: pod4, sensor_firmware_baud: 230400)");
+    assert_eq!(dev.sensor_firmware_baud, 230400);
+}
+
+#[tokio::test]
+async fn test_load_pod4_example_config() {
+    // repo-root example; tests run with cwd = crates/podd-core
+    let config = Config::load("../../config.pod4.example.ron").await.unwrap();
+    assert_eq!(config.device.cover, Some(device::Cover::Pod4));
+    assert_eq!(
+        config.device.sensor_firmware_baud,
+        device::SENSOR_FIRMWARE_BAUD_POD4
+    );
+    assert_eq!(config.device.frozen_port, "/dev/ttymxc2");
+    assert_eq!(config.device.sensor_port, "/dev/ttymxc0");
+}
+
+#[tokio::test]
+async fn test_load_pod3_example_config() {
+    let config = Config::load("../../config.pod3.example.ron").await.unwrap();
+    assert_eq!(config.device.cover, Some(device::Cover::Pod3));
+    assert_eq!(
+        config.device.sensor_firmware_baud,
+        device::SENSOR_FIRMWARE_BAUD_POD3
+    );
+}
+
+#[test]
+fn test_device_partial_override() {
+    let dev = parse_device(r#"(frozen_port: "/dev/ttyUSB9", led_addr: 0x30)"#);
+    assert_eq!(dev.frozen_port, "/dev/ttyUSB9");
+    assert_eq!(dev.led_addr, 0x30);
+    // untouched fields keep defaults
+    assert_eq!(dev.sensor_port, device::SENSOR_PORT);
+    assert_eq!(dev.frozen_baud, device::FROZEN_BAUD);
 }
 
 #[tokio::test]

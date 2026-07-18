@@ -8,9 +8,12 @@ use crate::led::{CurrentBand, LedPattern};
 use pod_proto::packet::BedSide;
 use pod_proto::sensor::command::AlarmPattern;
 
+pub mod device;
 pub mod mqtt;
 #[cfg(test)]
 mod tests;
+
+pub use device::{Cover, DeviceConfig};
 
 const CONFIG_FILE: &str = "config.ron";
 
@@ -101,6 +104,10 @@ pub struct Config {
     pub profile: SidesConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub presence: Option<PresenceConfig>,
+    /// Hardware wiring (UART paths/bauds, I2C bus, expander/LED addrs). Absent
+    /// section => historical hard-coded defaults (see [`DeviceConfig`]).
+    #[serde(default)]
+    pub device: DeviceConfig,
 }
 
 impl Config {

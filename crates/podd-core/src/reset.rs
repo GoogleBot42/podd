@@ -3,10 +3,6 @@ use linux_embedded_hal::I2cdev;
 use std::{error::Error, time::Duration};
 use tokio::time::sleep;
 
-const DEV: &str = "/dev/i2c-1";
-
-const ADDR: u8 = 0x20;
-
 const REG_OUTPUT_PORT_0: u8 = 0x02;
 const REG_CONFIG_PORT_0: u8 = 0x06;
 const REG_CONFIG_PORT_1: u8 = 0x07;
@@ -26,17 +22,21 @@ const OUTPUT_ENABLED: u8 = 0b1111_1101;
 /// 19 0e fd 3f 00 00 fc 31 XX XX XX XX XX XX XX XX
 pub struct ResetController {
     dev: I2cdev,
+    addr: u8,
 }
 
 impl ResetController {
-    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+    /// `bus` is the I2C device path (e.g. `/dev/i2c-1`), `addr` the PCAL6416A
+    /// expander address (default [`crate::config::device::PCAL6416A_ADDR`]).
+    pub fn new(bus: &str, addr: u8) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
-            dev: I2cdev::new(DEV)?,
+            dev: I2cdev::new(bus)?,
+            addr,
         })
     }
 
     fn write_reg(&mut self, reg: u8, value: u8) -> Result<(), Box<dyn Error>> {
-        self.dev.write(ADDR, &[reg, value])?;
+        self.dev.write(self.addr, &[reg, value])?;
         Ok(())
     }
 

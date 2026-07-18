@@ -20,9 +20,6 @@ use tokio::time::{Instant, interval, timeout};
 use tokio_serial::SerialStream;
 use tokio_util::codec::Framed;
 
-pub const PORT: &str = "/dev/ttymxc0";
-const BOOTLOADER_BAUD: u32 = 38400;
-const FIRMWARE_BAUD: u32 = 115200;
 const TIMEOUT: Duration = Duration::from_secs(5);
 
 type Reader = SplitStream<Framed<SerialStream, PacketCodec<SensorPacket>>>;
@@ -52,7 +49,9 @@ pub enum SensorError {
 }
 
 pub async fn run(
-    port: &'static str,
+    port: &str,
+    bootloader_baud: u32,
+    firmware_baud: u32,
     config_tx: watch::Sender<Config>,
     mut config_rx: watch::Receiver<Config>,
     mut calibrate_rx: mpsc::Receiver<()>,
@@ -65,7 +64,8 @@ pub async fn run(
     let mut state = SensorState::default();
     state.publish_reset(&mut client).await;
 
-    let (writer, mut reader) = run_discovery(port, &mut client, &mut state).await?;
+    let (writer, mut reader) =
+        run_discovery(port, bootloader_baud, firmware_baud, &mut client, &mut state).await?;
     log::info!("Connected");
 
     let cfg = config_rx.borrow_and_update();
@@ -288,13 +288,15 @@ fn get_alarm_cmd(
 
 /// tries to connect to the Sensor subsystem at either bootloader baud or firmware baud
 async fn run_discovery(
-    port: &'static str,
+    port: &str,
+    bootloader_baud: u32,
+    firmware_baud: u32,
     client: &mut AsyncClient,
     state: &mut SensorState,
 ) -> Result<(Writer, Reader), SerialError> {
     // try bootloader first
     if let Ok((mut writer, mut reader)) =
-        ping_device(port, client, state, DeviceMode::Bootloader).await
+        ping_device(port, bootloader_baud, firmware_baud, client, state, DeviceMode::Bootloader).await
     {
         writer
             .send(SensorCommand::JumpToFirmware)
@@ -304,24 +306,26 @@ async fn run_discovery(
         // wait for mode switch
         wait_for_mode(&mut reader, client, state, DeviceMode::Firmware).await?;
 
-        return Ok(create_framed_port::<SensorPacket>(port, FIRMWARE_BAUD)?.split());
+        return Ok(create_framed_port::<SensorPacket>(port, firmware_baud)?.split());
     }
 
     // try firmware (happens if program was recently running)
     log::info!("Trying Firmware mode");
-    ping_device(port, client, state, DeviceMode::Firmware).await
+    ping_device(port, bootloader_baud, firmware_baud, client, state, DeviceMode::Firmware).await
 }
 
 async fn ping_device(
-    port: &'static str,
+    port: &str,
+    bootloader_baud: u32,
+    firmware_baud: u32,
     client: &mut AsyncClient,
     state: &mut SensorState,
     mode: DeviceMode,
 ) -> Result<(Writer, Reader), SerialError> {
     let baud = if mode == DeviceMode::Bootloader {
-        BOOTLOADER_BAUD
+        bootloader_baud
     } else {
-        FIRMWARE_BAUD
+        firmware_baud
     };
     let (mut writer, mut reader) = create_framed_port::<SensorPacket>(port, baud)?.split();
 

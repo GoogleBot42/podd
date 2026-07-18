@@ -1,0 +1,98 @@
+// Example podd config for an Eight Sleep **Pod 4**.
+//
+// The only Pod-4-specific bit is the `device` section at the bottom: the sensor
+// MCU firmware baud is 921600 on Pod 4 (8x the Pod 3 firmware baud). Everything
+// else matches config.example.ron.
+(
+    timezone: "America/New_York",
+
+    // Away mode will disable temperature control and alarms
+    away_mode: false,
+
+    // What time to prime the bed. Make sure this does not interfere with the sleep profile.
+    prime: "15:00",
+
+    led: (
+        // SlowBreath(r, g, b)
+        // FastBreath(r, g, b)
+        // Off
+        // Fixed(r, g, b)
+        // FastRainbowBreath
+        // SlowRainbowBreath
+        //  .. see more in `src/led/patterns.rs`
+        idle: Fixed(0, 255, 0),
+        active: SlowBreath(255, 0, 0),
+
+        // One: 0mA\~10mA, Imax=10mA
+        // Two: 0mA\~20mA, Imax=20mA
+        // Three: 0mA\~30mA, Imax=30mA
+        // Four: 0mA\~40mA, Imax=40mA
+        band: Three,
+    ),
+
+    mqtt: (
+        server: "homeassistant.local",
+        port: 1883,
+        user: "example",
+        password: "1234"
+    ),
+
+    profile: Solo(
+        (
+            // Define as many points you want. They are evenly spread apart
+            // Temperatures will be linearly interpolated between
+            // This is in degrees celcius. You may provide floating-point numbers.
+            // A "nuetral" temp is 29, but I prefer much colder at like 20
+            temperatures: [27, 29, 31],
+
+            // Time to start temperature profile
+            sleep: "22:00",
+
+            // Time to end temperature profile
+            wake: "10:30",
+
+            // Vibration alarm
+            alarm: (
+                // Double or Single
+                pattern: Double,
+
+                // Intensity 0-100
+                intensity: 80,
+
+                // Duration in seconds
+                duration: 600,
+
+                // Offset from wake time in seconds.
+                // In this case it will trigger at 10:25
+                offset: 300,
+            ),
+        )
+    ),
+
+    // ---- Hardware wiring (Pod 4) ----
+    //
+    // Every field here is optional and falls back to a default. `cover: pod4`
+    // selects the Pod 4 sensor firmware baud (921600). To be explicit / to pin
+    // it regardless of the cover default, uncomment `sensor_firmware_baud`.
+    device: (
+        // pod3 | pod4 -- selects sensor_firmware_baud default (115200 | 921600)
+        cover: pod4,
+
+        // Frozen (TEC/pump) MCU. Confirmed on Pod 4: /dev/ttymxc2 @ 38400.
+        frozen_port: "/dev/ttymxc2",
+        frozen_baud: 38400,
+
+        // Sensor (presence/temp/piezo) MCU. Confirmed on Pod 4: /dev/ttymxc0.
+        sensor_port: "/dev/ttymxc0",
+        // Bootloader baud on Pod 4 is UNKNOWN (Pod 3 was 38400). TODO: confirm.
+        sensor_bootloader_baud: 38400,
+        // Confirmed Pod 4 firmware baud. (cover: pod4 already implies this;
+        // shown explicitly here so it's obvious / overridable.)
+        sensor_firmware_baud: 921600,
+
+        // I2C bus + addresses (same across Pod 3/4).
+        i2c_bus: "/dev/i2c-1",
+        pcal6416a_addr: 0x20, // MCU reset expander
+        led_addr: 0x53,       // IS31FL3194 LED controller
+    ),
+)
