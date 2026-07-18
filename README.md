@@ -11,10 +11,42 @@ frontend), a local REST/WebSocket API, a proper thermostat/scheduler, MCU
 firmware flashing, and — the part the existing projects get wrong — a **signed,
 atomic, reproducible update system**.
 
-> Status: **early scaffolding.** The update tooling (`pod-update` + `podup`) is
-> implemented and tested; the opensleep control core is being integrated next.
-> See [`docs/REPLACEMENT_PLAN.md`](docs/REPLACEMENT_PLAN.md) for the full design
-> and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the target layout.
+> Status: **software stack built; hardware bring-up in progress.** The full
+> userland (protocol, control core, API, web UI, signed update system, CI, and
+> installers) is implemented and tested — 98 tests, reproducible Nix builds,
+> static aarch64 binaries. The protocol is **validated against a live Pod 4**
+> (both MCUs). Real bed-control writes are gated off (`PODD_DRY_RUN`) pending the
+> careful hardware cutover; the Pod-4 sensor packet payloads and the live cutover
+> are the remaining work. See [`docs/REPLACEMENT_PLAN.md`](docs/REPLACEMENT_PLAN.md)
+> for the full design and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the layout.
+
+## Flashing & updating
+
+Full, beginner-friendly guides live in [`docs/`](docs/):
+
+- **[docs/FLASHING.md](docs/FLASHING.md)** — identify your Pod variant and get root
+  (the one-time serial-over-J7 unlock, or the i.MX SD backdoor). Covers hardware to
+  buy, exact J7 pinout, and the honest "what's unverified" caveats.
+- **[docs/INSTALL.md](docs/INSTALL.md)** — install podd once you have root (the
+  one-command userland install; the advanced A/B slot install).
+- **[docs/UPDATING.md](docs/UPDATING.md)** — the on-device OTA agent: sources,
+  channels, auto/manual, rollback, and the owner-controlled trust policy.
+- **[docs/RECOVERY.md](docs/RECOVERY.md)** — unbrick / go back to stock, cheapest
+  net first.
+- **[docs/RELEASING.md](docs/RELEASING.md)** — maintainer notes: cutting a release
+  and (optional) CI signing.
+
+**Already rooted?** (You run free-sleep / opensleep and have SSH.) Skip straight to
+the one-command install — from a root shell on the Pod:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/eightsleep/podd/main/install/install.sh \
+  | sh -s -- --source github:eightsleep/podd
+```
+
+Then open `http://<pod-ip>:3000`. podd installs in safe **dry-run** mode (it logs
+hardware writes instead of sending them) until you deliberately arm it — see
+[docs/INSTALL.md](docs/INSTALL.md).
 
 ## Why not just use free-sleep / opensleep?
 
