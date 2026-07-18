@@ -53,6 +53,30 @@
           probe-aarch64 = mkAarch64 { pname = "pod-probe"; member = "pod-probe"; };
           podd-aarch64 = mkAarch64 { pname = "podd"; member = "podd"; };
 
+          # Vendored free-sleep React SPA (source only — no committed build
+          # output). Builds `ui/` reproducibly: `npm ci` offline from the pinned
+          # ui/package-lock.json, then `vite build`, installing the static `dist/`
+          # bundle to $out. `podd` serves that as its static asset root.
+          ui = pkgs.buildNpmPackage {
+            pname = "podd-ui";
+            version = "0.0.0";
+            src = ./ui;
+            # Regenerate after any package-lock.json change:
+            #   nix build .#ui  → read the "got:" hash from the mismatch error.
+            npmDepsHash = "sha256-P6/qFXgOUXoE+Z0y25unNjlxPyCHWiNMVwdgATyhOZU=";
+            nodejs = pkgs.nodejs_22;
+            # Upstream deps carry stale peer ranges (e.g. @react-spring/web pins
+            # react-dom <=18 while the app is on 19); npm resolves these with
+            # overrides interactively, so mirror that for the offline `npm ci`.
+            npmFlags = [ "--legacy-peer-deps" ];
+            npmBuildScript = "build";
+            installPhase = ''
+              runHook preInstall
+              cp -r dist $out
+              runHook postInstall
+            '';
+          };
+
           default = podup;
         });
 

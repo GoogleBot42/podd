@@ -6,5 +6,6 @@ result-*
 /keys
 *.key
 node_modules
-ui/dist
+ui/node_modules/
+ui/dist/
 .direnv
