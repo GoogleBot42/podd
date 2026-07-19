@@ -1,11 +1,18 @@
 # Clean-room OS image (L2) — architecture
 
-> **Status: decided, bring-up not complete.** This supersedes the L1 "bolt podd
-> onto Eight's Yocto rootfs" model (`scripts/build-podd-sd.sh`) as the target
-> architecture. The L1 SD image still exists and boots today; it stays as a
-> working fallback until the L2 image below boots on hardware. See
-> [ARCHITECTURE.md](ARCHITECTURE.md) for the userland (podd) and
-> [UPDATING.md](UPDATING.md) for the current (L1) update agent this replaces.
+> **Status: image BUILDS from source; on-hardware boot test pending.** The
+> complete clean-room image (`os/scripts/build.sh` → `dist/podd-sd.img.gz`) now
+> builds end-to-end — from-source `imx-boot` (SPL + ATF + U-Boot + NXP DDR fw),
+> the 5.4 kernel + our device tree, and a Buildroot rootfs with podd, the web UI,
+> systemd, NetworkManager, and RAUC. Verified the assembled image's `rootfs_a`
+> carries `/usr/bin/podd`, `/boot/Image.gz`, `/boot/podd.dtb`,
+> `/etc/rauc/system.conf`, and an enabled `podd.service`. What remains is
+> **booting it on the Pod** (dd to a spare SD; the stock card is the instant
+> revert) plus the RAUC A/B slot-device wiring (MBR has no partlabels — the
+> `rauc-system.conf` device paths need reconciling). This supersedes the L1
+> "bolt podd onto Eight's Yocto rootfs" model (`scripts/build-podd-sd.sh`), which
+> stays as the working fallback until the L2 image is confirmed booting on
+> hardware. See [ARCHITECTURE.md](ARCHITECTURE.md) for the userland (podd).
 
 ## Why this exists
 
