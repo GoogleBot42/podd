@@ -67,6 +67,11 @@ BR2_TARGET_ARM_TRUSTED_FIRMWARE_CUSTOM_REPO_URL="https://github.com/varigit/imx-
 BR2_TARGET_ARM_TRUSTED_FIRMWARE_CUSTOM_REPO_VERSION="e5884084510a2a88101351bed3710860c28c0657"
 BR2_TARGET_ARM_TRUSTED_FIRMWARE_PLATFORM="imx8mm"
 BR2_TARGET_ARM_TRUSTED_FIRMWARE_BL31=y
+# E=0 = don't treat warnings as errors. This ~2020 ATF's HAB (secure-boot) code
+# reads from a fixed ROM address, which the modern cross-GCC flags as
+# -Werror=array-bounds. These units have NO secure boot, so the code is compiled
+# but unused; E=0 lets the (functionally irrelevant) warning through.
+BR2_TARGET_ARM_TRUSTED_FIRMWARE_ADDITIONAL_VARIABLES="E=0"
 # License-file path for the custom-git ATF (Buildroot needs it for legal-info).
 BR2_TARGET_ARM_TRUSTED_FIRMWARE_LICENSE_FILES="docs/license.rst"  # VERIFY path in fork
 
