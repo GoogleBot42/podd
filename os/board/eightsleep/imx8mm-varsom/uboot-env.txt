@@ -1,0 +1,36 @@
+# U-Boot environment fragment for RAUC A/B boot selection.
+#
+# Mechanism (RAUC's standard U-Boot integration): BOOT_ORDER lists the slots to
+# try; each try decrements BOOT_<slot>_LEFT, and a slot with 0 tries left is
+# skipped. `rauc status mark-good` on a healthy boot resets the counter. If both
+# slots exhaust their tries, we fall through to a safe stop rather than looping.
+#
+# This is written into the image's env region (0x400000) by post-image.sh via
+# mkenvimage. Values marked TODO must be reconciled with the real board env
+# (console, DTB name, boot medium) during phase-1 bring-up — see docs/CLEANROOM-OS.md.
+
+# --- A/B state (RAUC updates BOOT_ORDER / BOOT_x_LEFT at install time) --------
+BOOT_ORDER=A B
+BOOT_A_LEFT=3
+BOOT_B_LEFT=3
+
+# --- slot -> rootfs mapping ---------------------------------------------------
+# mmcpart selects the partition U-Boot reads the kernel+DTB from and passes as
+# root=. Slot A = p1, slot B = p2. mmcdev: SD=1, eMMC=2 (set per image target).
+mmcdev=1
+rootfs_a_part=1
+rootfs_b_part=2
+
+# --- boot script --------------------------------------------------------------
+# Try slots in BOOT_ORDER; boot the first with tries remaining.
+bootcmd=run rauc_bootselect
+rauc_bootselect=for slot in ${BOOT_ORDER}; do if test "x${slot}" = "xA" && test ${BOOT_A_LEFT} -gt 0; then setexpr BOOT_A_LEFT ${BOOT_A_LEFT} - 1; saveenv; setenv mmcpart ${rootfs_a_part}; run rauc_boot; fi; if test "x${slot}" = "xB" && test ${BOOT_B_LEFT} -gt 0; then setexpr BOOT_B_LEFT ${BOOT_B_LEFT} - 1; saveenv; setenv mmcpart ${rootfs_b_part}; run rauc_boot; fi; done; echo "RAUC: no bootable slot left"; run rauc_recovery
+
+# Load kernel + DTB from the selected rootfs slot's /boot and boot it.
+# TODO(bring-up): confirm console (ttymxc3,115200 per the board; NOT broken out
+# to a header — validate over JTAG/diag), DTB filename, and load addresses
+# against the from-source kernel build.
+rauc_boot=setenv bootargs "root=/dev/mmcblk${mmcdev}p${mmcpart} rootwait rauc.slot=${slot} console=ttymxc3,115200"; load mmc ${mmcdev}:${mmcpart} ${loadaddr} /boot/Image.gz; load mmc ${mmcdev}:${mmcpart} ${fdt_addr} /boot/podd.dtb; booti ${loadaddr} - ${fdt_addr}
+
+# Last resort if both slots are dead: halt at the U-Boot prompt (do NOT loop).
+rauc_recovery=echo "RAUC recovery: halting for manual intervention"; sleep 5

@@ -1,0 +1,1 @@
+source "$BR2_EXTERNAL_PODD_PATH/package/podd/Config.in"

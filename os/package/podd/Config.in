@@ -1,0 +1,14 @@
+config BR2_PACKAGE_PODD
+	bool "podd"
+	depends on BR2_aarch64
+	help
+	  podd — the open control daemon + web UI for the Eight Sleep Pod.
+
+	  Installs the static aarch64 podd binary and the built SPA. The
+	  binary itself is cross-compiled outside Buildroot via
+	  `nix build .#podd-aarch64` (and the UI via `nix build .#ui`); this
+	  package stages the results into the rootfs and wires up the systemd
+	  service. Point PODD_BIN / PODD_UI_DIR at those `result-*` paths (see
+	  package/podd/podd.mk).
+
+	  https://github.com/GoogleBot42/podd

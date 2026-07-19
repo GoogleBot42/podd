@@ -1,0 +1,26 @@
+[Unit]
+Description=podd - open Eight Sleep Pod control daemon
+Documentation=https://github.com/GoogleBot42/podd
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Clean-room L2 image: podd is installed read-only in the active rootfs slot;
+# all mutable state (config, schedules, logs) lives on the persistent data
+# partition so it survives an A/B slot swap. OS updates are handled by RAUC, not
+# by podd's own updater — hence PODD_UPDATER_ENABLED=false here.
+ExecStart=/usr/bin/podd /data/podd/config.ron
+WorkingDirectory=/data/podd
+Restart=always
+RestartSec=3
+
+Environment=PODD_API_ADDR=0.0.0.0:3000
+Environment=PODD_SPA_DIR=/usr/share/podd/ui
+# SAFETY: MCU control writes are LOGGED, not sent, until deliberately armed.
+Environment=PODD_DRY_RUN=true
+Environment=RUST_LOG=info
+Environment=PODD_UPDATER_ENABLED=false
+
+[Install]
+WantedBy=multi-user.target
