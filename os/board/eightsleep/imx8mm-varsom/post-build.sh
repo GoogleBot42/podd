@@ -49,4 +49,45 @@ install -D -m 0644 "$BOARD_DIR/rauc-system.conf" \
 # than silently accepting unsigned bundles.
 # TODO(release): drop the real signing cert here (see docs/RELEASING.md).
 
-echo "post-build: podd data mount + RAUC system.conf staged"
+# --- reachability: services, sshd port, networkd conflict --------------------
+# The overlay dropped NetworkManager.conf, the muzzle rules + unit, and the sshd
+# drop-in. Enable the services and neutralize systemd-networkd (it conflicts with
+# NetworkManager for wlan0). NetworkManager itself is enabled by its package.
+enable_unit() { # <unit> <target>
+	mkdir -p "$TARGET_DIR/etc/systemd/system/$2.wants"
+	ln -sf "/usr/lib/systemd/system/$1" \
+		"$TARGET_DIR/etc/systemd/system/$2.wants/$1"
+}
+mask_unit() { ln -sf /dev/null "$TARGET_DIR/etc/systemd/system/$1"; }
+
+[ -f "$TARGET_DIR/usr/lib/systemd/system/sshd.service" ] && enable_unit sshd.service multi-user.target
+enable_unit podd-muzzle.service sysinit.target
+mask_unit systemd-networkd.service
+mask_unit systemd-networkd-wait-online.service
+# Make sure sshd reads /etc/ssh/sshd_config.d/*.conf (older configs may not).
+if [ -f "$TARGET_DIR/etc/ssh/sshd_config" ] \
+   && ! grep -q '^Include /etc/ssh/sshd_config.d' "$TARGET_DIR/etc/ssh/sshd_config"; then
+	printf '\nInclude /etc/ssh/sshd_config.d/*.conf\n' >> "$TARGET_DIR/etc/ssh/sshd_config"
+fi
+
+# --- owner secrets (WiFi PSK + SSH key) — injected, never committed ----------
+# Reuse the L1 patch-files by default; override with PODD_SECRETS_DIR. Absent =>
+# a generic image with no creds (correct for CI / public builds); it boots but
+# won't join WiFi or accept SSH until provisioned.
+SECRETS_DIR="${PODD_SECRETS_DIR:-$BOARD_DIR/../../../../dist/scripts/patch-files}"
+if [ -f "$SECRETS_DIR/network-manager/MOMCorp.nmconnection" ]; then
+	install -D -m 0600 "$SECRETS_DIR/network-manager/MOMCorp.nmconnection" \
+		"$TARGET_DIR/etc/NetworkManager/system-connections/MOMCorp.nmconnection"
+	echo "post-build: injected WiFi profile (MOMCorp)"
+else
+	echo "post-build: WARNING no WiFi profile at $SECRETS_DIR — image won't join WiFi" >&2
+fi
+if [ -f "$SECRETS_DIR/authorized_keys" ]; then
+	install -d -m 0700 "$TARGET_DIR/root/.ssh"
+	install -m 0600 "$SECRETS_DIR/authorized_keys" "$TARGET_DIR/root/.ssh/authorized_keys"
+	echo "post-build: injected root authorized_keys"
+else
+	echo "post-build: WARNING no authorized_keys at $SECRETS_DIR — no SSH access" >&2
+fi
+
+echo "post-build: reachability (sshd 8822, muzzle, NM) + data mount + RAUC staged"

@@ -144,12 +144,22 @@ BR2_PACKAGE_RAUC_NETWORK=y
 # --- userland ----------------------------------------------------------------
 BR2_PACKAGE_PODD=y
 BR2_PACKAGE_NETWORK_MANAGER=y
+# NetworkManager does NOT pull in a WiFi backend; without wpa_supplicant it can't
+# associate to WPA networks. nl80211 driver + dbus control (so NM drives it).
+BR2_PACKAGE_WPA_SUPPLICANT=y
+BR2_PACKAGE_WPA_SUPPLICANT_NL80211=y
+BR2_PACKAGE_WPA_SUPPLICANT_DBUS=y
 BR2_PACKAGE_OPENSSH=y
 BR2_PACKAGE_IPTABLES=y
 BR2_PACKAGE_E2FSPROGS=y
 # WiFi firmware for the on-board Broadcom (brcmfmac BCM4339 SDIO).
 BR2_PACKAGE_LINUX_FIRMWARE=y
 BR2_PACKAGE_LINUX_FIRMWARE_BRCM_BCM43XXX=y
+
+# --- rootfs overlay (non-secret reachability config: NM.conf, muzzle, sshd) ---
+# Owner-specific secrets (WiFi PSK, SSH authorized_keys) are NOT here — they are
+# injected by post-build.sh from a gitignored dir if present (see post-build.sh).
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_PODD_PATH)/board/eightsleep/imx8mm-varsom/rootfs-overlay"
 
 # --- image tooling -----------------------------------------------------------
 BR2_TARGET_ROOTFS_EXT2=y

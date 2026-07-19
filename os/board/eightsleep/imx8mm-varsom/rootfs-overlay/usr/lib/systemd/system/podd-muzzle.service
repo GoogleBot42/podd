@@ -1,0 +1,17 @@
+[Unit]
+Description=podd egress muzzle (strict default-DROP firewall)
+# Load before the network comes up so nothing leaks before the rules are in.
+DefaultDependencies=no
+Before=network-pre.target
+Wants=network-pre.target
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# LAN + loopback + DHCP/NTP only; everything to the public internet is dropped.
+ExecStart=/usr/sbin/iptables-restore /etc/iptables/iptables.rules
+ExecStart=/usr/sbin/ip6tables-restore /etc/iptables/ip6tables.rules
+
+[Install]
+WantedBy=sysinit.target
