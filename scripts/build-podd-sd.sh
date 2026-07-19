@@ -95,7 +95,7 @@ while [ $# -gt 0 ]; do
     --out)       OUT="$2"; shift 2 ;;
     --work)      WORK="$2"; shift 2 ;;
     --keep-work) KEEP_WORK=1; shift ;;
-    -h|--help)   sed -n '2,45p' "$0" | sed 's/^#\{0,1\} \{0,1\}//'; exit 0 ;;
+    -h|--help)   sed -n '2,38p' "$0" | sed 's/^#\{0,1\} \{0,1\}//'; exit 0 ;;
     *) die "unknown argument: $1 (try --help)" ;;
   esac
 done

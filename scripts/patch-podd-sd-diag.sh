@@ -35,6 +35,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
+case "${1:-}" in
+  -h|--help) sed -n '2,33p' "$0" | sed 's/^#\{0,1\} \{0,1\}//'; exit 0 ;;
+esac
 IMG="${1:-$REPO/dist/podd-sd.img}"
 DIAG="$REPO/install/diag"
 
@@ -49,6 +52,7 @@ done
 # Tools from nix on demand.
 command -v nix >/dev/null 2>&1 || die "nix not found on PATH"
 log "resolving tools via nix (e2fsprogs, util-linux)"
+# shellcheck disable=SC2016  # $PATH must expand inside the nix shell, not here.
 TOOL_PATH="$(nix shell nixpkgs#e2fsprogs nixpkgs#util-linux --command sh -c 'printf %s "$PATH"')" \
   || die "failed to realise tools via nix"
 export PATH="$TOOL_PATH:$PATH"

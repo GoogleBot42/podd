@@ -25,6 +25,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
+case "${1:-}" in
+  -h|--help) sed -n '2,23p' "$0" | sed 's/^#\{0,1\} \{0,1\}//'; exit 0 ;;
+esac
 SRC="${1:-$REPO/dist/podd-sd.img}"
 OUT="${PODD_SLIM_OUT:-$REPO/dist/podd-sd-slim.img}"
 
@@ -34,6 +37,7 @@ die() { printf '!!  %s\n' "$*" >&2; exit 1; }
 [ -f "$SRC" ] || die "source image not found: $SRC"
 command -v nix >/dev/null 2>&1 || die "nix not found"
 log "resolving tools via nix (e2fsprogs, util-linux, ubootTools, gzip)"
+# shellcheck disable=SC2016  # $PATH must expand inside the nix shell, not here.
 TOOL_PATH="$(nix shell nixpkgs#e2fsprogs nixpkgs#util-linux nixpkgs#ubootTools nixpkgs#coreutils nixpkgs#gzip \
   --command sh -c 'printf %s "$PATH"')" || die "nix tool resolution failed"
 export PATH="$TOOL_PATH:$PATH"
