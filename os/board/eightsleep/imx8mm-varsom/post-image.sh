@@ -16,20 +16,17 @@ BINARIES_DIR="$1"
 BOARD_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # --- 1. imx-boot -------------------------------------------------------------
-# imx-mkimage stitches the from-source SPL/U-Boot/ATF together with NXP's
-# redistributable DDR + HDMI firmware. On this SoC there is NO secure boot, so
-# the container is unsigned.
-#
-# TODO(bring-up, phase 1): the exact imx-mkimage target + input filenames are
-# board/SoC specific (iMX8MM, LPDDR4). Buildroot's U-Boot package can produce
-# flash.bin directly when BR2_TARGET_UBOOT_NEEDS_IMX_MKIMAGE is set and the
-# firmware-imx / imx-mkimage packages are enabled — prefer that path so this
-# script just copies the result. Placeholder until the U-Boot build is wired:
-if [ -f "$BINARIES_DIR/flash.bin" ]; then
-	cp "$BINARIES_DIR/flash.bin" "$BINARIES_DIR/imx-boot"
+# The boot container (SPL + ATF + U-Boot + NXP DDR firmware) is stitched by
+# Buildroot's stock i.MX8MM assembler, board/freescale/common/imx/
+# imx8-bootloader-prepare.sh, which runs as the FIRST post-image script (see the
+# defconfig's BR2_ROOTFS_POST_IMAGE_SCRIPT) and emits `imx8-boot-sd.bin`. On this
+# SoC there is NO secure boot, so the container is unsigned. genimage expects the
+# file named `imx-boot` (see genimage.cfg), so normalize the name here.
+if [ -f "$BINARIES_DIR/imx8-boot-sd.bin" ]; then
+	cp "$BINARIES_DIR/imx8-boot-sd.bin" "$BINARIES_DIR/imx-boot"
 elif [ ! -f "$BINARIES_DIR/imx-boot" ]; then
-	echo "post-image: imx-boot/flash.bin not found — U-Boot imx-mkimage step not wired yet" >&2
-	echo "  (phase-1 bring-up: enable firmware-imx + imx-mkimage in the defconfig)" >&2
+	echo "post-image: neither imx8-boot-sd.bin nor imx-boot found in $BINARIES_DIR" >&2
+	echo "  the imx8-bootloader-prepare.sh post-image step must run before this one" >&2
 	exit 1
 fi
 

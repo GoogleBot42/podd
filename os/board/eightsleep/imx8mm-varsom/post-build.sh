@@ -9,6 +9,27 @@ set -euo pipefail
 
 TARGET_DIR="$1"
 BOARD_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Buildroot exports BINARIES_DIR (output/images) to post-build scripts.
+BINARIES_DIR="${BINARIES_DIR:-$TARGET_DIR/../images}"
+
+# --- kernel + DTB into the slot's /boot --------------------------------------
+# Each RAUC rootfs slot is self-contained: U-Boot reads the kernel and DTB from
+# the active slot's ext4 /boot (see uboot-env.txt: `load mmc ... /boot/Image.gz`
+# and `/boot/podd.dtb`). Buildroot leaves them in output/images, so stage them
+# into the rootfs here, renaming the DTB to the name the env loads.
+mkdir -p "$TARGET_DIR/boot"
+if [ -f "$BINARIES_DIR/Image.gz" ]; then
+	install -D -m 0644 "$BINARIES_DIR/Image.gz" "$TARGET_DIR/boot/Image.gz"
+else
+	echo "post-build: $BINARIES_DIR/Image.gz not found (kernel not built yet?)" >&2
+	exit 1
+fi
+if [ -f "$BINARIES_DIR/imx8mm-podd.dtb" ]; then
+	install -D -m 0644 "$BINARIES_DIR/imx8mm-podd.dtb" "$TARGET_DIR/boot/podd.dtb"
+else
+	echo "post-build: $BINARIES_DIR/imx8mm-podd.dtb not found (DTS not built?)" >&2
+	exit 1
+fi
 
 # --- persistent data partition (survives A/B slot swaps) ---------------------
 # Mutable state lives here; the rootfs slots stay effectively read-only.

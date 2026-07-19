@@ -1,12 +1,26 @@
 # Buildroot defconfig — podd clean-room image, Eight Sleep i.MX8M-Mini Variscite
-# "SD" hub. STARTING POINT: the structure and key selections are here; version
-# pins and a few board-exact values (kernel source, DTB, imx-mkimage target) are
-# marked TODO and must be nailed down during phase-1 bring-up. See
-# docs/CLEANROOM-OS.md.
+# "SD" hub (Variscite DART-MX8M-MINI SoM, compatible = "variscite,dart-mx8mm").
 #
-# Build with:
-#   make BR2_EXTERNAL=../os -C <buildroot> podd_imx8mm_varsom_sd_defconfig
-#   make -C <buildroot> PODD_BIN=$PWD/result-podd/bin/podd PODD_UI_DIR=$PWD/result-ui
+# The upstream source revisions are PINNED here (U-Boot, kernel, ATF, firmware,
+# Buildroot itself — see os/scripts/build-image.sh for the Buildroot pin). They
+# correspond to the Variscite Yocto Hardknott v1.4 BSP that the live stock device
+# was built from (Linux 5.4.127), so we are rebuilding a *supported* board, not
+# porting a new one. See docs/CLEANROOM-OS.md.
+#
+# Boot-chain assembly (verified against Buildroot's freescale_imx8mmevk board):
+#   * U-Boot builds u-boot-nodtb.bin + u-boot-spl.bin + the DART control dtb.
+#   * ATF builds bl31.bin (imx8mm platform).
+#   * firmware-imx installs the NXP LPDDR4 PHY training blobs and links them as
+#     ddr_fw.bin; host imx-mkimage installs mkimage_imx8 / mkimage_fit_atf.sh.
+#   * Buildroot's stock board/freescale/common/imx/imx8-bootloader-prepare.sh
+#     (first post-image script, below) stitches all of the above into
+#     output/images/imx8-boot-sd.bin — the i.MX8MM boot container.
+#   * Our board post-image.sh then places that container at 0x8400, bakes the
+#     RAUC U-Boot env, and runs genimage to emit podd-sd.img(.gz).
+#
+# Build with (see os/scripts/build-image.sh which wraps this):
+#   make BR2_EXTERNAL=/abs/path/os -C <buildroot> podd_imx8mm_varsom_sd_defconfig
+#   make -C <buildroot> PODD_BIN=.../result-podd/bin/podd PODD_UI_DIR=.../result-ui
 
 # --- architecture ------------------------------------------------------------
 BR2_aarch64=y
@@ -22,42 +36,85 @@ BR2_TARGET_GENERIC_ISSUE="podd (open Eight Sleep firmware)"
 
 # --- board hooks -------------------------------------------------------------
 BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_PODD_PATH)/board/eightsleep/imx8mm-varsom/post-build.sh"
-BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_PODD_PATH)/board/eightsleep/imx8mm-varsom/post-image.sh"
+# Two post-image scripts, run in order:
+#   1. Buildroot's stock i.MX8MM boot-container assembler (emits imx8-boot-sd.bin).
+#      It takes the U-Boot *control* DTB as its extra arg (see POST_SCRIPT_ARGS).
+#   2. our board script (imx-boot placement + env + genimage -> podd-sd.img).
+# The stock prepare script emits "imx8-boot-sd.bin"; board post-image.sh maps it
+# to "imx-boot" for genimage (resolved).
+BR2_ROOTFS_POST_IMAGE_SCRIPT="board/freescale/common/imx/imx8-bootloader-prepare.sh $(BR2_EXTERNAL_PODD_PATH)/board/eightsleep/imx8mm-varsom/post-image.sh"
+# U-Boot control dtb consumed by mkimage_fit_atf.sh inside the prepare script.
+# DART-MX8M-MINI CONFIG_DEFAULT_DEVICE_TREE = imx8mm-var-dart-customboard.
+BR2_ROOTFS_POST_SCRIPT_ARGS="${UBOOT_DIR}/arch/arm/dts/imx8mm-var-dart-customboard.dtb"
 
-# --- bootloader: ATF + U-Boot -> imx-boot ------------------------------------
-# Board pinned from the LIVE device's DTB: compatible = "variscite,dart-mx8mm"
-# (a Variscite DART-MX8M-MINI SoM; the "VAR-SOM" model string notwithstanding).
-# So base U-Boot on Variscite's DART tree, NOT the VAR-SOM Symphony eval board.
+# --- bootloader: ARM Trusted Firmware (BL31) ---------------------------------
+# Variscite's imx-atf fork, branch imx_5.4.70_2.3.0_var01 — the exact ATF that
+# shipped in the Hardknott v1.4 BSP for this SoM. Pinned to the branch HEAD.
+# BL31 base for imx8mm is 0x00920000 (matches the prepare script's ATF_LOAD_ADDR).
+# VERIFY: this is a ~2020 TF-A (v2.2-based); if it fails to compile with the
+# Buildroot 2026.02 host GCC, the drop-in fallback is mainline TF-A (built-in,
+# BR2_TARGET_ARM_TRUSTED_FIRMWARE_LATEST_VERSION=y) which also supports imx8mm.
 BR2_TARGET_ARM_TRUSTED_FIRMWARE=y
+BR2_TARGET_ARM_TRUSTED_FIRMWARE_CUSTOM_GIT=y
+BR2_TARGET_ARM_TRUSTED_FIRMWARE_CUSTOM_REPO_URL="https://github.com/varigit/imx-atf.git"
+BR2_TARGET_ARM_TRUSTED_FIRMWARE_CUSTOM_REPO_VERSION="e5884084510a2a88101351bed3710860c28c0657"
 BR2_TARGET_ARM_TRUSTED_FIRMWARE_PLATFORM="imx8mm"
 BR2_TARGET_ARM_TRUSTED_FIRMWARE_BL31=y
-BR2_TARGET_UBOOT=y
-BR2_TARGET_UBOOT_NEEDS_ATF_BL31=y
-BR2_TARGET_UBOOT_NEEDS_IMX_MKIMAGE=y
-# Candidate (verify exact name/rev at build time): Variscite u-boot-imx fork,
-# board defconfig imx8mm_var_dart_defconfig. Rebuilding a SUPPORTED board — the
-# running stock system proves this SoM boots this source.
-# BR2_TARGET_UBOOT_BOARD_DEFCONFIG="imx8mm_var_dart"   # candidate
-# BR2_TARGET_UBOOT_CUSTOM_GIT + rev pinned to the Variscite 5.4.x BSP tag  # verify
+# License-file path for the custom-git ATF (Buildroot needs it for legal-info).
+BR2_TARGET_ARM_TRUSTED_FIRMWARE_LICENSE_FILES="docs/license.rst"  # VERIFY path in fork
 
-# NXP redistributable firmware (DDR PHY training + HDMI). Required by every
-# i.MX8M boot chain; NOT Eight Sleep code.
+# --- bootloader: U-Boot ------------------------------------------------------
+# Variscite u-boot-imx fork, branch imx_v2020.04_5.4.70_2.3.0_var01 (U-Boot
+# v2020.04), pinned to branch HEAD. Board defconfig imx8mm_var_dart_defconfig —
+# Buildroot appends "_defconfig". Rebuilding a SUPPORTED board: the live stock
+# system was built from this same source, which proves this SoM boots this code.
+# We emit u-boot-nodtb.bin + the SPL; the FIT/container is assembled by the
+# prepare post-image script (NOT by U-Boot), so no NEEDS_ATF_BL31 here.
+BR2_TARGET_UBOOT=y
+BR2_TARGET_UBOOT_BUILD_SYSTEM_KCONFIG=y
+BR2_TARGET_UBOOT_CUSTOM_GIT=y
+BR2_TARGET_UBOOT_CUSTOM_REPO_URL="https://github.com/varigit/uboot-imx.git"
+BR2_TARGET_UBOOT_CUSTOM_REPO_VERSION="bbb07703e6386cb98d7275df57f5e2c08aeeb4f0"
+BR2_TARGET_UBOOT_BOARD_DEFCONFIG="imx8mm_var_dart"
+BR2_TARGET_UBOOT_NEEDS_DTC=y
+BR2_TARGET_UBOOT_NEEDS_OPENSSL=y
+BR2_TARGET_UBOOT_FORMAT_CUSTOM=y
+BR2_TARGET_UBOOT_FORMAT_CUSTOM_NAME="u-boot-nodtb.bin"
+BR2_TARGET_UBOOT_SPL=y
+
+# --- NXP i.MX firmware + boot-image tooling ----------------------------------
+# FREESCALE_IMX (platform imx8mm) pulls the LPDDR4 training blobs via firmware-imx
+# and selects the right ddr_fw.bin assembly. firmware-imx = NXP redistributable
+# DDR PHY training (+ HDMI); required by EVERY i.MX8M boot chain, NOT Eight code.
+# host imx-mkimage provides mkimage_imx8 / mkimage_fit_atf.sh used by the prepare
+# script. (This mirrors Buildroot's freescale_imx8mmevk_defconfig exactly.)
+BR2_PACKAGE_FREESCALE_IMX=y
+BR2_PACKAGE_FREESCALE_IMX_PLATFORM_IMX8MM=y
 BR2_PACKAGE_FIRMWARE_IMX=y
+BR2_PACKAGE_HOST_IMX_MKIMAGE=y
 
 # --- kernel ------------------------------------------------------------------
-# Live device runs Variscite BSP Linux 5.4.127 (aarch64-fslc gcc 10.3, Feb 2022).
-# Base our kernel on the Variscite linux-imx 5.4.x DART tree; seed the config from
-# the stock .config pulled off the device (../backup/stock-ref/stock-kernel.config)
-# and trim to what we need. Our clean-room DTS is authored from the stock DTB
-# reference (../backup/stock-ref/stock.dts): DART base + New-Rat carrier deltas —
-# enable UART1 (sensor MCU, ttymxc0) + UART3 (frozen MCU, ttymxc2); I2C PMIC@0x4b,
-# RTC rv3028@0x68, LED + GPIO expander; Ethernet stays off (no PHY populated).
+# Variscite linux-imx fork, branch 5.4-2.3.x-imx_var01 (Linux 5.4.127, the exact
+# BSP the live device runs), pinned to branch HEAD. Config + DTS are authored by
+# sibling work in board/eightsleep/imx8mm-varsom/:
+#   * linux-podd.config  — kernel .config fragment/seed (from the stock .config)
+#   * imx8mm-podd.dts     — clean-room DTS (DART base + New-Rat carrier deltas:
+#     UART1 sensor MCU/ttymxc0 + UART3 frozen MCU/ttymxc2; I2C PMIC/RTC/LED/GPIO
+#     expander; Ethernet off — no PHY populated).
+# VERIFY: building a 5.4 kernel with the Buildroot 2026.02 host toolchain may need
+# host-CC tweaks; if so, pin an older Buildroot (2024.02 LTS) whose host gcc is
+# closer to the BSP's aarch64-fslc gcc 10.3.
 BR2_LINUX_KERNEL=y
-# BR2_LINUX_KERNEL_CUSTOM_GIT=y + Variscite 5.4.x BSP rev  # verify at build time
-# BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="...podd_kernel.config"  # from stock seed
-BR2_LINUX_KERNEL_DTS_SUPPORT=y
-# BR2_LINUX_KERNEL_CUSTOM_DTS_PATH=".../imx8mm-podd.dts" -> /boot/podd.dtb
+BR2_LINUX_KERNEL_CUSTOM_GIT=y
+BR2_LINUX_KERNEL_CUSTOM_REPO_URL="https://github.com/varigit/linux-imx.git"
+BR2_LINUX_KERNEL_CUSTOM_REPO_VERSION="a397cce0a33608443cb61f86aa1b9d7e60e8a4ef"
+BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="$(BR2_EXTERNAL_PODD_PATH)/board/eightsleep/imx8mm-varsom/linux-podd.config"
 BR2_LINUX_KERNEL_IMAGEGZ=y
+BR2_LINUX_KERNEL_DTS_SUPPORT=y
+BR2_LINUX_KERNEL_CUSTOM_DTS_PATH="$(BR2_EXTERNAL_PODD_PATH)/board/eightsleep/imx8mm-varsom/imx8mm-podd.dts"
+BR2_LINUX_KERNEL_NEEDS_HOST_OPENSSL=y
+# The kernel + DTB are staged into each slot's /boot by board post-build.sh,
+# renaming imx8mm-podd.dtb -> /boot/podd.dtb to match uboot-env.txt (resolved).
 
 # --- update engine -----------------------------------------------------------
 BR2_PACKAGE_RAUC=y
@@ -77,6 +134,8 @@ BR2_PACKAGE_LINUX_FIRMWARE_BRCM_BCM43XXX=y
 BR2_TARGET_ROOTFS_EXT2=y
 BR2_TARGET_ROOTFS_EXT2_4=y
 BR2_TARGET_ROOTFS_EXT2_LABEL="rootfs_a"
+# Sized to the A/B slot in genimage.cfg (512 MiB). Keep in sync with that file.
+BR2_TARGET_ROOTFS_EXT2_SIZE="512M"
 BR2_PACKAGE_HOST_GENIMAGE=y
 BR2_PACKAGE_HOST_UBOOT_TOOLS=y
 BR2_PACKAGE_HOST_UBOOT_TOOLS_MKENVIMAGE=y

@@ -1,0 +1,352 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Eight Sleep Pod ("New-Rat 0.8" carrier) — clean-room FOSS OS device tree.
+ *
+ * SoC : NXP i.MX8M Mini
+ * SoM : Variscite DART-MX8M-MINI   (compatible "variscite,dart-mx8mm")
+ * Board: Eight Sleep "New-Rat 0.8" carrier
+ *
+ * This file reuses the upstream Variscite DART SoM .dtsi (GPL, ships in the
+ * Variscite BSP linux-imx 5.4.x kernel tree) for everything that lives on the
+ * SoM — the BD71847 PMIC, on-SoM eMMC (uSDHC3), the Broadcom WiFi/BT module
+ * (uSDHC1 SDIO + BT UART) and the SoC/clock/pinctrl skeleton — and then applies
+ * ONLY the New-Rat carrier deltas below. It is compiled in-tree by Buildroot
+ * (BR2_LINUX_KERNEL_CUSTOM_DTS_PATH copies it into
+ * arch/arm64/boot/dts/freescale/), so the kernel-tree includes resolve.
+ *
+ * Carrier deltas expressed here:
+ *   - uSDHC2 (microSD)                      -> mmc1, the published image's boot medium
+ *   - UART1 (ttymxc0)                       -> Sensor STM32 MCU   (podd drives it)
+ *   - UART3 (ttymxc2)                       -> Frozen STM32 MCU   (podd drives it)
+ *   - UART4 (ttymxc3)                       -> console / stdout   (not broken out, harmless)
+ *   - I2C2 (/dev/i2c-1)                     -> RV-3028 RTC + IS31FL3194 LED + PCAL6416A expander
+ *   - I2C3                                  -> WM8904 audio codec (chime/alarm) + SAI5
+ *   - FEC ethernet                          -> DISABLED (no PHY populated on this carrier)
+ *
+ * Anything not mentioned here (display/LVDS bridge, MIPI-DSI, touch, CAN, the
+ * ECSPI SPI peripherals) is intentionally left off — not populated / not used
+ * by podd. The stock vendor tree enabled some of those; the New-Rat unit does
+ * not need them.
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/pinctrl/imx8mm-pinfunc.h>
+
+// Verified against the pinned kernel (varigit/linux-imx @ 5.4-2.3.x-imx_var01):
+// imx8mm-var-dart.dtsi is the DART-MX8M-MINI SoM base — it directly defines the
+// BD71847 PMIC (&i2c1), eMMC (&usdhc3), and WiFi (&usdhc1), and pulls in the SoC
+// base via #include "imx8mm.dtsi". Correct single include for SoM bring-up.
+#include "imx8mm-var-dart.dtsi"
+
+/ {
+	model = "Eight Sleep Pod (New-Rat 0.8) on Variscite DART-MX8M-MINI";
+	compatible = "eightsleep,pod-newrat", "variscite,dart-mx8mm", "fsl,imx8mm";
+
+	chosen {
+		/* UART4. Console pins are not physically broken out on this carrier,
+		 * but keeping stdout here is harmless and matches the vendor bootargs. */
+		stdout-path = "serial3:115200n8";
+	};
+
+	/*
+	 * LOAD-BEARING device-node numbering. podd hard-codes /dev/ttymxc0 (Sensor),
+	 * /dev/ttymxc2 (Frozen) and /dev/i2c-1 (RTC + LED + expander). These aliases
+	 * match the upstream i.MX8MM convention (so they are mostly redundant with
+	 * the base dtsi) but are pinned explicitly here because podd depends on them.
+	 */
+	aliases {
+		serial0 = &uart1;	/* ttymxc0 — Sensor MCU        */
+		serial1 = &uart2;	/* ttymxc1 — Bluetooth (SoM)   */
+		serial2 = &uart3;	/* ttymxc2 — Frozen MCU        */
+		serial3 = &uart4;	/* ttymxc3 — console           */
+		i2c0 = &i2c1;		/* i2c-0 — BD71847 PMIC (SoM)  */
+		i2c1 = &i2c2;		/* i2c-1 — RTC + LED + expander (podd) */
+		i2c2 = &i2c3;		/* i2c-2 — WM8904 audio codec  */
+		i2c3 = &i2c4;		/* i2c-3 — unused              */
+	};
+
+	/* Carrier-local codec rails. In the vendor tree DBVDD came from a fixed
+	 * 3V3 supply and the digital/analog rails from PMIC LDO5 (1V8). Both are
+	 * always-on, so self-contained fixed regulators are functionally equivalent
+	 * and keep this file independent of the base dtsi's PMIC regulator labels. */
+	reg_audio_3v3: regulator-audio-3v3 {
+		compatible = "regulator-fixed";
+		regulator-name = "audio_3v3";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		regulator-always-on;
+	};
+
+	reg_audio_1v8: regulator-audio-1v8 {
+		compatible = "regulator-fixed";
+		regulator-name = "audio_1v8";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		regulator-always-on;
+	};
+
+	sound-wm8904 {
+		compatible = "simple-audio-card";
+		simple-audio-card,name = "wm8904-audio";
+		simple-audio-card,format = "i2s";
+		simple-audio-card,mclk-fs = <256>;
+		simple-audio-card,bitclock-master = <&codec_dai>;
+		simple-audio-card,frame-master = <&codec_dai>;
+		simple-audio-card,widgets =
+			"Microphone", "Microphone Jack",
+			"Headphone", "Headphone Jack",
+			"Line", "Line In Jack";
+		simple-audio-card,routing =
+			"Headphone Jack", "HPOUTL",
+			"Headphone Jack", "HPOUTR",
+			"IN2L", "Line In Jack",
+			"IN2R", "Line In Jack",
+			"IN1L", "Microphone Jack",
+			"IN1R", "Microphone Jack";
+
+		codec_dai: simple-audio-card,codec {
+			sound-dai = <&wm8904>;
+		};
+
+		simple-audio-card,cpu {
+			sound-dai = <&sai5>;
+		};
+	};
+};
+
+/* ---------------------------------------------------------------------------
+ * SoM peripherals the board switches on. The DART SoM dtsi defines these (with
+ * pinmux, WiFi pwrseq/brcmf child, eMMC tuning); the board only needs to enable
+ * them. If the pinned base leaves any of these already "okay", these re-affirm.
+ * CONFIRM(agent-C): base dtsi provides uSDHC1/uSDHC3 pinmux + WiFi child nodes.
+ * ------------------------------------------------------------------------- */
+&usdhc1 {			/* mmc0 — Broadcom WiFi over SDIO */
+	status = "okay";
+};
+
+&usdhc3 {			/* mmc2 — on-SoM eMMC */
+	status = "okay";
+};
+
+/* ---------------------------------------------------------------------------
+ * microSD (uSDHC2 -> mmc1). Boot medium for the published SD image. Carrier
+ * peripheral, so fully specified here.
+ * ------------------------------------------------------------------------- */
+&usdhc2 {
+	pinctrl-names = "default", "state_100mhz", "state_200mhz";
+	pinctrl-0 = <&pinctrl_usdhc2>, <&pinctrl_usdhc2_gpio>;
+	pinctrl-1 = <&pinctrl_usdhc2_100mhz>, <&pinctrl_usdhc2_gpio>;
+	pinctrl-2 = <&pinctrl_usdhc2_200mhz>, <&pinctrl_usdhc2_gpio>;
+	cd-gpios = <&gpio1 10 GPIO_ACTIVE_LOW>;
+	bus-width = <4>;
+	fsl,tuning-start-tap = <20>;
+	fsl,tuning-step = <2>;
+	status = "okay";
+};
+
+/* ---------------------------------------------------------------------------
+ * MCU + console UARTs.
+ * ------------------------------------------------------------------------- */
+&uart1 {			/* ttymxc0 — Sensor STM32 MCU */
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_uart1>;
+	status = "okay";
+};
+
+&uart3 {			/* ttymxc2 — Frozen STM32 MCU (TX shares the ECSPI1_MOSI pad) */
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_uart3>;
+	status = "okay";
+};
+
+&uart4 {			/* ttymxc3 — console / stdout */
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_uart4>;
+	status = "okay";
+};
+
+/* UART2 (ttymxc1) is the on-SoM Bluetooth UART; left to the base dtsi. */
+
+/* ---------------------------------------------------------------------------
+ * I2C2 == /dev/i2c-1: the podd control bus.
+ *   rtc@68      RV-3028                 (kernel driver)
+ *   0x53        IS31FL3194 LED ring     (userspace, podd via i2c-dev)
+ *   0x20        PCAL6416A GPIO expander (userspace, podd — MCU enable/reset + button)
+ * The LED and expander are deliberately NOT given kernel nodes so that i2c-dev
+ * owns those addresses for podd. Only the RTC gets a kernel driver.
+ * ------------------------------------------------------------------------- */
+&i2c2 {
+	clock-frequency = <100000>;
+	pinctrl-names = "default", "gpio";
+	pinctrl-0 = <&pinctrl_i2c2>;
+	pinctrl-1 = <&pinctrl_i2c2_gpio>;
+	scl-gpios = <&gpio5 16 GPIO_ACTIVE_HIGH>;
+	sda-gpios = <&gpio5 17 GPIO_ACTIVE_HIGH>;
+	status = "okay";
+
+	rtc@68 {
+		compatible = "microcrystal,rv3028";
+		reg = <0x68>;
+	};
+};
+
+/* ---------------------------------------------------------------------------
+ * I2C3: WM8904 audio codec (chime / alarm speaker).
+ * ------------------------------------------------------------------------- */
+&i2c3 {
+	clock-frequency = <100000>;
+	pinctrl-names = "default", "gpio";
+	pinctrl-0 = <&pinctrl_i2c3>;
+	pinctrl-1 = <&pinctrl_i2c3_gpio>;
+	scl-gpios = <&gpio5 18 GPIO_ACTIVE_HIGH>;
+	sda-gpios = <&gpio5 19 GPIO_ACTIVE_HIGH>;
+	status = "okay";
+
+	wm8904: audio-codec@1a {
+		compatible = "wlf,wm8904";
+		reg = <0x1a>;
+		#sound-dai-cells = <0>;
+		clocks = <&clk 0xb8>;		/* IMX8MM_CLK_SAI5_ROOT — codec MCLK */
+		clock-names = "mclk";
+		DBVDD-supply = <&reg_audio_3v3>;
+		DCVDD-supply = <&reg_audio_1v8>;
+		AVDD-supply = <&reg_audio_1v8>;
+		CPVDD-supply = <&reg_audio_1v8>;
+		MICVDD-supply = <&reg_audio_1v8>;
+	};
+};
+
+/* SAI5 is the I2S CPU DAI wired to the WM8904 on the carrier. Base dtsi already
+ * declares its clocks/dmas; here we add the carrier pinmux and clock rate. */
+&sai5 {
+	#sound-dai-cells = <0>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_sai5>;
+	assigned-clocks = <&clk 0x70>;		/* IMX8MM_CLK_SAI5 */
+	assigned-clock-parents = <&clk 0x26>;	/* IMX8MM_AUDIO_PLL1_OUT */
+	assigned-clock-rates = <1536000>;
+	fsl,dataline = <0 0x0f 0x0f>;
+	status = "okay";
+};
+
+/* ---------------------------------------------------------------------------
+ * Ethernet: the New-Rat carrier populates the FEC MAC but NO RGMII PHY (the
+ * live unit reports "Unable to connect to phy"). Disable it so the kernel does
+ * not waste boot time probing a PHY that is not there.
+ * ------------------------------------------------------------------------- */
+&fec1 {
+	status = "disabled";
+};
+
+/* ---------------------------------------------------------------------------
+ * Carrier pin muxing. These describe the New-Rat physical wiring (hardware
+ * facts) and are re-expressed here on top of the upstream IOMUXC using the
+ * standard MX8MM_IOMUXC_* pad macros. Node names are podd-prefixed only via the
+ * label to avoid colliding with any group the base dtsi already defines.
+ * ------------------------------------------------------------------------- */
+&iomuxc {
+	pinctrl_uart1: uart1grp {			/* Sensor MCU: SAI2 pads muxed to UART1 */
+		fsl,pins = <
+			MX8MM_IOMUXC_SAI2_RXC_UART1_DCE_RX	0x03
+			MX8MM_IOMUXC_SAI2_RXFS_UART1_DCE_TX	0x140
+		>;
+	};
+
+	pinctrl_uart3: uart3grp {			/* Frozen MCU: RX on UART3_RXD, TX on ECSPI1_MOSI */
+		fsl,pins = <
+			MX8MM_IOMUXC_UART3_RXD_UART3_DCE_RX	0x02
+			MX8MM_IOMUXC_ECSPI1_MOSI_UART3_DCE_TX	0x140
+		>;
+	};
+
+	pinctrl_uart4: uart4grp {			/* Console */
+		fsl,pins = <
+			MX8MM_IOMUXC_UART4_RXD_UART4_DCE_RX	0x140
+			MX8MM_IOMUXC_UART4_TXD_UART4_DCE_TX	0x140
+		>;
+	};
+
+	pinctrl_i2c2: i2c2grp {				/* /dev/i2c-1: RTC + LED + expander */
+		fsl,pins = <
+			MX8MM_IOMUXC_I2C2_SCL_I2C2_SCL		0x400001c3
+			MX8MM_IOMUXC_I2C2_SDA_I2C2_SDA		0x400001c3
+		>;
+	};
+
+	pinctrl_i2c2_gpio: i2c2grp-gpio {		/* bus-recovery bit-bang state */
+		fsl,pins = <
+			MX8MM_IOMUXC_I2C2_SCL_GPIO5_IO16	0x1c3
+			MX8MM_IOMUXC_I2C2_SDA_GPIO5_IO17	0x1c3
+		>;
+	};
+
+	pinctrl_i2c3: i2c3grp {				/* WM8904 audio codec */
+		fsl,pins = <
+			MX8MM_IOMUXC_I2C3_SCL_I2C3_SCL		0x400001c3
+			MX8MM_IOMUXC_I2C3_SDA_I2C3_SDA		0x400001c3
+		>;
+	};
+
+	pinctrl_i2c3_gpio: i2c3grp-gpio {
+		fsl,pins = <
+			MX8MM_IOMUXC_I2C3_SCL_GPIO5_IO18	0x1c3
+			MX8MM_IOMUXC_I2C3_SDA_GPIO5_IO19	0x1c3
+		>;
+	};
+
+	pinctrl_usdhc2: usdhc2grp {			/* microSD, default speed */
+		fsl,pins = <
+			MX8MM_IOMUXC_SD2_CLK_USDHC2_CLK		0x190
+			MX8MM_IOMUXC_SD2_CMD_USDHC2_CMD		0x1d0
+			MX8MM_IOMUXC_SD2_DATA0_USDHC2_DATA0	0x1d0
+			MX8MM_IOMUXC_SD2_DATA1_USDHC2_DATA1	0x1d0
+			MX8MM_IOMUXC_SD2_DATA2_USDHC2_DATA2	0x1d0
+			MX8MM_IOMUXC_SD2_DATA3_USDHC2_DATA3	0x1d0
+			MX8MM_IOMUXC_GPIO1_IO04_USDHC2_VSELECT	0x1d0
+		>;
+	};
+
+	pinctrl_usdhc2_100mhz: usdhc2grp-100mhz {
+		fsl,pins = <
+			MX8MM_IOMUXC_SD2_CLK_USDHC2_CLK		0x194
+			MX8MM_IOMUXC_SD2_CMD_USDHC2_CMD		0x1d4
+			MX8MM_IOMUXC_SD2_DATA0_USDHC2_DATA0	0x1d4
+			MX8MM_IOMUXC_SD2_DATA1_USDHC2_DATA1	0x1d4
+			MX8MM_IOMUXC_SD2_DATA2_USDHC2_DATA2	0x1d4
+			MX8MM_IOMUXC_SD2_DATA3_USDHC2_DATA3	0x1d4
+			MX8MM_IOMUXC_GPIO1_IO04_USDHC2_VSELECT	0x1d0
+		>;
+	};
+
+	pinctrl_usdhc2_200mhz: usdhc2grp-200mhz {
+		fsl,pins = <
+			MX8MM_IOMUXC_SD2_CLK_USDHC2_CLK		0x196
+			MX8MM_IOMUXC_SD2_CMD_USDHC2_CMD		0x1d6
+			MX8MM_IOMUXC_SD2_DATA0_USDHC2_DATA0	0x1d6
+			MX8MM_IOMUXC_SD2_DATA1_USDHC2_DATA1	0x1d6
+			MX8MM_IOMUXC_SD2_DATA2_USDHC2_DATA2	0x1d6
+			MX8MM_IOMUXC_SD2_DATA3_USDHC2_DATA3	0x1d6
+			MX8MM_IOMUXC_GPIO1_IO04_USDHC2_VSELECT	0x1d0
+		>;
+	};
+
+	pinctrl_usdhc2_gpio: usdhc2grp-gpio {		/* card-detect */
+		fsl,pins = <
+			MX8MM_IOMUXC_GPIO1_IO10_GPIO1_IO10	0xc1
+		>;
+	};
+
+	pinctrl_sai5: sai5grp {				/* WM8904 I2S (full-duplex) + MCLK */
+		fsl,pins = <
+			MX8MM_IOMUXC_SAI5_RXFS_SAI5_RX_SYNC	0xd6
+			MX8MM_IOMUXC_SAI5_RXC_SAI5_RX_BCLK	0xd6
+			MX8MM_IOMUXC_SAI5_RXD0_SAI5_RX_DATA0	0xd6
+			MX8MM_IOMUXC_SAI5_RXD1_SAI5_TX_SYNC	0xd6
+			MX8MM_IOMUXC_SAI5_RXD2_SAI5_TX_BCLK	0xd6
+			MX8MM_IOMUXC_SAI5_RXD3_SAI5_TX_DATA0	0xd6
+			MX8MM_IOMUXC_SAI5_MCLK_SAI5_MCLK	0xd6
+		>;
+	};
+};

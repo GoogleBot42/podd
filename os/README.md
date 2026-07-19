@@ -2,18 +2,133 @@
 
 This is the `BR2_EXTERNAL` tree that builds podd's **clean-room L2 OS image**: a
 complete, from-source bootable system (bootloader + kernel + rootfs + podd) for
-the Eight Sleep i.MX8M-Mini Variscite "SD" hub, updated A/B via RAUC. It replaces
+the Eight Sleep i.MX8M-Mini Variscite "SD" hub (a Variscite **DART-MX8M-MINI**
+SoM, `compatible = "variscite,dart-mx8mm"`), updated A/B via RAUC. It replaces
 the L1 "bolt podd onto Eight's Yocto rootfs" approach (`scripts/build-podd-sd.sh`).
 
 See **[../docs/CLEANROOM-OS.md](../docs/CLEANROOM-OS.md)** for the architecture,
 the clean-room boundary, and the slot/partition layout.
 
-> **Status: scaffold — not yet built or booted.** The tree structure, RAUC
-> config, partition layout, and U-Boot A/B boot logic are here and reviewable.
-> Values that need a real build + hardware to pin (U-Boot/kernel source pins,
-> the device tree, the imx-mkimage target, the exact kernel image format) are
-> marked `TODO(bring-up)`. Bring-up is gated by the **no reachable serial
-> console** on this board — validate via the self-logging diag + JTAG.
+> **Status: buildable configuration, not yet booted.** The upstream source
+> revisions are pinned (below) against the exact Variscite BSP the live stock
+> device runs, so this rebuilds a *supported* board. Two integration one-liners
+> live in board scripts that are outside this config's ownership — see
+> [Integration handoffs](#integration-handoffs). Bring-up is gated by the **no
+> reachable serial console** on this board — validate via WiFi/SSH + the
+> self-logging diag partition.
+
+## Pinned versions
+
+The build is reproducible from these pins. Upstream source pins live in
+[`configs/podd_imx8mm_varsom_sd_defconfig`](configs/podd_imx8mm_varsom_sd_defconfig);
+the Buildroot pin lives in [`scripts/build-image.sh`](scripts/build-image.sh).
+They correspond to the **Variscite Yocto Hardknott v1.4** BSP (Linux 5.4.127),
+which is what the stock device was built from.
+
+| Component | Repo | Rev / tag | Notes |
+|---|---|---|---|
+| **Buildroot** | github.com/buildroot/buildroot | `2026.02.3` | current LTS; ships the imx8mm boot flow, `firmware-imx` 8.27, `rauc`, aarch64 toolchain |
+| **U-Boot** | github.com/varigit/uboot-imx | `bbb07703` (branch `imx_v2020.04_5.4.70_2.3.0_var01`) | U-Boot v2020.04; board defconfig `imx8mm_var_dart_defconfig` |
+| **Linux** | github.com/varigit/linux-imx | `a397cce0` (branch `5.4-2.3.x-imx_var01`) | Linux 5.4.127; config + DTS supplied by this tree (below) |
+| **ARM Trusted Firmware** | github.com/varigit/imx-atf | `e5884084` (branch `imx_5.4.70_2.3.0_var01`) | BL31, platform `imx8mm`; the ATF that shipped in this BSP |
+| **firmware-imx** | NXP (via Buildroot pkg) | `8.27` | LPDDR4 PHY training + HDMI blobs (NXP redistributable, **not** Eight code) |
+| **imx-mkimage** | NXP (host, via Buildroot pkg) | Buildroot default | `mkimage_imx8` used to stitch the boot container |
+
+Branch **HEADs** were pinned to their then-current commit SHAs. Re-pin by reading
+the branch tip if you want a later BSP dot-fix.
+
+### Board-specific config supplied by this tree
+
+Authored under `board/eightsleep/imx8mm-varsom/` (kernel `.config` and DTS are
+produced by sibling work; the defconfig already references them by path):
+
+- **`linux-podd.config`** — kernel config seed (trimmed from the stock device
+  `.config`). Wired via `BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE`.
+- **`imx8mm-podd.dts`** — clean-room device tree: DART base + New-Rat carrier
+  deltas (UART1 sensor MCU `ttymxc0`, UART3 frozen MCU `ttymxc2`; I²C PMIC/RTC/
+  LED/GPIO-expander; Ethernet off — no PHY populated). Wired via
+  `BR2_LINUX_KERNEL_CUSTOM_DTS_PATH`.
+
+## How `imx-boot` is assembled
+
+The i.MX8MM boot container is built exactly the way Buildroot's reference
+`freescale_imx8mmevk` board does it (proven flow), with Variscite source swapped
+in:
+
+1. **U-Boot** builds `u-boot-nodtb.bin`, `u-boot-spl.bin`, and the DART control
+   dtb (`imx8mm-var-dart-customboard.dtb`).
+2. **ATF** builds `bl31.bin` (platform `imx8mm`, BL31 base `0x00920000`).
+3. **firmware-imx** installs the NXP LPDDR4 PHY-training blobs and links them as
+   `ddr_fw.bin`; **host imx-mkimage** installs `mkimage_imx8` / `mkimage_fit_atf.sh`.
+4. Buildroot's stock `board/freescale/common/imx/imx8-bootloader-prepare.sh`
+   (first post-image script) stitches SPL+DDR-fw + a FIT of ATF+U-Boot into
+   **`output/images/imx8-boot-sd.bin`** — the boot container.
+5. Our `board/eightsleep/imx8mm-varsom/post-image.sh` places that container at
+   `0x8400`, bakes the RAUC U-Boot env at `0x400000`, and runs `genimage` to emit
+   `podd-sd.img(.gz)`.
+
+There is **no secure boot** on these units, so the container is unsigned.
+
+## Building
+
+podd itself is cross-compiled outside Buildroot (reproducible Nix cross-build),
+then staged into the rootfs by the `podd` package. The wrapper handles both:
+
+```sh
+# From the repo root. Fetches pinned Buildroot into ./build/buildroot, runs the
+# two nix builds, applies the defconfig, and builds the image.
+os/scripts/build-image.sh --output-dir dist/
+
+# -> build/buildroot/output/images/podd-sd.img.gz  (+ copied into dist/)
+```
+
+Useful flags (`--help` for the full list):
+
+```sh
+# CI / offline: supply prebuilt artifacts, skip nix.
+os/scripts/build-image.sh --no-nix \
+  --podd-bin result-podd/bin/podd --ui-dir result-ui
+
+# Iterate against a Buildroot checkout you already have.
+os/scripts/build-image.sh --buildroot /path/to/buildroot --jobs 8
+```
+
+Equivalent by hand:
+
+```sh
+nix build .#podd-aarch64        # -> result-podd/bin/podd
+nix build .#ui                  # -> result-ui
+
+git clone --branch 2026.02.3 --depth 1 \
+  https://github.com/buildroot/buildroot.git build/buildroot
+make -C build/buildroot BR2_EXTERNAL=$PWD/os podd_imx8mm_varsom_sd_defconfig
+make -C build/buildroot \
+  PODD_BIN=$PWD/result-podd/bin/podd \
+  PODD_UI_DIR=$PWD/result-ui
+# -> build/buildroot/output/images/podd-sd.img.gz
+```
+
+Write the result to a **spare** SD (the stock card stays your instant revert):
+
+```sh
+gunzip -c build/buildroot/output/images/podd-sd.img.gz \
+  | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
+```
+
+CI wraps `build-image.sh` to publish `podd-sd-<version>.img.gz` + the RAUC bundle
+on tag releases (replacing the `recovery-sd` stub job).
+
+## Integration (resolved)
+
+The board scripts now close the loop with the pinned build:
+
+1. **Boot-container naming** — `post-image.sh` copies the prepare script's
+   `imx8-boot-sd.bin` → `imx-boot` (the name `genimage.cfg` references) before
+   laying out the image.
+2. **Kernel + DTB into the slot** — `post-build.sh` stages `Image.gz` and the
+   DTB (renamed `imx8mm-podd.dtb` → `/boot/podd.dtb`) into each rootfs slot's
+   `/boot`, which is where `uboot-env.txt` loads them from (U-Boot reads the
+   ext4 slot directly).
 
 ## Layout
 
@@ -21,32 +136,16 @@ the clean-room boundary, and the slot/partition layout.
 os/
   external.desc / external.mk / Config.in   BR2_EXTERNAL plumbing
   configs/
-    podd_imx8mm_varsom_sd_defconfig         board defconfig (starting point)
+    podd_imx8mm_varsom_sd_defconfig         board defconfig (pinned)
+  scripts/
+    build-image.sh                          fetch Buildroot + nix podd/UI + build
   package/podd/                             installs podd binary + UI + service
   board/eightsleep/imx8mm-varsom/
+    linux-podd.config                       kernel config seed (sibling-authored)
+    imx8mm-podd.dts                         clean-room DTS (sibling-authored)
     genimage.cfg                            A/B + data partition layout
     rauc-system.conf                        RAUC slots (rootfs_a / rootfs_b)
     uboot-env.txt                           BOOT_ORDER / bootcount A/B selection
-    post-build.sh                           /data mount + RAUC config into rootfs
+    post-build.sh                           /data mount + RAUC config + dtb rename
     post-image.sh                           imx-boot + env + genimage -> podd-sd.img
 ```
-
-## Building (once bring-up TODOs are resolved)
-
-podd itself is cross-compiled outside Buildroot (reproducible Nix cross-build),
-then staged by the `podd` package:
-
-```sh
-nix build .#podd-aarch64        # -> result-podd/bin/podd
-nix build .#ui                  # -> result-ui
-
-git clone https://git.buildroot.net/buildroot   # pinned rev: TODO(bring-up)
-make -C buildroot BR2_EXTERNAL=$PWD/os podd_imx8mm_varsom_sd_defconfig
-make -C buildroot \
-  PODD_BIN=$PWD/result-podd/bin/podd \
-  PODD_UI_DIR=$PWD/result-ui
-# -> buildroot/output/images/podd-sd.img.gz
-```
-
-CI will wrap this to publish `podd-sd-<version>.img.gz` + the RAUC bundle on tag
-releases (replacing the `recovery-sd` stub job).
