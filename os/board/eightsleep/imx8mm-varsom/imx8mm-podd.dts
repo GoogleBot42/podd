@@ -32,13 +32,21 @@
 /dts-v1/;
 
 #include <dt-bindings/gpio/gpio.h>
-#include <dt-bindings/pinctrl/imx8mm-pinfunc.h>
+/*
+ * NB: there is no <dt-bindings/pinctrl/imx8mm-pinfunc.h>. The MX8MM_IOMUXC_*
+ * pinmux macros (and IMX8MM_CLK_*) arrive transitively through the SoM base
+ * below: imx8mm-var-dart.dtsi -> imx8mm.dtsi, which does
+ * #include "imx8mm-pinfunc.h" (a file in the freescale/ dts dir) and
+ * #include <dt-bindings/clock/imx8mm-clock.h>.
+ */
 
 // Verified against the pinned kernel (varigit/linux-imx @ 5.4-2.3.x-imx_var01):
 // imx8mm-var-dart.dtsi is the DART-MX8M-MINI SoM base — it directly defines the
 // BD71847 PMIC (&i2c1), eMMC (&usdhc3), and WiFi (&usdhc1), and pulls in the SoC
-// base via #include "imx8mm.dtsi". Correct single include for SoM bring-up.
-#include "imx8mm-var-dart.dtsi"
+// base via #include "imx8mm.dtsi". The freescale/ prefix is required because
+// Buildroot copies this custom .dts to arch/arm64/boot/dts/ (top level) while
+// the vendor dtsi lives in the freescale/ subdir.
+#include "freescale/imx8mm-var-dart.dtsi"
 
 / {
 	model = "Eight Sleep Pod (New-Rat 0.8) on Variscite DART-MX8M-MINI";

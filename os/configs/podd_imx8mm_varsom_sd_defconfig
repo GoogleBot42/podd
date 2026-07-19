@@ -108,6 +108,9 @@ BR2_LINUX_KERNEL=y
 BR2_LINUX_KERNEL_CUSTOM_GIT=y
 BR2_LINUX_KERNEL_CUSTOM_REPO_URL="https://github.com/varigit/linux-imx.git"
 BR2_LINUX_KERNEL_CUSTOM_REPO_VERSION="a397cce0a33608443cb61f86aa1b9d7e60e8a4ef"
+# Select the "use a custom .config" choice (required — without it Buildroot
+# defaults to USE_DEFCONFIG and errors "No kernel defconfig name specified").
+BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG=y
 BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="$(BR2_EXTERNAL_PODD_PATH)/board/eightsleep/imx8mm-varsom/linux-podd.config"
 BR2_LINUX_KERNEL_IMAGEGZ=y
 BR2_LINUX_KERNEL_DTS_SUPPORT=y
