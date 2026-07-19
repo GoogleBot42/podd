@@ -64,7 +64,7 @@ Add a block like this (a GitHub example, auto-updating, trusting your own key):
 ```ini
 [Service]
 # Where to fetch releases from (pick ONE source form; see the table below):
-Environment=PODD_UPDATER_GITHUB=eightsleep/podd
+Environment=PODD_UPDATER_GITHUB=GoogleBot42/podd
 # Apply updates automatically (omit for the default: manual/report-only):
 Environment=PODD_UPDATER_MODE=auto
 # Check hourly (value is in seconds; 3600 is the default):
@@ -187,14 +187,14 @@ installer is the simplest path — it's idempotent and does the same
 verify-then-activate flow:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/eightsleep/podd/main/install/install.sh \
-  | sh -s -- --source github:eightsleep/podd
+curl -fsSL https://raw.githubusercontent.com/GoogleBot42/podd/main/install/install.sh \
+  | sh -s -- --source github:GoogleBot42/podd
 ```
 
 Or point it at a pinned tag to move to a specific version:
 
 ```sh
-podd-install.sh --source github:eightsleep/podd@v0.1.0
+podd-install.sh --source github:GoogleBot42/podd@v0.1.0
 ```
 
 Re-running is safe: it keeps your `/opt/podd/config.ron` and your systemd drop-ins,

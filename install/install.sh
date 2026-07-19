@@ -8,8 +8,8 @@
 # release manifest - so trust never rests on this fetch.
 #
 # Usage (example docs one-liner):
-#   curl -fsSL https://raw.githubusercontent.com/eightsleep/podd/main/install/install.sh | sh -s -- \
-#       --source github:eightsleep/podd
+#   curl -fsSL https://raw.githubusercontent.com/GoogleBot42/podd/main/install/install.sh | sh -s -- \
+#       --source github:GoogleBot42/podd
 #
 # Any arguments after `--` are passed straight through to podd-install.sh.
 #
@@ -20,7 +20,7 @@
 #                                            fetched from.
 set -eu
 
-INSTALLER_URL="${PODD_INSTALLER_URL:-https://raw.githubusercontent.com/eightsleep/podd/main/install/podd-install.sh}"
+INSTALLER_URL="${PODD_INSTALLER_URL:-https://raw.githubusercontent.com/GoogleBot42/podd/main/install/podd-install.sh}"
 EXPECT_SHA="${PODD_INSTALL_SHA256:-}"
 
 log()  { printf '==> %s\n' "$*"; }

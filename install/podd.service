@@ -1,6 +1,6 @@
 [Unit]
 Description=podd - open Eight Sleep Pod control daemon
-Documentation=https://github.com/eightsleep/podd
+Documentation=https://github.com/GoogleBot42/podd
 # Come up after the network so the API bind and any MQTT/updater fetches work.
 After=network-online.target
 Wants=network-online.target
