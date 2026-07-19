@@ -1,5 +1,10 @@
 # Eight Sleep Pod 3 — Full FOSS Firmware Replacement Plan
 
+> **Status: original planning document (historical).** This is the plan the
+> project was built from and is kept as-is for design rationale. For the current
+> state of the code — crate layout, what is implemented vs. still planned — see
+> [`ARCHITECTURE.md`](ARCHITECTURE.md) and the top-level [`README.md`](../README.md).
+
 *Author: reverse-engineering pass over the four firmware dumps in `./firmware/`
 (original SD image, stock rootfs, OTA rootfs, and the freesleep-modded rootfs).
 Detailed evidence lives in `scratchpad/reports/{dac-protocol,hardware-frank,boot-chain,prior-art,connectivity-and-diff}.md`.*

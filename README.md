@@ -7,14 +7,14 @@ built to be *hacked on*, not bolted onto the vendor firmware.
 It is a **fork of [opensleep](https://github.com/LiamSnow/opensleep)** (the Rust
 daemon that drives the Pod's two STM32 microcontrollers directly), extended with
 a web UI (forked from [free-sleep](https://github.com/throwaway31265/free-sleep)'s
-frontend), a local REST/WebSocket API, a proper thermostat/scheduler, MCU
-firmware flashing, and — the part the existing projects get wrong — a **signed,
-atomic, reproducible update system**.
+frontend), a local REST API (with server-sent-event log streaming), a
+thermostat/scheduler, MCU firmware flashing, and — the part the existing
+projects get wrong — a **signed, atomic, reproducible update system**.
 
 > Status: **software stack built; hardware bring-up in progress.** The full
 > userland (protocol, control core, API, web UI, signed update system, CI, and
-> installers) is implemented and tested — 98 tests, reproducible Nix builds,
-> static aarch64 binaries. The protocol is **validated against a live Pod 4**
+> installers) is implemented and unit-tested throughout (100+ tests),
+> with reproducible Nix builds and static aarch64 binaries. The protocol is **validated against a live Pod 4**
 > (both MCUs). Real bed-control writes are gated off (`PODD_DRY_RUN`) pending the
 > careful hardware cutover; the Pod-4 sensor packet payloads and the live cutover
 > are the remaining work. See [`docs/REPLACEMENT_PLAN.md`](docs/REPLACEMENT_PLAN.md)
@@ -24,9 +24,14 @@ atomic, reproducible update system**.
 
 Full, beginner-friendly guides live in [`docs/`](docs/):
 
-- **[docs/FLASHING.md](docs/FLASHING.md)** — identify your Pod variant and get root
-  (the one-time serial-over-J7 unlock, or the i.MX SD backdoor). Covers hardware to
-  buy, exact J7 pinout, and the honest "what's unverified" caveats.
+- **[docs/FLASHING.md](docs/FLASHING.md)** — identify your hub and get in. The
+  unlock path is **board-specific**: serial-over-J7 on the MediaTek hub; the SD
+  paths on the i.MX "SD" hub (whose JTAG-footprint header is real JTAG, *not* a
+  UART). Covers hardware to buy, pinouts, and the honest "what's unverified"
+  caveats.
+- **[docs/SD-BOOT.md](docs/SD-BOOT.md)** — the validated i.MX install method:
+  boot a complete podd system from a swapped microSD, eMMC untouched; swap the
+  stock card back to revert.
 - **[docs/INSTALL.md](docs/INSTALL.md)** — install podd once you have root (the
   one-command userland install; the advanced A/B slot install).
 - **[docs/UPDATING.md](docs/UPDATING.md)** — the on-device OTA agent: sources,
@@ -62,28 +67,39 @@ native Rust API, and treats **updates as a first-class, verifiable concern**.
 
 ## Hardware scope
 
-Targets the Eight Sleep **Pod 3** (NXP i.MX8M Mini / Variscite variant today;
-the MediaTek no-SD variant and Pod 4/5 differ below the userland — see the plan).
-Runs on the stock Yocto base (L1); a full OS-image replacement (L2) is optional
-and per-SoC. **No secure boot is enforced on these units**, so custom code runs.
+The reference hardware is the NXP i.MX8M Mini / Variscite "SD" **hub** (what the
+Eight Sleep app labels varies — it reports the mattress *cover*, not the hub; see
+[docs/FLASHING.md](docs/FLASHING.md#step-1--identify-your-pod) for identifying
+yours). The i.MX "no-SD" (Pod 4) hub and the MediaTek no-SD hub differ below the
+userland — see [`docs/REPLACEMENT_PLAN.md`](docs/REPLACEMENT_PLAN.md). Runs on the
+stock Yocto base (L1); a full OS-image replacement (L2) is optional and per-SoC.
+**No secure boot is enforced on these units**, so custom code runs.
 
 ## Workspace
 
 | Crate | Purpose | Status |
 |---|---|---|
-| `crates/pod-update` | Signed, reproducible update manifests + artifact verification | ✅ implemented + tested |
-| `crates/podup` | Host CLI: keygen / pack / release / verify | ✅ implemented |
-| `crates/podd` | The control daemon (opensleep fork + API + scheduler + update agent) | 🚧 stub |
+| `crates/pod-update` | Signed, reproducible update core (manifests + SHA-256/Ed25519 verification), shared by host and device | ✅ implemented + tested |
+| `crates/podup` | Host release CLI: `keygen` / `pack` / `release` / `verify` | ✅ implemented |
+| `crates/pod-proto` | LSP UART protocol (framing/CRC, Frozen + Sensor packet/command tables, thermostat `profile.rs`), extracted from opensleep | ✅ implemented + tested; validated vs live Pod 4 |
+| `crates/podd-core` | opensleep control core: Frozen/Sensor subsystems, LED, reset, config, MQTT, state bus | ✅ implemented |
+| `crates/api` | free-sleep-compatible REST + SSE HTTP API and embedded-SPA server (biometrics endpoints deferred) | ✅ implemented |
+| `crates/pod-updater` | On-device OTA agent: Tier-2 app swaps are live; Tier-1 OS + Tier-3 MCU apply are gated behind dry-run | ✅ implemented |
+| `crates/pod-probe` | Read-only serial probe for validating `pod-proto` against live MCUs | ✅ implemented |
+| `crates/podd` | The control daemon: wires `podd-core` + `api` + `pod-updater` together; MCU writes gated behind `PODD_DRY_RUN` | ✅ implemented (live hardware cutover pending) |
 
-Planned additional crates (from the opensleep source map): `pod-proto` (the LSP
-UART protocol), `pod-hal` (reset + LED), `api` (axum REST/WS + embedded UI),
-`schedule`, `mcu-flash`, `onboarding`. See `docs/ARCHITECTURE.md`.
+Note on the earlier opensleep source map: `pod-hal` (reset + LED) is folded
+into `podd-core`; MCU `.bbin` flashing lives in `pod-updater` (Tier 3,
+dry-run-gated); schedule persistence and endpoints live in `api`, with the
+thermostat curve in `pod-proto`'s `profile.rs`. Still genuinely **planned**:
+WiFi/onboarding bring-up, a full autonomous weekday scheduler loop, and the L2
+OS-image (`podd-rootfs.tar.gz`) release. See `docs/ARCHITECTURE.md`.
 
 ## Build & test
 
 ```sh
-cargo test            # unit tests (pod-update crypto/manifest logic)
-cargo build           # build podd (stub) + podup
+cargo test            # workspace unit tests (protocol, crypto/manifest, api, updater)
+cargo build           # build the workspace (podd, podup, …)
 
 # End-to-end release flow (needs `mksquashfs` on PATH):
 

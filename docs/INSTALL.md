@@ -131,8 +131,8 @@ backup location, and the UI URL.
 
 ## Reaching the UI
 
-podd serves a web UI and REST/WebSocket API on port **3000**, bound to all
-interfaces:
+podd serves a web UI and a REST API (with SSE log streaming) on port **3000**,
+bound to all interfaces:
 
 ```
 http://<pod-ip>:3000
@@ -229,7 +229,9 @@ is exactly right for your own unsigned builds.
 ## Advanced: A/B slot install
 
 > **This one writes to eMMC.** Unlike the userland install, a mistake here *can*
-> require serial-U-Boot recovery. Only do this if you specifically want podd's own
+> require bootloader-level recovery (serial U-Boot on MediaTek; JTAG or the SD
+> nets on the i.MX SD hub — see [RECOVERY.md](RECOVERY.md)). Only do this if you
+> specifically want podd's own
 > full OS image (not just the userland payload) and you've read
 > [RECOVERY.md](RECOVERY.md). Most people should use the userland install above.
 

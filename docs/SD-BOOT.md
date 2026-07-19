@@ -140,18 +140,45 @@ eMMC was never modified, so you are back to bone-stock.
 
 ---
 
-## First-boot checklist (serial console `ttymxc3` @ 115200 8N1)
+## First-boot checklist
 
-Attach a 3.3 V USB-UART to the hub's debug UART (`ttymxc3`) at **115200 8N1**.
-`console=ttymxc3,115200` is already in the env. Power on and confirm, in order:
+> **There is no attachable serial console on this board.** On the i.MX8M-Mini /
+> Variscite "New-Rat 0.8" hub the `console=ttymxc3,115200` UART is **not broken
+> out to any reachable header** — it exists only on the SoM edge-connector pins
+> (83/85; 115200 8N1, 3.3 V logic, if you ever tap the SoM directly, which is
+> impractical). The JTAG-footprint header on this board is **real JTAG**, not a
+> UART — see [FLASHING.md](FLASHING.md#step-4--open-the-pod-and-find-the-debug-header).
 
-**1. U-Boot picks the SD as the boot target.** You should see:
+Verify first boot with the **self-logging diagnostics** instead: patch them into
+the image with `scripts/patch-podd-sd-diag.sh` before writing the card. It adds
+`podd-bootlog-{early,mid,late}.service` (see `install/diag/`), which write boot
+evidence — `timeline.txt`, staged `dmesg` dumps, the full journal,
+`podd-status.txt`, and network state — to **`/opt/podd/bootlog/` on the SD's p1**
+(persistent ext4; `/var/log` is a tmpfs on this image, so nothing survives
+there). Boot the Pod, wait ~3 minutes, power off, and read the card in a host SD
+reader:
+
+```sh
+sudo mount -o ro <sd-device>p1 /mnt
+ls -la /mnt/opt/podd/bootlog/     # timeline.txt, dmesg.*, journal.txt, ...
+```
+
+If the Pod comes up on the network you can check everything over SSH instead;
+the hardcore live-debug fallback is **JTAG via OpenOCD** (the i.MX8MM is well
+supported) on the board's JTAG header.
+
+Confirm, in order (in the captured bootlog, over SSH, or on a JTAG/tapped
+console):
+
+**1. U-Boot picks the SD as the boot target.** On a console you would see:
 ```
 current mmcdev: 1
 ```
-and the kernel/DTB loading from `mmc 1:1` (not `2:1`). If it still says
-`mmcdev: 2`, the env didn't take — re-check that you wrote the podd card, not the
-stock one. *(Verifies: env change applied.)*
+and the kernel/DTB loading from `mmc 1:1` (not `2:1`). Without a console, U-Boot
+output isn't capturable — the equivalent check is the kernel cmdline in the
+bootlog (`/proc/cmdline` in the snapshots, or `dmesg.early.txt`): it must say
+`root=/dev/mmcblk1p1`. If it says `mmcblk2p*`, the env didn't take — re-check
+that you wrote the podd card, not the stock one. *(Verifies: env change applied.)*
 
 **2. Kernel root is the SD.** In the kernel log:
 ```
@@ -160,7 +187,8 @@ VFS: Mounted root (ext4 filesystem) on device 179:...   # mmcblk1p1
 ```
 Root must be **mmcblk1p1**, never `mmcblk2p*`. *(Verifies: booting the SD rootfs.)*
 
-**3. podd is running.** Log in on the console and check:
+**3. podd is running.** In the bootlog this is `podd-status.txt` and
+`journal.txt`; on a shell:
 ```sh
 systemctl status podd            # active (running)
 journalctl -u podd -b --no-pager # podd startup logs

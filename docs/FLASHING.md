@@ -4,9 +4,10 @@
 wants to run the open-source `podd` firmware on it. You should be comfortable
 running commands in a terminal and opening a piece of consumer hardware with a
 screwdriver and a heat gun. You do **not** need to be an embedded-systems
-engineer — this guide walks you through every step. Depending on your Pod you'll
-need either a small USB-serial adapter (~$13) or just a USB-C cable, plus about
-an hour for the one-time "get root" step.
+engineer — this guide walks you through every step. Depending on your hub you'll
+need either a spare microSD card and a card reader (i.MX "SD" hub) or a small
+USB-serial adapter (~$13, MediaTek hub), plus about an hour for the one-time
+unlock step.
 
 > **The one honest, irreducible catch:** the very first time you unlock a Pod you
 > have to *open it up* physically. There is no software-only remote jailbreak (and
@@ -21,9 +22,9 @@ an hour for the one-time "get root" step.
 | Your situation | Do this |
 |---|---|
 | **Already rooted** (you run free-sleep / opensleep, have SSH) | Skip straight to [INSTALL.md](INSTALL.md) — it's literally one command. |
-| **Fresh i.MX hub with an SD card inside** (Pod 3 "SD" hub) | [Buy a serial adapter](#what-to-buy) → [get root over serial](#path-a-serial--u-boot--root-universal) → [INSTALL.md](INSTALL.md). The extra recovery-SD net applies here. |
-| **Fresh i.MX hub with NO SD** (Pod 4 hub) | Same serial path → [INSTALL.md](INSTALL.md). No recovery-SD net; deep unbrick is USB (uuu/SDP). |
-| **Fresh MediaTek "no-SD" hub (FCC 2AYXT61100001)** | Same serial path, but deep recovery differs and is less-tested — read [the MediaTek notes](#mediatek-pod-3-no-sd-specifics). |
+| **Fresh i.MX hub with an SD card inside** (Pod 3 "SD" hub) | **No serial console exists on this board** — the JTAG-footprint header is real JTAG, not a UART. Use the SD paths: boot podd entirely from a swapped SD card ([SD-BOOT.md](SD-BOOT.md), the validated method, eMMC untouched), or [root the stock system via the SD backdoor](#path-b-imx-only-solder-free-sd-backdoor-aka-zerosleep) → [INSTALL.md](INSTALL.md). |
+| **Fresh i.MX hub with NO SD** (Pod 4 hub) | Not yet analyzed. No SD slot, so no SD paths; whether it has a reachable console UART is **unknown** (if its carrier matches the analyzed board, the header is JTAG, not UART). Deep unbrick is USB (uuu/SDP), also unverified. |
+| **Fresh MediaTek "no-SD" hub (FCC 2AYXT61100001)** | [Buy a serial adapter](#what-to-buy) → [get root over serial at J7](#path-a-serial--u-boot--root-mediatek-boards) → [INSTALL.md](INSTALL.md). Deep recovery differs and is less-tested — read [the MediaTek notes](#mediatek-pod-3-no-sd-specifics). |
 
 Related guides: **[INSTALL.md](INSTALL.md)** (installing once you have root) ·
 **[UPDATING.md](UPDATING.md)** (keeping it current) ·
@@ -46,7 +47,7 @@ recovery nets you have.
 | Hub | Chip / board | Storage | How to recognize it |
 |---|---|---|---|
 | **Pod 3 "SD" hub** | NXP i.MX8M Mini, Variscite module ("New-Rat") | eMMC **plus a bootable microSD** inside | A microSD card sits on the Variscite module (often glued in). Best supported — has the extra recovery-SD net. **[CONFIRMED — this is the analyzed hardware.]** |
-| **Pod 4 hub** | i.MX8M Mini (inferred; not yet dumped) | eMMC only, **no SD** | Newer units; **no SD card** inside. U-Boot env lives on eMMC, not an SD. Serial-root + in-band eMMC install; deep unbrick is USB (uuu/SDP). **[INFERRED — no dump yet.]** |
+| **Pod 4 hub** | i.MX8M Mini (inferred; not yet dumped) | eMMC only, **no SD** | Newer units; **no SD card** inside. U-Boot env lives on eMMC, not an SD. Debug access unverified (no confirmed console UART); deep unbrick is USB (uuu/SDP). **[INFERRED — no dump yet.]** |
 | **MediaTek "no-SD" hub** | MediaTek MT8365 "Genio 350" | eMMC only, **no SD** | **FCC ID `2AYXT61100001`**; an extra USB-C port (J13) on the control board. Deep unbrick via mtkclient. **[INFERRED — no dump yet.]** |
 
 How to tell which hub you have, cheapest checks first:
@@ -96,11 +97,13 @@ Full recovery procedures live in **[RECOVERY.md](RECOVERY.md)**.
 > - **Water + mains + electronics.** The Pod pumps water. Keep it dry and
 >   unplugged while it's open.
 > - **The A/B slot install (`podd-slot-install.sh`) writes to eMMC** and *can*
->   require serial recovery if it goes wrong. The plain userland install cannot.
->   Prefer the userland install unless you specifically want podd's own OS image.
+>   require bootloader-level recovery if it goes wrong (serial U-Boot on
+>   MediaTek; JTAG or the SD nets on the i.MX SD hub). The plain userland
+>   install cannot. Prefer the userland install unless you specifically want
+>   podd's own OS image.
 
 **Back up first (the installer does it, but do it yourself too).** If you have a
-serial root shell open, it costs nothing to also copy off the U-Boot environment
+root shell open, it costs nothing to also copy off the U-Boot environment
 and partition table so recovery is trivial later:
 
 ```sh
@@ -115,11 +118,19 @@ backup, see [RECOVERY.md](RECOVERY.md).
 
 ## Step 3 — What to buy
 
-For the **universal serial path** (works on every Pod) you need one of:
+**For an i.MX "SD" hub (the SD paths — no electronics needed):**
+
+- A **microSD card ≥ 16 GB** and a **USB card reader**. That's it for both the
+  [SD-swap podd boot](SD-BOOT.md) and the [SD backdoor](#path-b-imx-only-solder-free-sd-backdoor-aka-zerosleep).
+- *(Optional, for low-level debug/unbrick only)* a **JTAG probe supported by
+  OpenOCD** — the i.MX8MM is well supported. A **Tag-Connect TC2070-IDC**
+  (~$50) clips onto the board's JTAG footprint with **no soldering**.
+
+**For a MediaTek hub (the serial path):**
 
 | Item | Cost | Notes |
 |---|---|---|
-| **FTDI FT232RL USB-UART adapter** | ~$13 | The cheap, solder-a-few-wires option. **Set its logic level to 1.8 V if it has a jumper.** The Pod's UART is natively 1.8 V. A 3.3 V adapter has been observed to work in practice, but 1.8 V is the correct/safe spec — see [residual unknowns](#residual-unknowns--when-to-stop-and-ask). |
+| **FTDI FT232RL USB-UART adapter** | ~$13 | The cheap, solder-a-few-wires option. If its logic level is jumper-selectable, try the lower setting first; community reports 3.3 V working on this board, but the UART's native level is unverified — see [residual unknowns](#residual-unknowns--when-to-stop-and-ask). |
 | **Tag-Connect TC2070-IDC** | ~$50 | Clips onto the J7 footprint with **no soldering**. Pricier, but the tidiest option if you'd rather not solder. |
 
 For the **MediaTek deep-recovery path** you'll additionally want:
@@ -134,42 +145,97 @@ around the enclosure / the microSD), and patience.
 
 ---
 
-## Step 4 — Open the Pod and find header J7
+## Step 4 — Open the Pod and find the debug header
 
-This is the same for all i.MX variants; MediaTek is similar but the recovery
-board differs.
+> **The debug header is NOT the same on every board.** The famous
+> "J7 = UART, GND/RX/TX on pins 1/6/8" pinout that circulates in the community
+> (free-sleep's reference photo) is from the **MediaTek MT8365 / "i350" board
+> (625-00022)**. On the analyzed **i.MX8M Mini / Variscite "New-Rat 0.8"** board
+> the same-looking JTAG-footprint header is **real JTAG** — wiring an FTDI to
+> its pins 6/8 puts you on TDO/TDI and gets you nothing (harmless, but a dead
+> end).
+
+Opening the unit is the same everywhere:
 
 1. **Unplug the Pod and drain/disconnect the water side.** Work dry.
 2. Remove the outer enclosure screws and gently pry the case. Glue is common —
    warm it with a heat gun to soften, don't force it.
-3. Locate the control board. Find header **J7** — it uses a standard JTAG-style
-   footprint. You only need three of its pins:
+3. Locate the control board, then identify which board you have (Step 1) before
+   touching the header.
 
-   | J7 pin | Signal | Connect to your FTDI |
-   |---|---|---|
-   | **pin 1** | **GND** | FTDI GND |
-   | **pin 6** | **RX** (Pod receives) | FTDI **TX** |
-   | **pin 8** | **TX** (Pod transmits) | FTDI **RX** |
+### MediaTek "i350" board (625-00022): J7 is a UART console
 
-   > **Serial wiring is always crossed:** the Pod's TX goes to your adapter's RX,
-   > and vice versa. If you see no output, swap RX/TX — that's the #1 mistake and
-   > it can't hurt anything.
+You only need three of J7's pins:
 
-4. Either clip a **Tag-Connect TC2070** onto J7, or solder three thin wires to
-   pins 1/6/8.
+| J7 pin | Signal | Connect to your FTDI |
+|---|---|---|
+| **pin 1** | **GND** | FTDI GND |
+| **pin 6** | **RX** (Pod receives) | FTDI **TX** |
+| **pin 8** | **TX** (Pod transmits) | FTDI **RX** |
+
+> **Serial wiring is always crossed:** the Pod's TX goes to your adapter's RX,
+> and vice versa. If you see no output, swap RX/TX — that's the #1 mistake and
+> it can't hurt anything.
+
+Either clip a **Tag-Connect TC2070** onto J7, or solder three thin wires to
+pins 1/6/8. Then continue with [Path A](#path-a-serial--u-boot--root-mediatek-boards).
+
+### i.MX "New-Rat 0.8" board (Pod 3 SD hub): the header is real JTAG
+
+Confirmed by probing the analyzed board against the SoM vendor's documentation
+("Table 48: JTAG Header Signals"):
+
+| Pin | Signal | Pin | Signal |
+|---|---|---|---|
+| 1 | **JTAG_VREF** (3.3 V via 150 Ω) | 2 | **TMS** |
+| 3 | GND | 4 | **TCK** (8.2 kΩ pulldown) |
+| 5 | GND | 6 | **TDO** |
+| 7 | GND (0 Ω on SoM) | 8 | **TDI** |
+| 9 | **TRST_B** | 10 | **POR_B** |
+
+- **There is no reachable console UART on this board.** The Linux console
+  `ttymxc3` exists only on the SoM edge-connector pins (83/85); if you ever tap
+  it at the SoM — impractical — it is 115200 8N1 at 3.3 V logic, for **both**
+  U-Boot and the kernel (the 921600 figure is MediaTek-only).
+- The board *does* have a separate UART pad group — but it is an **STM32 MCU
+  UART speaking the binary `0x7E` LSP protocol**. It prints garbage in a
+  terminal; it is not a console. Don't chase it.
+- The header is useful for **JTAG via OpenOCD** (low-level debug/unbrick; the
+  i.MX8MM is well supported). For a normal install you don't need it at all —
+  use the SD paths in Step 5.
+- **No console? No problem for diagnostics.** The podd SD image can carry
+  **self-logging diag units** (`scripts/patch-podd-sd-diag.sh`, from
+  `install/diag/`) that write each boot's dmesg/journal/network state to
+  `/opt/podd/bootlog/` on the SD's first partition — power off, pull the card,
+  and read the logs in a host SD reader. See the
+  [SD-BOOT first-boot checklist](SD-BOOT.md#first-boot-checklist).
 
 ---
 
-## Step 5 — Get root (the one-time hard part)
+## Step 5 — Get in (the one-time hard part)
 
-Pick your path. **Path A (serial → U-Boot) works on every Pod** and is the
-recommended universal method. Path B is a solder-free alternative for i.MX Pods
-only.
+Pick the path for your **hub**:
 
-### Path A: serial → U-Boot → root (universal)
+- **MediaTek hub** → [Path A](#path-a-serial--u-boot--root-mediatek-boards)
+  (serial over J7). This is the proven community method (free-sleep) — on that
+  board.
+- **i.MX "SD" hub** → no serial console exists (Step 4). Two SD options:
+  - **The SD-swap podd boot ([SD-BOOT.md](SD-BOOT.md))** — this project's
+    validated install method. You never need root on the stock system at all:
+    write the podd SD image to a spare card, swap it in, and the Pod boots podd
+    from the SD with the **eMMC untouched**. Swap the stock card back to revert.
+  - **[Path B](#path-b-imx-only-solder-free-sd-backdoor-aka-zerosleep)** (SD
+    backdoor) — if you specifically want root on the *stock* system, then a
+    classic [INSTALL.md](INSTALL.md) userland install.
+- **i.MX no-SD (Pod 4) hub** → not yet analyzed; no verified path. Don't assume
+  the serial instructions below apply to it.
 
-This is the proven method used across the community (free-sleep, opensleep) and
-it works on **all** variants.
+### Path A: serial → U-Boot → root (MediaTek boards)
+
+This is the proven method used across the community (free-sleep) on the
+**MediaTek "i350" board** — and on any board that turns out to have a reachable
+console UART. It does **not** work on the i.MX "New-Rat 0.8" board (its header
+is JTAG; see Step 4).
 
 1. **Open a serial terminal at 921600 baud** and power on the Pod:
 
@@ -178,8 +244,8 @@ it works on **all** variants.
    # or:  screen /dev/ttyUSB0 921600
    ```
 
-   > Baud is **921600**, not 115200 — the Pod's console runs fast even though
-   > U-Boot's own `baudrate` variable says 115200. Use 921600.
+   > On this board the baud is **921600**, not 115200 — the console runs fast
+   > even though U-Boot's own `baudrate` variable says 115200. Use 921600.
 
 2. **Interrupt the bootloader.** As soon as you see `Hit any key to stop
    autoboot`, **hammer Ctrl-C** repeatedly. The window is short (about one
@@ -248,18 +314,24 @@ adapter** — at the cost of physically freeing the glued microSD:
    applying power.** The factory-reset flow re-extracts the now-backdoored rootfs
    onto eMMC. SSH in as `rewt` on port 8822.
 
-Trade-off: no electronics or soldering, but freeing the glued SD is more invasive
-than clipping onto J7. Either way you end up with root; then go to
+Trade-off: no electronics or soldering, but freeing the glued SD takes patience
+with the heat gun. (On this board there is no serial alternative anyway — the
+header is JTAG.) If all you want is to *run podd*, consider the
+[SD-swap boot](SD-BOOT.md) instead: it uses the same freed SD slot but never
+modifies the eMMC at all. With Path B you end up with root on stock; then go to
 [INSTALL.md](INSTALL.md).
 
 ---
 
 ## MediaTek (Pod 3 no-SD) specifics
 
-Everything in **Path A above works on MediaTek** — serial → U-Boot → `init=/bin/bash`
-→ set password → install. That's the recommended path. What's different:
+**Path A above is the MediaTek path** — serial over J7 → U-Boot →
+`init=/bin/bash` → set password → install. That's the recommended path on this
+hub (and the J7 UART pinout + 921600 baud are *this board's* facts). What's
+different from the i.MX hubs:
 
-- **There is no SD card and no SD backdoor.** Path B does not apply.
+- **There is no SD card, no SD backdoor, and no SD-swap boot.** Path B and
+  [SD-BOOT.md](SD-BOOT.md) do not apply.
 - **The deep-recovery net is `mtkclient` over USB-C (J13), and it is less-tested.**
   If you ever brick the bootloader, recovery means putting the MediaTek SoC into
   BROM download mode and reflashing with `mtkclient` from a PC. This path is
@@ -280,22 +352,30 @@ detail.
 Be honest with yourself about these. If you hit one, stop and ask in the project
 before forcing anything:
 
-- **UART logic level.** The spec is **1.8 V**; a 3.3 V FTDI has worked in practice
-  but isn't guaranteed. If you have a 1.8 V-capable adapter, use it.
+- **MediaTek UART logic level.** Unverified. Community 3.3 V FTDI setups have
+  worked in practice on this board, but if your adapter's level is selectable,
+  starting lower is the cautious choice.
+- **The Pod 4 (i.MX no-SD) hub.** Not yet dumped or probed. No confirmed console
+  UART, no SD paths, and the uuu/SDP unbrick is theoretical. If you have one and
+  can open it, identifying its debug header (UART vs JTAG) is an open task.
 - **i.MX "SD manufacturing override" fuse.** The SD-boot/recovery path relies on a
   boot-ROM override that is provably active on the units we've dumped, but *could*
-  be fused off on some production runs. If the SD recovery path doesn't work on
-  your unit, fall back to serial (which always works).
+  be fused off on some production runs. If the SD path doesn't work on your unit,
+  the worst case is "it doesn't boot" — swap the stock card back, then ask; the
+  remaining in is JTAG.
 - **MediaTek below userland.** The exact partition layout, whether J13 is wired to
   the SoC's USB, and whether secure-boot fuses require a signed loader are all
   **unverified on real hardware.** Treat MediaTek bootloader work as experimental.
 - **USB-OTG deep-unbrick on i.MX.** The absolute-last-resort `uuu`/SDP reflash
   needs a USB-OTG pad that nobody has located on the Pod yet. It's theoretical for
-  now; the serial and SD nets cover you in practice.
+  now; the SD and JTAG nets (i.MX) / serial net (MediaTek) cover you in practice.
 
-When in doubt: the **serial U-Boot method never bricks anything** and is always
-available. Use it, get root, and do the safe **userland install**.
+When in doubt, take the path that can't write anything: on an i.MX SD hub the
+**SD-swap boot leaves the eMMC untouched** (swap the stock card back to revert);
+on MediaTek the **serial U-Boot method never bricks anything**. Then do the safe
+**userland install**.
 
 ---
 
-Next: **[INSTALL.md](INSTALL.md) — install podd now that you have root.**
+Next: **[SD-BOOT.md](SD-BOOT.md)** (i.MX SD hub — boot podd from a swapped card)
+or **[INSTALL.md](INSTALL.md)** (install podd once you have root).

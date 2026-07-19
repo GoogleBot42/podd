@@ -1,18 +1,21 @@
 # Recovery — unbrick and restore
 
 **Who this is for / what you'll need:** Anyone whose Pod won't boot, boots into a
-broken state, or who just wants to go back to stock. Depending on how deep you need
-to go you'll need the same serial adapter from [FLASHING.md](FLASHING.md), and — in
-the rare worst case — a PC with reflashing tools. **Read the reassurance below
-first: on the well-supported (i.MX) Pods you have four nested safety nets, and the
-cheapest one fixes almost everything.**
+broken state, or who just wants to go back to stock. Depending on your hub and how
+deep you need to go you'll need an SD card reader (i.MX SD hub), the serial
+adapter from [FLASHING.md](FLASHING.md) (MediaTek), and — in the rare worst
+case — a PC with reflashing tools. **Read the reassurance below first: on the
+well-supported (i.MX) Pods you have several nested safety nets, and the cheapest
+one fixes almost everything.**
 
 > **You can almost always get back.** The stock system stays on the inactive A/B
-> slot, the installer keeps backups in `/opt/podd/backup/`, and (on i.MX) the
-> internal SD holds a factory recovery image. Work through the nets **cheapest
-> first** — most problems are solved at net #1 with a single U-Boot command.
+> slot, the installer keeps backups in `/opt/podd/backup/`, and (on the i.MX SD
+> hub) the internal SD holds a factory recovery image — and if you were running
+> the [SD-swap boot](SD-BOOT.md), swapping the stock card back is a complete,
+> instant revert. Work through the nets **cheapest first** — most problems are
+> solved at net #1 with a single env change.
 
-Related: **[FLASHING.md](FLASHING.md)** (serial setup, wiring, J7) ·
+Related: **[FLASHING.md](FLASHING.md)** (boards, debug headers, wiring) ·
 **[INSTALL.md](INSTALL.md)** · **[UPDATING.md](UPDATING.md)**.
 
 ---
@@ -31,25 +34,36 @@ Not sure? See [FLASHING.md → Identify your Pod](FLASHING.md#step-1--identify-y
 
 Four nested safety nets, cheapest and least invasive first. Try them in order.
 
-### Net 1 — Serial U-Boot: revert the boot slot (fixes almost everything)
+### Net 1 — Revert the boot slot (fixes almost everything)
 
 This is the primary net and it's almost always enough. It fixes any bad-slot,
 bad-env, or failed-update situation, and it's how you "go back to stock."
 
-1. Attach serial to **J7** and open a terminal at **921600** baud (see
-   [FLASHING.md](FLASHING.md#step-4--open-the-pod-and-find-header-j7)).
-2. Power on and **spam Ctrl-C** to stop autoboot.
-3. At the U-Boot prompt, point the boot pointer back at the stock slot and boot:
+> **How you reach U-Boot/the env depends on your board.** On the analyzed
+> **i.MX "New-Rat 0.8" (Pod 3 SD) hub there is no reachable console UART** —
+> the JTAG-footprint header is real JTAG, not serial (see
+> [FLASHING.md](FLASHING.md#step-4--open-the-pod-and-find-the-debug-header)).
+> On that board, do the env flip **from a root shell on any slot that still
+> boots** (`fw_setenv mmcpart 1`, then reboot), or via **JTAG/OpenOCD** if
+> nothing boots — or skip straight to Nets 2/3, which need no console. If you
+> were experimenting with the [SD-swap boot](SD-BOOT.md), recovery is even
+> simpler: swap the stock SD card back in. (On **MediaTek** hubs the serial
+> console at J7/921600 *does* work — see the MediaTek section below.)
 
-   ```
-   printenv                 # see current mmcpart / current_slot
-   setenv mmcpart 1         # 1 = slot A (usually stock); use 2 for slot B
-   run bootcmd
-   ```
+If you can get a U-Boot prompt (serial on MediaTek, or JTAG on i.MX): power on,
+**spam Ctrl-C** to stop autoboot, then point the boot pointer back at the stock
+slot and boot:
 
-   To make it stick across reboots, `saveenv` after `setenv`. If you're recovering
-   from a failed slot install, set `mmcpart` to the **other** slot from the one that
-   failed. On newer builds you can also set `current_slot a` (or `b`).
+```
+printenv                 # see current mmcpart / current_slot
+setenv mmcpart 1         # 1 = slot A (usually stock); use 2 for slot B
+run bootcmd
+```
+
+To make it stick across reboots, `saveenv` after `setenv`. From a running root
+shell the equivalent is `fw_setenv mmcpart 1` + reboot. If you're recovering
+from a failed slot install, set `mmcpart` to the **other** slot from the one
+that failed. On newer builds you can also set `current_slot a` (or `b`).
 
 That's it — you're booted back into a known-good system. No data is touched.
 
@@ -115,7 +129,9 @@ bootloader-level work.
 
 ### Primary — Serial U-Boot
 
-Same as i.MX net 1: attach serial to J7, interrupt U-Boot, and revert the slot:
+On MediaTek the serial console at J7 **works** (921600 baud — see
+[FLASHING.md](FLASHING.md#step-4--open-the-pod-and-find-the-debug-header)):
+attach serial, interrupt U-Boot, and revert the slot:
 
 ```
 printenv

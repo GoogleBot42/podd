@@ -98,6 +98,19 @@ All variants share the **universal serial/U-Boot method** (the only path that wo
 already proven in the wild by free-sleep). The i.MX variants additionally have the **SD/recovery route**.
 
 ### 2a. Universal: serial → U-Boot → root shell [CONFIRMED, free-sleep + owner]
+
+> **CORRECTION (2026-07-19, owner probing of the analyzed board + Variscite SoM
+> docs "Table 48: JTAG Header Signals"):** the J7 pinout and 921600 console below
+> were later confirmed to apply **only to the MediaTek MT8365 / "i350" board
+> (625-00022)** — free-sleep's reference photo is of that board. On the analyzed
+> **i.MX8M Mini / Variscite "New-Rat 0.8"** hub the JTAG-footprint header is
+> **real JTAG** (pin 1 = JTAG_VREF 3.3 V via 150 Ω, 2 = TMS, 4 = TCK, 6 = TDO,
+> 8 = TDI, 9 = TRST_B, 10 = POR_B; 3/5/7 = GND), and the `ttymxc3` console is
+> **not broken out to any reachable header** — it exists only on SoM edge pins
+> 83/85 (115200 8N1, 3.3 V, both U-Boot and kernel; **not** 921600). So this
+> serial method is NOT universal: on that board use the SD-swap path
+> (`docs/SD-BOOT.md`) or JTAG. See `docs/FLASHING.md` for the corrected guide.
+
 **Hardware to buy:**
 - USB-UART adapter: **FTDI FT232RL** (~$13). *Verify/词 set logic level to **1.8 V*** — the i.MX8MM UART is
   natively 1.8 V [INFERRED]; a 3.3 V FTDI may work but 1.8 V is correct. (Owner captured console traffic fine at
