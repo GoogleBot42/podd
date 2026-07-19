@@ -77,6 +77,31 @@
             '';
           };
 
+          # FHS environment for running Buildroot (os/ clean-room image build).
+          # Buildroot hardcodes FHS paths — e.g. dependencies.sh requires `file`
+          # at exactly /usr/bin/file, and many package rules assume /bin/bash —
+          # which a plain `nix shell` can't provide. This wraps the full Buildroot
+          # host-tool set into an FHS sandbox. Because Buildroot needs the host
+          # tools but the podd/UI cross-build needs nix (absent inside the FHS),
+          # do the nix builds OUTSIDE, then run the Buildroot step inside:
+          #   nix build .#podd-aarch64 .#ui
+          #   nix build .#buildrootEnv
+          #   ./result/bin/podd-buildroot-env -c \
+          #     'os/scripts/build-image.sh --no-nix \
+          #        --podd-bin result-podd/bin/podd --ui-dir result-ui ...'
+          # TODO: teach build-image.sh to do this split + re-exec automatically.
+          buildrootEnv = pkgs.buildFHSEnv {
+            name = "podd-buildroot-env";
+            targetPkgs = p: with p; [
+              gcc binutils gnumake bash coreutils which file
+              gnused gawk gnugrep diffutils findutils patch
+              gnutar gzip bzip2 xz zstd cpio unzip rsync wget git
+              bc flex bison ncurses openssl python3 perl util-linux gperf
+              pkg-config
+            ];
+            runScript = "bash";
+          };
+
           default = podup;
         });
 
