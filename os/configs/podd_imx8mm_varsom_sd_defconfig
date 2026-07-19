@@ -67,11 +67,17 @@ BR2_TARGET_ARM_TRUSTED_FIRMWARE_CUSTOM_REPO_URL="https://github.com/varigit/imx-
 BR2_TARGET_ARM_TRUSTED_FIRMWARE_CUSTOM_REPO_VERSION="e5884084510a2a88101351bed3710860c28c0657"
 BR2_TARGET_ARM_TRUSTED_FIRMWARE_PLATFORM="imx8mm"
 BR2_TARGET_ARM_TRUSTED_FIRMWARE_BL31=y
-# E=0 = don't treat warnings as errors. This ~2020 ATF's HAB (secure-boot) code
-# reads from a fixed ROM address, which the modern cross-GCC flags as
-# -Werror=array-bounds. These units have NO secure boot, so the code is compiled
-# but unused; E=0 lets the (functionally irrelevant) warning through.
-BR2_TARGET_ARM_TRUSTED_FIRMWARE_ADDITIONAL_VARIABLES="E=0"
+# This ~2020 ATF vs the modern cross-toolchain needs two warning workarounds
+# (both harmless — no secure boot here, and firmware legitimately has an RWX
+# segment):
+#   E=0                       compiler: HAB (secure-boot) code reads a fixed ROM
+#                             address -> -Werror=array-bounds. Don't treat
+#                             warnings as errors.
+#   TF_LDFLAGS_aarch64=...    linker: ATF hardcodes --fatal-warnings, and ld 2.44
+#                             warns on ATF's RWX LOAD segment. The per-arch var is
+#                             appended after --fatal-warnings, so --no-warn-rwx-
+#                             segments suppresses that warning before it turns fatal.
+BR2_TARGET_ARM_TRUSTED_FIRMWARE_ADDITIONAL_VARIABLES="E=0 TF_LDFLAGS_aarch64=--no-warn-rwx-segments"
 # License-file path for the custom-git ATF (Buildroot needs it for legal-info).
 BR2_TARGET_ARM_TRUSTED_FIRMWARE_LICENSE_FILES="docs/license.rst"  # VERIFY path in fork
 
