@@ -82,6 +82,9 @@ Net: the OS **image** is 100% free of **Eight-authored** code and is publishable
   enforced on these units (unsigned SPL runs), so a from-source boot chain works.
 - **U-Boot env** at `0x400000` carries the RAUC A/B selection logic
   (`BOOT_ORDER` + `BOOT_x_LEFT` bootcount) and `mmcdev` (SD=1 / eMMC=2).
+- **SoM = Variscite DART-MX8M-MINI** (`compatible = "variscite,dart-mx8mm"`, read
+  from the live DTB) — the U-Boot/kernel base. Console is UART4 (`ttymxc3`, not
+  broken out). MCU UARTs: UART1 `ttymxc0` = Sensor, UART3 `ttymxc2` = Frozen.
 - **podd** is cross-compiled by the existing `nix build .#podd-aarch64` and
   installed into the rootfs as a Buildroot package.
 
@@ -136,22 +139,61 @@ obsolete for the OS, though it may survive as an optional fast app-only dev loop
   update bundle to the tag's release. This replaces the currently-`if: false`
   `recovery-sd` stub. The image is our own build, so publishing it is clean.
 
+## Debug channels (no JTAG, no serial console)
+
+This board has **no reachable serial console** (ttymxc3 is only on SoM edge pins
+83/85) and we have **no JTAG adapter**. Probing the live device (2026-07-19) also
+confirmed **wired Ethernet is dead** (FEC MAC present but no PHY populated —
+`Unable to connect to phy`), and **both USB controllers are `disabled`** in the
+stock device tree. So bring-up leans on the channels that *do* exist, none of
+which need a debug adapter:
+
+- **WiFi + SSH** — the primary feedback channel once Linux is up (as on L1).
+- **SD-card iteration with the stock medium as recovery** — the SD-boot path is
+  non-destructive: the stock eMMC is never written, so a broken clean-room image
+  on a *spare* SD is recovered by swapping the stock card back. This makes even
+  blind bootloader bring-up safe: the worst case is "the spare SD doesn't boot."
+- **Self-logging diag partition** — boot logs (dmesg/journal/status) written to
+  the persistent partition, read post-mortem in a host card reader. Covers the
+  pre-network window (`install/diag/`).
+- **LED boot-progress codes** — the IS31FL3194 LED is on I²C and drivable from
+  both U-Boot and Linux. Patch coarse "reached stage N" blink codes into SPL /
+  U-Boot / early init to localize a blind bootloader failure without a console.
+- **USB Serial Download (`uuu`) — probable but unconfirmed.** The i.MX8MM boot
+  ROM's USB-SDP is independent of Linux's disabled USB, and the stock U-Boot env
+  carries the full mfgtool/`fastboot`/`bootcmd_mfg` scaffolding — so SDP is
+  *architecturally* supported and would let `uuu` load a bootloader into RAM
+  non-destructively (with a USB-gadget U-Boot console over the same cable). The
+  only open question is whether the OTG port is physically routed to a reachable
+  connector/pads on the New-Rat carrier. **The plan does not require it** — it's
+  a bonus safety net if the port is found when the unit is opened (which the
+  glued-SD swap already requires).
+
+**Why blind bootloader bring-up is low-risk here:** we are *rebuilding a
+supported board*, not porting a new one. The live DTB reports
+`compatible = "variscite,dart-mx8mm"`, so U-Boot and the kernel are built from
+Variscite's DART-MX8M-MINI tree — the same source the running stock system was
+built from proves this SoM boots this code. Our deltas are the New-Rat carrier
+specifics (no Ethernet PHY, the two STM32 MCU UARTs, I²C peripherals), read
+straight from the stock DTB reference.
+
 ## Bring-up phases
 
-Because **there is no reachable serial console on the New-Rat 0.8 board** (ttymxc3
-is only on SoM edge pins 83/85), each phase is validated via the self-logging
-diag (boot logs to the data partition, read post-mortem in a host card reader)
-and JTAG/OpenOCD — the same constraint the L1 SD-boot path already lives with.
+Ordered so the risky blind step (from-source bootloader) comes **last**, on top
+of an already-proven upper stack:
 
-1. **Boot chain**: SPL + ATF + U-Boot from source → `imx-boot` that reaches a
-   U-Boot prompt / autoboots. Validate over JTAG.
-2. **Kernel + DTB**: our device tree brings up eMMC/SD, the two MCU UARTs
-   (`ttymxc0`/`ttymxc2`), I²C (LED, GPIO expander, RTC), WiFi (brcmfmac). Boots
-   to a Buildroot shell; diag logs land on the data partition.
-3. **Rootfs**: podd + UI + NetworkManager + sshd + muzzle running; podd drives
-   the MCUs (dry-run first, then live) exactly as it does on L1 today.
+1. **Kernel + rootfs on a known-good bootloader** (spare SD): our Buildroot
+   kernel + DTS + rootfs, booted by a working bootloader, brings up eMMC/SD, the
+   two MCU UARTs (`ttymxc0`/`ttymxc2`), I²C (PMIC, RTC, LED, GPIO expander), and
+   WiFi. Validate over SSH + the diag partition. This is most of the work and is
+   fully adapter-free.
+2. **podd on the clean rootfs**: podd + UI + NetworkManager + sshd + muzzle;
+   podd drives the MCUs (dry-run then live) exactly as on L1.
+3. **From-source boot chain** (spare SD, stock card = recovery): SPL + ATF +
+   U-Boot from the Variscite DART tree → `imx-boot`, with LED progress codes for
+   blind feedback. Swap in only after 1–2 boot cleanly.
 4. **RAUC A/B**: two slots, signed bundle, install-to-inactive + boot flip +
-   bootcount rollback proven by deliberately shipping a broken slot.
+   bootcount rollback, proven by deliberately shipping a broken slot.
 5. **CI publish**: reproducible SD image + update bundle attached to a release.
 
 ## Parked / out of scope

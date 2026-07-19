@@ -25,31 +25,39 @@ BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_PODD_PATH)/board/eightsleep/imx8mm-
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_PODD_PATH)/board/eightsleep/imx8mm-varsom/post-image.sh"
 
 # --- bootloader: ATF + U-Boot -> imx-boot ------------------------------------
-# TODO(bring-up): pin U-Boot to the board's known-good tree (Variscite fork or
-# mainline i.MX8MM) and set the board defconfig. Enable imx-mkimage so U-Boot
-# emits flash.bin (imx-boot) stitched with the NXP DDR/HDMI blobs.
+# Board pinned from the LIVE device's DTB: compatible = "variscite,dart-mx8mm"
+# (a Variscite DART-MX8M-MINI SoM; the "VAR-SOM" model string notwithstanding).
+# So base U-Boot on Variscite's DART tree, NOT the VAR-SOM Symphony eval board.
 BR2_TARGET_ARM_TRUSTED_FIRMWARE=y
 BR2_TARGET_ARM_TRUSTED_FIRMWARE_PLATFORM="imx8mm"
 BR2_TARGET_ARM_TRUSTED_FIRMWARE_BL31=y
 BR2_TARGET_UBOOT=y
 BR2_TARGET_UBOOT_NEEDS_ATF_BL31=y
 BR2_TARGET_UBOOT_NEEDS_IMX_MKIMAGE=y
-# BR2_TARGET_UBOOT_BOARD_DEFCONFIG="..."  # TODO(bring-up)
-# BR2_TARGET_UBOOT_CUSTOM_VERSION / _GIT   # TODO(bring-up)
+# Candidate (verify exact name/rev at build time): Variscite u-boot-imx fork,
+# board defconfig imx8mm_var_dart_defconfig. Rebuilding a SUPPORTED board — the
+# running stock system proves this SoM boots this source.
+# BR2_TARGET_UBOOT_BOARD_DEFCONFIG="imx8mm_var_dart"   # candidate
+# BR2_TARGET_UBOOT_CUSTOM_GIT + rev pinned to the Variscite 5.4.x BSP tag  # verify
 
 # NXP redistributable firmware (DDR PHY training + HDMI). Required by every
 # i.MX8M boot chain; NOT Eight Sleep code.
 BR2_PACKAGE_FIRMWARE_IMX=y
 
 # --- kernel ------------------------------------------------------------------
-# TODO(bring-up): Variscite BSP 5.4.x (imx8mm-var-som) or mainline i.MX8MM, with
-# our own device tree (name it podd.dtb; the U-Boot env loads /boot/podd.dtb).
+# Live device runs Variscite BSP Linux 5.4.127 (aarch64-fslc gcc 10.3, Feb 2022).
+# Base our kernel on the Variscite linux-imx 5.4.x DART tree; seed the config from
+# the stock .config pulled off the device (../backup/stock-ref/stock-kernel.config)
+# and trim to what we need. Our clean-room DTS is authored from the stock DTB
+# reference (../backup/stock-ref/stock.dts): DART base + New-Rat carrier deltas —
+# enable UART1 (sensor MCU, ttymxc0) + UART3 (frozen MCU, ttymxc2); I2C PMIC@0x4b,
+# RTC rv3028@0x68, LED + GPIO expander; Ethernet stays off (no PHY populated).
 BR2_LINUX_KERNEL=y
-# BR2_LINUX_KERNEL_CUSTOM_GIT=y / _VERSION  # TODO(bring-up)
-# BR2_LINUX_KERNEL_DEFCONFIG / _CUSTOM_CONFIG_FILE  # TODO(bring-up)
+# BR2_LINUX_KERNEL_CUSTOM_GIT=y + Variscite 5.4.x BSP rev  # verify at build time
+# BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="...podd_kernel.config"  # from stock seed
 BR2_LINUX_KERNEL_DTS_SUPPORT=y
-# BR2_LINUX_KERNEL_INTREE_DTS_NAME / CUSTOM_DTS_PATH="...podd.dts"  # TODO(bring-up)
-# U-Boot env loads Image.gz; select the gzipped image output. # TODO(bring-up): confirm symbol.
+# BR2_LINUX_KERNEL_CUSTOM_DTS_PATH=".../imx8mm-podd.dts" -> /boot/podd.dtb
+BR2_LINUX_KERNEL_IMAGEGZ=y
 
 # --- update engine -----------------------------------------------------------
 BR2_PACKAGE_RAUC=y
