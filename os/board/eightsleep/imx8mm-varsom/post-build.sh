@@ -64,6 +64,9 @@ mask_unit() { ln -sf /dev/null "$TARGET_DIR/etc/systemd/system/$1"; }
 enable_unit podd-muzzle.service sysinit.target
 mask_unit systemd-networkd.service
 mask_unit systemd-networkd-wait-online.service
+# Boot diagnostics -> /data/bootlog (no serial console; read the card post-mortem).
+enable_unit podd-bootlog-early.service sysinit.target
+enable_unit podd-bootlog.timer timers.target
 # Make sure sshd reads /etc/ssh/sshd_config.d/*.conf (older configs may not).
 if [ -f "$TARGET_DIR/etc/ssh/sshd_config" ] \
    && ! grep -q '^Include /etc/ssh/sshd_config.d' "$TARGET_DIR/etc/ssh/sshd_config"; then

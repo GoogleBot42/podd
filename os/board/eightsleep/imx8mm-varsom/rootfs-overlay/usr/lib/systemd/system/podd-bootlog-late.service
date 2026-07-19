@@ -1,0 +1,6 @@
+[Unit]
+Description=podd boot diagnostics (full snapshot)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/podd-bootlog late

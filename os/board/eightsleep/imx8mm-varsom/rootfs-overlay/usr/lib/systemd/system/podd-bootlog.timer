@@ -1,0 +1,9 @@
+[Unit]
+Description=podd boot diagnostics snapshot 60s after boot
+
+[Timer]
+OnBootSec=60s
+Unit=podd-bootlog-late.service
+
+[Install]
+WantedBy=timers.target

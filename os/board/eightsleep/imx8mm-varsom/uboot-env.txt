@@ -1,36 +1,47 @@
-# U-Boot environment fragment for RAUC A/B boot selection.
+# U-Boot environment for the podd clean-room SD image.
 #
-# Mechanism (RAUC's standard U-Boot integration): BOOT_ORDER lists the slots to
-# try; each try decrements BOOT_<slot>_LEFT, and a slot with 0 tries left is
-# skipped. `rauc status mark-good` on a healthy boot resets the counter. If both
-# slots exhaust their tries, we fall through to a safe stop rather than looping.
+# Rebuilt on the *proven* Variscite stock boot flow (from the live device's env,
+# backup/fw_printenv.txt) — the earlier from-scratch RAUC env was broken: it
+# referenced ${loadaddr}/${fdt_addr} without defining them, and `booti`'d a
+# gzipped Image.gz without decompressing it. This mirrors what the (booting) L1
+# SD image does: the stock load/boot machinery, redirected to the SD.
 #
-# This is written into the image's env region (0x400000) by post-image.sh via
-# mkenvimage. Values marked TODO must be reconciled with the real board env
-# (console, DTB name, boot medium) during phase-1 bring-up — see docs/CLEANROOM-OS.md.
+# Baked into the image env region (0x400000) by post-image.sh via mkenvimage.
+# It is a COMPLETE env (mkenvimage replaces everything), so every var U-Boot's
+# boot path needs is defined here. No device-specific vars (serial#/ethaddr).
+#
+# Changes vs stock: mmcdev/mmcblk 2->1 (boot from the SD, not eMMC), fdt_file ->
+# our podd.dtb, no cma= override (our kernel reserves CMA itself; stock's
+# 640M@1376M was for the VPU/display we dropped), and factory_reset/bootscript
+# machinery removed (we already boot from SD).
+#
+# A/B: RAUC slot selection is NOT wired here yet — first prove a single-slot boot
+# (rootfs_a = p1). RAUC bootcount/altbootcmd integration comes after boot is
+# confirmed (see docs/CLEANROOM-OS.md).
 
-# --- A/B state (RAUC updates BOOT_ORDER / BOOT_x_LEFT at install time) --------
-BOOT_ORDER=A B
-BOOT_A_LEFT=3
-BOOT_B_LEFT=3
+# --- load addresses (i.MX8MM; verbatim from the stock Variscite env) ----------
+loadaddr=0x40480000
+img_addr=0x42000000
+fdt_addr=0x43000000
 
-# --- slot -> rootfs mapping ---------------------------------------------------
-# mmcpart selects the partition U-Boot reads the kernel+DTB from and passes as
-# root=. Slot A = p1, slot B = p2. mmcdev: SD=1, eMMC=2 (set per image target).
+# --- what + where ------------------------------------------------------------
+bootdir=/boot
+image=Image.gz
+fdt_file=podd.dtb
+boot_fdt=try
+
+# SD boot: this image is dd'd to a microSD = mmcblk1 (mmcdev 1 in U-Boot).
 mmcdev=1
-rootfs_a_part=1
-rootfs_b_part=2
+mmcblk=1
+mmcpart=1
 
-# --- boot script --------------------------------------------------------------
-# Try slots in BOOT_ORDER; boot the first with tries remaining.
-bootcmd=run rauc_bootselect
-rauc_bootselect=for slot in ${BOOT_ORDER}; do if test "x${slot}" = "xA" && test ${BOOT_A_LEFT} -gt 0; then setexpr BOOT_A_LEFT ${BOOT_A_LEFT} - 1; saveenv; setenv mmcpart ${rootfs_a_part}; run rauc_boot; fi; if test "x${slot}" = "xB" && test ${BOOT_B_LEFT} -gt 0; then setexpr BOOT_B_LEFT ${BOOT_B_LEFT} - 1; saveenv; setenv mmcpart ${rootfs_b_part}; run rauc_boot; fi; done; echo "RAUC: no bootable slot left"; run rauc_recovery
+# --- console (not broken out on this board; harmless) ------------------------
+console=undefined
+setconsole=if test $console = undefined; then setenv console ttymxc3,115200; fi;
 
-# Load kernel + DTB from the selected rootfs slot's /boot and boot it.
-# TODO(bring-up): confirm console (ttymxc3,115200 per the board; NOT broken out
-# to a header — validate over JTAG/diag), DTB filename, and load addresses
-# against the from-source kernel build.
-rauc_boot=setenv bootargs "root=/dev/mmcblk${mmcdev}p${mmcpart} rootwait rauc.slot=${slot} console=ttymxc3,115200"; load mmc ${mmcdev}:${mmcpart} ${loadaddr} /boot/Image.gz; load mmc ${mmcdev}:${mmcpart} ${fdt_addr} /boot/podd.dtb; booti ${loadaddr} - ${fdt_addr}
-
-# Last resort if both slots are dead: halt at the U-Boot prompt (do NOT loop).
-rauc_recovery=echo "RAUC recovery: halting for manual intervention"; sleep 5
+# --- boot flow (stock machinery: load gz -> unzip -> load fdt -> booti) -------
+mmcargs=run setconsole; setenv bootargs console=${console} root=/dev/mmcblk${mmcblk}p${mmcpart} rootwait rw
+loadfdt=echo fdt_file=${fdt_file}; load mmc ${mmcdev}:${mmcpart} ${fdt_addr} ${bootdir}/${fdt_file}
+loadimage=load mmc ${mmcdev}:${mmcpart} ${img_addr} ${bootdir}/${image}; unzip ${img_addr} ${loadaddr}
+mmcboot=echo Booting from mmc ${mmcdev}:${mmcpart} ...; run mmcargs; if run loadfdt; then booti ${loadaddr} - ${fdt_addr}; else echo WARN: cannot load DT; fi;
+bootcmd=echo podd bootcmd; mmc dev ${mmcdev}; if mmc rescan; then if run loadimage; then run mmcboot; else echo ERROR: cannot load ${bootdir}/${image}; fi; else echo ERROR: mmc ${mmcdev} rescan failed; fi;

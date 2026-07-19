@@ -1,0 +1,31 @@
+#!/bin/sh
+# podd-bootlog - dump boot diagnostics to the persistent data partition so a
+# blind boot (no serial console) can be diagnosed post-mortem by reading the SD
+# in a host card reader. Writes to /data/bootlog (the podd_data partition, or the
+# rootfs mountpoint if that partition didn't mount).
+tag="${1:-log}"
+dir=/data/bootlog
+mkdir -p "$dir" 2>/dev/null || dir=/root/bootlog
+mkdir -p "$dir"
+
+{
+	echo "=== podd-bootlog [$tag] ==="
+	echo "date       : $(date 2>/dev/null || echo '(no RTC)')"
+	echo "uptime     : $(cat /proc/uptime 2>/dev/null)"
+	echo "uname      : $(uname -a)"
+	echo "cmdline    : $(cat /proc/cmdline 2>/dev/null)"
+	echo "--- systemd: failed units ---"
+	systemctl --failed --no-legend 2>/dev/null
+	echo "--- systemd: default target reached? ---"
+	systemctl is-active multi-user.target 2>/dev/null
+	echo "--- network ---"
+	ip -br addr 2>/dev/null
+	nmcli -t -f DEVICE,TYPE,STATE dev 2>/dev/null
+	nmcli -t -f NAME,DEVICE,STATE con 2>/dev/null
+	echo "--- podd.service ---"
+	systemctl status podd.service --no-pager 2>/dev/null | head -25
+} > "$dir/status-$tag.txt" 2>&1
+
+dmesg > "$dir/dmesg-$tag.txt" 2>&1
+journalctl -b --no-pager > "$dir/journal-$tag.txt" 2>&1
+sync

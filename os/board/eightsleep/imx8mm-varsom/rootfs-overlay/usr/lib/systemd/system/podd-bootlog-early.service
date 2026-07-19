@@ -1,0 +1,13 @@
+[Unit]
+Description=podd boot diagnostics (early marker)
+After=local-fs.target
+DefaultDependencies=no
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/podd-bootlog early
+
+[Install]
+WantedBy=sysinit.target
