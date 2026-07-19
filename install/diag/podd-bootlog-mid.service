@@ -1,0 +1,9 @@
+[Unit]
+Description=podd boot diagnostic (mid)
+After=basic.target
+[Service]
+Type=oneshot
+ExecStart=/opt/podd/bootlog.sh mid
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target

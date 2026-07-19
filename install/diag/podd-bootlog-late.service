@@ -1,0 +1,11 @@
+[Unit]
+Description=podd boot diagnostic (full dump, watches network for ~60s)
+After=multi-user.target network.target
+Wants=network.target
+[Service]
+Type=oneshot
+ExecStart=/opt/podd/bootlog.sh late
+TimeoutStartSec=180
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
