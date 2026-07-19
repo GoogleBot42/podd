@@ -39,17 +39,28 @@ can publish it.
 blobs of any kind" is **not** possible on this SoC and never has been:
 
 - **The i.MX8M boot chain needs NXP's firmware blobs** — DDR PHY training
-  (`lpddr4_pmu_train_*.bin`), and HDMI/DP firmware. These are **NXP's**, freely
-  redistributable under NXP's license, and *every* i.MX8M board (including fully
-  mainline ones) ships them. They are not Eight's, and Buildroot fetches them
-  from NXP's `firmware-imx` release.
+  (`lpddr4_pmu_train_*.bin`) and HDMI/DP firmware, fetched by Buildroot from
+  NXP's `firmware-imx` release. They are **NXP's**, not Eight's, and *every*
+  i.MX8M board (including fully mainline ones) ships them — the SoC physically
+  cannot boot without the DDR training firmware.
+  - **License terms** (`LA_OPT_NXP_Software_License`): redistribution is
+    permitted *only embedded within an "Authorized System"* — hardware built
+    around an NXP part. A firmware image for the i.MX8MM Pod qualifies, so
+    publishing it from CI is within the license (the same basis Variscite,
+    Yocto/meta-freescale, and Buildroot ship i.MX images on). NXP's copyright
+    notice must ship with it (`make legal-info` emits this), and it stays a
+    **proprietary** component — it cannot be relicensed GPL. So the published
+    image is *our GPL code + one NXP proprietary blob we're licensed to ship for
+    this hardware + zero Eight Sleep code*. This is "no Eight blobs," not
+    "100% FOSS."
 - **The STM32 MCU firmware stays Eight's** — but it lives on the microcontrollers'
   own flash, **not in this image**. The clean-room OS image contains none of it;
   podd merely speaks the (reverse-engineered) UART protocol to it. This only
   becomes a question if you want to *reflash* the MCUs from clean-room source,
   which is the out-of-scope STM32-rewrite project.
 
-Net: the OS **image** is 100% free of Eight-authored code and is publishable.
+Net: the OS **image** is 100% free of **Eight-authored** code and is publishable
+(one NXP proprietary boot blob remains, shipped under NXP's license as above).
 
 ## Component stack
 
