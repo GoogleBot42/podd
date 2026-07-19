@@ -372,6 +372,14 @@ async fn run_discovery(
         // wait for mode switch
         wait_for_mode(&mut reader, client, state, DeviceMode::Firmware).await?;
 
+        // Release the bootloader-baud port (and its TIOCEXCL exclusive lock)
+        // BEFORE reopening at firmware baud. If the old fd is still open, the
+        // reopen's TIOCEXCL fails ("Unable to acquire exclusive lock on serial
+        // port"), the sensor task errors, and that tears down the whole control
+        // core (the frozen/TEC manager gets cancelled with it).
+        drop(writer);
+        drop(reader);
+
         return Ok(create_framed_port::<SensorPacket>(port, firmware_baud)?.split());
     }
 
