@@ -139,7 +139,6 @@ impl PresenseManager {
             self.calibration_samples = vec![];
             self.calibration_end = None;
 
-            // update our config
             self.config = Some(new_cfg.clone());
 
             // update config file

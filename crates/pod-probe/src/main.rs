@@ -82,7 +82,7 @@ fn parse_hex(s: &str) -> anyhow::Result<Vec<u8>> {
         .chars()
         .filter(|c| c.is_ascii_hexdigit())
         .collect();
-    anyhow::ensure!(cleaned.len() % 2 == 0, "hex must have an even number of digits");
+    anyhow::ensure!(cleaned.len().is_multiple_of(2), "hex must have an even number of digits");
     (0..cleaned.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&cleaned[i..i + 2], 16).map_err(Into::into))

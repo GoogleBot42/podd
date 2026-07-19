@@ -260,9 +260,11 @@ impl UpdaterConfig {
     /// - `PODD_UPDATER_HEALTH_URL`
     pub fn from_env() -> Self {
         let env = |k: &str| std::env::var(k).ok();
-        let mut cfg = UpdaterConfig::default();
+        let mut cfg = UpdaterConfig {
+            enabled: !matches!(env("PODD_UPDATER_ENABLED").as_deref(), Some("false") | Some("0")),
+            ..UpdaterConfig::default()
+        };
 
-        cfg.enabled = !matches!(env("PODD_UPDATER_ENABLED").as_deref(), Some("false") | Some("0"));
         if let Some(c) = env("PODD_UPDATER_CHANNEL") {
             cfg.channel = c;
         }

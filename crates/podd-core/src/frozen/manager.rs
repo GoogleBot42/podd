@@ -64,8 +64,11 @@ pub async fn run(
 
     let (mut writer, mut reader) = create_framed_port::<FrozenPacket>(port, baud)?.split();
 
-    let mut state = FrozenState::default();
-    state.water_full = true; // assume present until firmware says otherwise
+    // assume water present until firmware says otherwise
+    let mut state = FrozenState {
+        water_full: true,
+        ..FrozenState::default()
+    };
     state.publish_reset(&mut client).await;
     publish_frozen(&status, &state);
 

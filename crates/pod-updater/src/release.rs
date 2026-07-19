@@ -189,7 +189,7 @@ impl ReleaseLayout {
             dirs.push((path, mtime));
         }
         // Newest first; retain the first `keep`.
-        dirs.sort_by(|a, b| b.1.cmp(&a.1));
+        dirs.sort_by_key(|d| std::cmp::Reverse(d.1));
         let mut keep_names: std::collections::HashSet<String> =
             protected.into_iter().collect();
         for (path, _) in dirs.iter().take(keep) {

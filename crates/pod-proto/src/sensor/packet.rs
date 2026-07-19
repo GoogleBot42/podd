@@ -327,7 +327,7 @@ impl SensorPacket {
 
         let body = buf.len() - Self::POD4_PIEZO_HEADER;
         // must be a whole number of left/right i32 pairs (8 bytes)
-        if body % 8 != 0 {
+        if !body.is_multiple_of(8) {
             return Err(invalid_structure(
                 "Sensor/Pod4Piezo",
                 format!("body {body} is not a multiple of 8 (l/r i32 pair)"),
@@ -382,7 +382,7 @@ impl SensorPacket {
 
         let body = buf.len() - Self::POD4_AUX_HEADER;
         // must be a whole number of 4-channel i32 groups (16 bytes)
-        if body % (Self::POD4_AUX_CHANNELS * 4) != 0 {
+        if !body.is_multiple_of(Self::POD4_AUX_CHANNELS * 4) {
             return Err(invalid_structure(
                 "Sensor/Pod4Aux",
                 format!("body {body} is not a multiple of 16 (4x i32)"),

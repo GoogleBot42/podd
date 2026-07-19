@@ -210,7 +210,7 @@ pub struct DailySchedule {
     pub power: PowerBlock,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SideSchedule {
     pub sunday: DailySchedule,
@@ -222,7 +222,7 @@ pub struct SideSchedule {
     pub saturday: DailySchedule,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Schedules {
     pub left: SideSchedule,
@@ -247,29 +247,6 @@ impl Default for DailySchedule {
                 on_temperature: 82,
                 enabled: false,
             },
-        }
-    }
-}
-
-impl Default for SideSchedule {
-    fn default() -> Self {
-        SideSchedule {
-            sunday: DailySchedule::default(),
-            monday: DailySchedule::default(),
-            tuesday: DailySchedule::default(),
-            wednesday: DailySchedule::default(),
-            thursday: DailySchedule::default(),
-            friday: DailySchedule::default(),
-            saturday: DailySchedule::default(),
-        }
-    }
-}
-
-impl Default for Schedules {
-    fn default() -> Self {
-        Schedules {
-            left: SideSchedule::default(),
-            right: SideSchedule::default(),
         }
     }
 }

@@ -20,7 +20,6 @@ jiff.workspace = true
 log.workspace = true
 
 axum.workspace = true
-tower.workspace = true
 tower-http.workspace = true
 futures.workspace = true
 tokio-stream.workspace = true

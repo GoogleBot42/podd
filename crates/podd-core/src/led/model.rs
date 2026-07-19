@@ -85,6 +85,9 @@ pub enum PatternNext {
 
 #[derive(Clone)]
 #[repr(u8)]
+// Variant names embed the hardware gamma value (2.4 / 3.5); dropping the prefix
+// (e.g. `Gamma::_2_4`) would read worse than the redundancy the lint flags.
+#[allow(clippy::enum_variant_names)]
 pub enum Gamma {
     /// gamma = 2.4
     Gamma2_4 = 0b00,

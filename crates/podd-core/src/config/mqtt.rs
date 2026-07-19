@@ -289,7 +289,6 @@ pub async fn handle_action(
         return Err(format!("Error sending to config watch channel: {e}").into());
     }
 
-    // save to file
     if let Err(e) = cfg.save(CONFIG_FILE).await {
         return Err(format!("Failed to save config: {e}").into());
     }
@@ -376,7 +375,7 @@ fn alarm_to_string(alarm: &Option<AlarmConfig>) -> String {
     }
 }
 
-fn temps_to_string(temps: &Vec<f32>) -> String {
+fn temps_to_string(temps: &[f32]) -> String {
     temps
         .iter()
         .map(|e| e.to_string())
