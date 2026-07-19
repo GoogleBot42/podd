@@ -50,7 +50,12 @@ PODD_PRE_INSTALL_TARGET_HOOKS += PODD_CHECK_ARTIFACTS
 define PODD_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0755 $(PODD_BIN) $(TARGET_DIR)/usr/bin/podd
 	mkdir -p $(TARGET_DIR)/usr/share/podd/ui
-	cp -a $(PODD_UI_DIR)/. $(TARGET_DIR)/usr/share/podd/ui/
+	# The UI comes from the Nix store, whose files/dirs are read-only (0444/0555).
+	# `cp -a` would preserve those perms, so Buildroot's later fakeroot cleanup
+	# can't remove them ("Permission denied"). Dereference symlinks and normalize
+	# to writable-by-owner, world-readable.
+	cp -rL $(PODD_UI_DIR)/. $(TARGET_DIR)/usr/share/podd/ui/
+	chmod -R u+rwX,go=rX $(TARGET_DIR)/usr/share/podd/ui
 endef
 
 define PODD_INSTALL_INIT_SYSTEMD
