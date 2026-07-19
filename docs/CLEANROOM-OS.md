@@ -142,11 +142,11 @@ obsolete for the OS, though it may survive as an optional fast app-only dev loop
 ## Debug channels (no JTAG, no serial console)
 
 This board has **no reachable serial console** (ttymxc3 is only on SoM edge pins
-83/85) and we have **no JTAG adapter**. Probing the live device (2026-07-19) also
-confirmed **wired Ethernet is dead** (FEC MAC present but no PHY populated —
-`Unable to connect to phy`), and **both USB controllers are `disabled`** in the
-stock device tree. So bring-up leans on the channels that *do* exist, none of
-which need a debug adapter:
+83/85), **no JTAG adapter**, and — confirmed by the owner (2026-07-19) — **no USB
+port** (so NXP USB-SDP / `uuu` is not available either). Probing the live device
+also confirmed **wired Ethernet is dead** (FEC MAC present but no PHY populated —
+`Unable to connect to phy`). So bring-up leans on the channels that *do* exist,
+none of which need a debug adapter or a port this board lacks:
 
 - **WiFi + SSH** — the primary feedback channel once Linux is up (as on L1).
 - **SD-card iteration with the stock medium as recovery** — the SD-boot path is
@@ -157,20 +157,28 @@ which need a debug adapter:
   the persistent partition, read post-mortem in a host card reader. Covers the
   pre-network window (`install/diag/`).
 - **LED boot-progress codes** — the IS31FL3194 LED is on I²C and drivable from
-  both U-Boot and Linux. Patch coarse "reached stage N" blink codes into SPL /
-  U-Boot / early init to localize a blind bootloader failure without a console.
-- **USB Serial Download (`uuu`) — probable but unconfirmed.** The i.MX8MM boot
-  ROM's USB-SDP is independent of Linux's disabled USB, and the stock U-Boot env
-  carries the full mfgtool/`fastboot`/`bootcmd_mfg` scaffolding — so SDP is
-  *architecturally* supported and would let `uuu` load a bootloader into RAM
-  non-destructively (with a USB-gadget U-Boot console over the same cable). The
-  only open question is whether the OTG port is physically routed to a reachable
-  connector/pads on the New-Rat carrier. **The plan does not require it** — it's
-  a bonus safety net if the port is found when the unit is opened (which the
-  glued-SD swap already requires).
+  both U-Boot and Linux. Patch coarse "reached stage N" blink codes into U-Boot /
+  early init to localize a blind bootloader failure without a console.
+- **U-Boot-to-SD post-mortem** — once U-Boot proper is running (DRAM + MMC up) it
+  can write a marker/log to a FAT partition on the SD before it fails, read back
+  in a card reader. Covers the U-Boot-proper window that LED codes can only hint at.
 
-**Why blind bootloader bring-up is low-risk here:** we are *rebuilding a
-supported board*, not porting a new one. The live DTB reports
+With no console, JTAG, or USB, the bootloader phase has a **single recovery — the
+spare-SD swap** — so it is designed to be un-brickable rather than debuggable:
+
+- **The fatal, invisible zone (SPL + DDR training) is exactly what we do NOT
+  change.** It is Variscite's DDR config for this exact SoM, used unmodified. All
+  our changes live in U-Boot proper / device tree / env, which fail *visibly*
+  (LED / SD-log) or merely *don't boot the spare SD*.
+- **eMMC is never written during bring-up.** Every iteration is on a spare SD;
+  the stock card (and untouched stock eMMC) is the instant, total revert.
+- **The from-source bootloader is validated by A/B comparison**, not
+  introspection: build `imx-boot` from Variscite DART source with minimal changes,
+  `dd` to a spare SD, and check whether it boots the *same* kernel the stock
+  bootloader does. It either comes up on WiFi/writes logs, or it doesn't and you
+  swap back.
+
+**Why this is a low-risk rebuild, not a blind port:** the live DTB reports
 `compatible = "variscite,dart-mx8mm"`, so U-Boot and the kernel are built from
 Variscite's DART-MX8M-MINI tree — the same source the running stock system was
 built from proves this SoM boots this code. Our deltas are the New-Rat carrier
