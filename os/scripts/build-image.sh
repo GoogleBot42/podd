@@ -115,6 +115,10 @@ fi
 
 [ -x "${PODD_BIN}" ]    || die "podd binary not executable: ${PODD_BIN}"
 [ -d "${PODD_UI_DIR}" ] || die "UI dir not found: ${PODD_UI_DIR}"
+# Absolutize: Buildroot runs the podd package (podd.mk) from the Buildroot dir,
+# so a relative --podd-bin/--ui-dir would resolve against the wrong CWD there.
+PODD_BIN="$(realpath "${PODD_BIN}")"
+PODD_UI_DIR="$(realpath "${PODD_UI_DIR}")"
 log "podd binary : ${PODD_BIN}"
 log "UI assets   : ${PODD_UI_DIR}"
 
