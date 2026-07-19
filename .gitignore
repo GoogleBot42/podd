@@ -9,3 +9,9 @@ node_modules
 ui/node_modules/
 ui/dist/
 .direnv
+
+# Buildroot checkout + output for the clean-room OS image (os/)
+/build
+result-brenv
+result-podd
+result-ui

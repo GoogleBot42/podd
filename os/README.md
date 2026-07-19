@@ -71,52 +71,42 @@ There is **no secure boot** on these units, so the container is unsigned.
 
 ## Building
 
-podd itself is cross-compiled outside Buildroot (reproducible Nix cross-build),
-then staged into the rootfs by the `podd` package. The wrapper handles both:
+**One command** (from the repo root):
 
 ```sh
-# From the repo root. Fetches pinned Buildroot into ./build/buildroot, runs the
-# two nix builds, applies the defconfig, and builds the image.
-os/scripts/build-image.sh --output-dir dist/
-
-# -> build/buildroot/output/images/podd-sd.img.gz  (+ copied into dist/)
+os/scripts/build.sh
+# -> dist/podd-sd.img.gz   (also build/buildroot/output/images/)
 ```
 
-Useful flags (`--help` for the full list):
+`build.sh` orchestrates the whole thing: it Nix-builds the podd binary, the web
+UI, and the Buildroot **FHS sandbox**, then runs Buildroot *inside* that sandbox
+(Buildroot hardcodes FHS paths a plain `nix shell` can't provide — see the
+`buildrootEnv` package in `flake.nix`). The heavy compile (toolchain, ATF,
+U-Boot, kernel, rootfs) is cached under `build/buildroot/` after the first run.
 
-```sh
-# CI / offline: supply prebuilt artifacts, skip nix.
-os/scripts/build-image.sh --no-nix \
-  --podd-bin result-podd/bin/podd --ui-dir result-ui
-
-# Iterate against a Buildroot checkout you already have.
-os/scripts/build-image.sh --buildroot /path/to/buildroot --jobs 8
-```
-
-Equivalent by hand:
-
-```sh
-nix build .#podd-aarch64        # -> result-podd/bin/podd
-nix build .#ui                  # -> result-ui
-
-git clone --branch 2026.02.3 --depth 1 \
-  https://github.com/buildroot/buildroot.git build/buildroot
-make -C build/buildroot BR2_EXTERNAL=$PWD/os podd_imx8mm_varsom_sd_defconfig
-make -C build/buildroot \
-  PODD_BIN=$PWD/result-podd/bin/podd \
-  PODD_UI_DIR=$PWD/result-ui
-# -> build/buildroot/output/images/podd-sd.img.gz
-```
+The one-command script wraps the lower-level `build-image.sh`, which does the
+Buildroot side only and is what CI calls. `build-image.sh --help` lists its
+flags (`--buildroot DIR` to reuse a checkout, `--no-nix --podd-bin/--ui-dir` for
+prebuilt artifacts, `--jobs N`).
 
 Write the result to a **spare** SD (the stock card stays your instant revert):
 
 ```sh
-gunzip -c build/buildroot/output/images/podd-sd.img.gz \
-  | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
+gunzip -c dist/podd-sd.img.gz \
+  | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress; sync
 ```
 
-CI wraps `build-image.sh` to publish `podd-sd-<version>.img.gz` + the RAUC bundle
-on tag releases (replacing the `recovery-sd` stub job).
+CI wraps `build.sh` to publish `podd-sd-<version>.img.gz` + the RAUC bundle on
+tag releases (replacing the `recovery-sd` stub job).
+
+### Host mkimage workaround
+
+Buildroot 2026.02.3's own host `u-boot-tools` (mkimage 2025.10) is built with an
+empty `CONFIG_MKIMAGE_DTC_PATH`, so its `mkimage` cannot compile the boot FIT and
+fails with `-I: command not found`. `build.sh` sidesteps this by passing a
+known-good `mkimage` (from `nix build nixpkgs#ubootTools`) to `build-image.sh`
+via `PODD_FIT_MKIMAGE`, which shims it over Buildroot's after `host-uboot-tools`
+is built. Nothing else in Buildroot is affected.
 
 ## Integration (resolved)
 
