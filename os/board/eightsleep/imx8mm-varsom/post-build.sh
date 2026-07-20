@@ -123,6 +123,29 @@ else
 	echo "post-build: WARNING no WiFi firmware at $WIFI_FW_DIR — brcmfmac probe will fail" >&2
 fi
 
+# --- zoneinfo: replace top-level symlinks with hardlinks ---------------------
+# Buildroot's tz-info installs /usr/share/zoneinfo/America etc. as symlinks into
+# posix/. podd's tz library (jiff) indexes the system zoneinfo without following
+# symlinked directories, so every IANA name fails to resolve ("failed to find
+# time zone ... in time zone database", podd crash-loops on config parse) even
+# though the files are present — and with a system zoneinfo dir present jiff
+# never falls back to its bundled tzdb. Hardlink the trees into place instead
+# (no size cost; observed live 2026-07-19, fixed via TZDIR= drop-in on-device).
+ZI="$TARGET_DIR/usr/share/zoneinfo"
+if [ -d "$ZI/posix" ]; then
+	find "$ZI" -maxdepth 1 -type l | while read -r link; do
+		tgt="$ZI/$(readlink "$link")"
+		[ -e "$tgt" ] || continue
+		rm "$link"
+		cp -al "$tgt" "$link"
+	done
+	[ -e "$ZI/America/New_York" ] || {
+		echo "post-build: FATAL zoneinfo de-symlink failed (America/New_York missing)" >&2
+		exit 1
+	}
+	echo "post-build: zoneinfo top-level symlinks hardlinked (jiff compat)"
+fi
+
 # --- WiFi driver module sanity check -----------------------------------------
 # The WiFi stack is =m in linux-podd.config ON PURPOSE: built-in (=y) it probes
 # the SDIO card BEFORE the rootfs is mounted, so the firmware above is invisible
