@@ -237,7 +237,9 @@ impl CommandScheduler {
                 },
                 RegisteredCommand {
                     name: "probe_temperature",
-                    max_attempts: None,
+                    // EXPERIMENT(pod4-wedge): ProbeTemperature is a Pod 3 command;
+                    // capped to test whether it wedges the Pod 4 G0 firmware.
+                    max_attempts: Some(10),
                     attempts: 0,
                     interval: Duration::from_secs(4),
                     // stagger
