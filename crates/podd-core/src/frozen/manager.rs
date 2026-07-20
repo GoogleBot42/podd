@@ -29,6 +29,32 @@ struct CommandTimers {
     last_prime: Instant,
 }
 
+/// A manual (API/UI) setpoint that takes precedence over the config schedule
+/// for one side. Without this, the scheduler re-asserts the config target
+/// every [`TEMP_INT`] and any change made in the web UI reverts in seconds.
+struct ManualOverride {
+    target: FrozenTarget,
+    /// The schedule's enabled flag when the override was taken. When it flips
+    /// (sleep/wake boundary or away-mode change) the override expires and the
+    /// schedule takes back over.
+    config_enabled: bool,
+}
+
+#[derive(Default)]
+struct ManualOverrides {
+    left: Option<ManualOverride>,
+    right: Option<ManualOverride>,
+}
+
+impl ManualOverrides {
+    fn side_mut(&mut self, side: &BedSide) -> &mut Option<ManualOverride> {
+        match side {
+            BedSide::Left => &mut self.left,
+            BedSide::Right => &mut self.right,
+        }
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum FrozenError {
     #[error("Serial: {0}")]
@@ -94,6 +120,7 @@ pub async fn run(
     let mut was_active = false;
     let mut led_state: Option<LedThermalState> = None;
     let mut wake_attempts = 0;
+    let mut overrides = ManualOverrides::default();
 
     loop {
         tokio::select! {
@@ -142,7 +169,8 @@ pub async fn run(
                 &timezone,
                 &away_mode,
                 &prime,
-                &side_config
+                &side_config,
+                &mut overrides,
             ) {
                 let now = Instant::now();
 
@@ -176,11 +204,28 @@ pub async fn run(
                 away_mode = cfg.away_mode;
                 prime = cfg.prime;
                 side_config = cfg.profile.clone();
+                // New config = new intent; manual overrides don't outlive it.
+                overrides = ManualOverrides::default();
             }
 
             // api / scheduler commands routed to the Frozen subsystem.
             Some(cmd) = cmd_rx.recv() => {
-                handle_command(&mut writer, &state, dry_run, cmd).await;
+                if let Some((side, target)) = handle_command(&mut writer, &state, dry_run, cmd).await {
+                    let cfg_side = side_config.get_side(&side);
+                    let config_enabled = FrozenTarget::calc_wanted(
+                        &timezone,
+                        away_mode,
+                        &cfg_side.temperatures,
+                        cfg_side.sleep,
+                        cfg_side.wake,
+                    )
+                    .enabled;
+                    log::info!(
+                        "Manual override on {side:?}: enabled={} temp={} (holds until the next schedule boundary)",
+                        target.enabled, target.temp
+                    );
+                    *overrides.side_mut(&side) = Some(ManualOverride { target, config_enabled });
+                }
             }
         }
     }
@@ -218,7 +263,14 @@ fn f_to_centi_c(f: i32) -> u16 {
 /// dry-running we log the intended frame + bytes and send nothing, so the
 /// managed thermostat/scheduler stays in charge of the bed. Flipping this off is
 /// the live cutover — see `TODO(live-cutover)`.
-async fn handle_command(writer: &mut Writer, state: &FrozenState, dry_run: bool, cmd: Command) {
+/// Returns the `(side, target)` of a manual SetTargetTemperature it actually
+/// sent (never in dry-run), so the caller can register a [`ManualOverride`].
+async fn handle_command(
+    writer: &mut Writer,
+    state: &FrozenState,
+    dry_run: bool,
+    cmd: Command,
+) -> Option<(BedSide, FrozenTarget)> {
     let frame = match cmd {
         Command::SetTargetTempF { side, f } => Some(FrozenCommand::SetTargetTemperature {
             side,
@@ -255,20 +307,28 @@ async fn handle_command(writer: &mut Writer, state: &FrozenState, dry_run: bool,
         }
     };
 
-    let Some(frame) = frame else { return };
+    let Some(frame) = frame else { return None };
 
     if dry_run {
         log::warn!(
             "[dry-run] Frozen would send {frame}: {:02X?} // TODO(live-cutover)",
             frame.to_bytes()
         );
+        None
     } else {
+        let manual = if let FrozenCommand::SetTargetTemperature { side, tar } = &frame {
+            Some((*side, tar.clone()))
+        } else {
+            None
+        };
         // TODO(live-cutover): live setpoint/control write to the Frozen MCU.
         // Gate behind the safety supervisor (heartbeat, setpoint clamp, faults).
         send_command(writer, frame).await;
+        manual
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn get_next_command(
     timers: &mut CommandTimers,
     state: &FrozenState,
@@ -276,6 +336,7 @@ fn get_next_command(
     away_mode: &bool,
     prime_time: &Time,
     side_config: &SidesConfig,
+    overrides: &mut ManualOverrides,
 ) -> Option<FrozenCommand> {
     let now = Instant::now();
 
@@ -284,16 +345,33 @@ fn get_next_command(
         return Some(FrozenCommand::GetHardwareInfo);
     }
 
-    if now.duration_since(timers.last_left_temp) > TEMP_INT {
-        let left_cfg = side_config.get_side(&BedSide::Left);
-        let wanted_left = FrozenTarget::calc_wanted(
+    // Per side: the schedule's target, unless a live manual override holds.
+    // An override expires when the schedule's enabled flag flips (sleep/wake
+    // boundary or away-mode) — the schedule then takes back over.
+    let mut wanted_for = |side: BedSide| -> FrozenTarget {
+        let cfg = side_config.get_side(&side);
+        let config_wanted = FrozenTarget::calc_wanted(
             timezone,
             *away_mode,
-            &left_cfg.temperatures,
-            left_cfg.sleep,
-            left_cfg.wake,
+            &cfg.temperatures,
+            cfg.sleep,
+            cfg.wake,
         )
-        .delimiter_safe(BedSide::Left);
+        .delimiter_safe(side);
+        let slot = overrides.side_mut(&side);
+        if let Some(ov) = slot
+            && ov.config_enabled != config_wanted.enabled
+        {
+            log::info!("Manual override on {side:?} expired (schedule boundary)");
+            *slot = None;
+        }
+        slot.as_ref()
+            .map(|ov| ov.target.clone())
+            .unwrap_or(config_wanted)
+    };
+
+    if now.duration_since(timers.last_left_temp) > TEMP_INT {
+        let wanted_left = wanted_for(BedSide::Left);
         timers.last_left_temp = now;
         if state.left_target.as_ref() != Some(&wanted_left) {
             return Some(FrozenCommand::SetTargetTemperature {
@@ -304,15 +382,7 @@ fn get_next_command(
     }
 
     if now.duration_since(timers.last_right_temp) > TEMP_INT {
-        let right_cfg = side_config.get_side(&BedSide::Right);
-        let wanted_right = FrozenTarget::calc_wanted(
-            timezone,
-            *away_mode,
-            &right_cfg.temperatures,
-            right_cfg.sleep,
-            right_cfg.wake,
-        )
-        .delimiter_safe(BedSide::Right);
+        let wanted_right = wanted_for(BedSide::Right);
         timers.last_right_temp = now;
 
         if state.right_target.as_ref() != Some(&wanted_right) {
