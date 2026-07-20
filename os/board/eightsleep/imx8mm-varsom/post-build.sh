@@ -101,4 +101,21 @@ else
 	echo "post-build: WARNING no authorized_keys at $SECRETS_DIR — no SSH access" >&2
 fi
 
+# --- WiFi firmware (Laird LWB5 / BCM4339) ------------------------------------
+# brcmfmac needs brcmfmac4339-sdio.bin (Broadcom/Cypress fw) + brcmfmac4339-sdio.txt
+# (the module's NVRAM calibration). Neither ships in linux-firmware for this exact
+# module, so install the copies extracted from the stock rootfs. Neither is Eight
+# Sleep code (Broadcom fw + Variscite/Laird board data). Absent => the chip
+# enumerates but brcmfmac probe fails with a firmware-load timeout.
+WIFI_FW_DIR="${PODD_WIFI_FW_DIR:-$BOARD_DIR/../../../../../backup/wifi-firmware}"
+if [ -f "$WIFI_FW_DIR/brcmfmac4339-sdio.bin" ]; then
+	install -D -m 0644 "$WIFI_FW_DIR/brcmfmac4339-sdio.bin" \
+		"$TARGET_DIR/lib/firmware/brcm/brcmfmac4339-sdio.bin"
+	install -D -m 0644 "$WIFI_FW_DIR/brcmfmac4339-sdio.txt" \
+		"$TARGET_DIR/lib/firmware/brcm/brcmfmac4339-sdio.txt"
+	echo "post-build: installed brcmfmac4339 firmware + NVRAM"
+else
+	echo "post-build: WARNING no WiFi firmware at $WIFI_FW_DIR — brcmfmac probe will fail" >&2
+fi
+
 echo "post-build: reachability (sshd 8822, muzzle, NM) + data mount + RAUC staged"

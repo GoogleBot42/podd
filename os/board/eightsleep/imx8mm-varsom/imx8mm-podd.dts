@@ -122,6 +122,57 @@
 			sound-dai = <&sai5>;
 		};
 	};
+
+	/*
+	 * WiFi module power (Laird Sterling LWB5 / BCM4339 on uSDHC1, SDIO).
+	 *
+	 * ROOT CAUSE of the "empty SDIO bus" outage: neither the DART/VAR-SOM
+	 * dtsi nor the stock DTB powers the module from the kernel. The wifigrp
+	 * pinctrl (applied by &usdhc1) only muxes three pads as GPIOs:
+	 *   GPIO2_IO7  (SD1_DATA5,  pad cfg 0xc1 = no pull) WIFI_3V3_PWR_EN
+	 *   GPIO2_IO20 (SD2_WP,     pad cfg 0x140 = 100k PU) WIFI_1V8_PWR_EN
+	 *   GPIO2_IO10 (SD1_RESET_B, pad cfg 0xc1 = no pull) WL_REG_ON
+	 * On the stock Yocto image these are raised by the *userspace* script
+	 * /etc/wifi/variscite-wifi (variscite-wifi.service): 3V3=1, 10ms, 1V8=1
+	 * (VAR-SOM polarity; DART inverts 1V8), 10ms, WL_REG_ON=1, then rebind
+	 * 30b40000.mmc. Our FOSS userspace has no such service, so the chip was
+	 * simply unpowered and never answered CMD5. Model the same sequence
+	 * kernel-natively with fixed regulators + mmc-pwrseq-simple (both
+	 * CONFIG_REGULATOR_FIXED_VOLTAGE and CONFIG_PWRSEQ_SIMPLE are already =y).
+	 */
+	reg_wifi_3v3: regulator-wifi-3v3 {
+		compatible = "regulator-fixed";
+		regulator-name = "wifi_3v3";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpio = <&gpio2 7 GPIO_ACTIVE_HIGH>;	/* WIFI_3V3_PWR_EN */
+		enable-active-high;
+		startup-delay-us = <10000>;		/* stock: usleep 10000 after 3V3 */
+		regulator-always-on;
+	};
+
+	reg_wifi_1v8: regulator-wifi-1v8 {
+		compatible = "regulator-fixed";
+		regulator-name = "wifi_1v8";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		gpio = <&gpio2 20 GPIO_ACTIVE_HIGH>;	/* WIFI_1V8_PWR_EN, active-HIGH on VAR-SOM */
+		enable-active-high;
+		startup-delay-us = <10000>;		/* stock: usleep 10000 after 1V8 */
+		/* Not the real supply topology — this chain just enforces the stock
+		 * bring-up order (3V3 first, then 1V8) in the regulator core. */
+		vin-supply = <&reg_wifi_3v3>;
+		regulator-always-on;
+	};
+
+	wifi_pwrseq: wifi-pwrseq {
+		compatible = "mmc-pwrseq-simple";
+		/* WL_REG_ON: held low across mmc power-up, released (high) before
+		 * the SDIO scan. GPIO_ACTIVE_LOW = "asserted reset" drives the pad
+		 * low, deassert drives it high. */
+		reset-gpios = <&gpio2 10 GPIO_ACTIVE_LOW>;
+		post-power-on-delay-ms = <100>;
+	};
 };
 
 /* ---------------------------------------------------------------------------
@@ -131,12 +182,20 @@
  * CONFIRM(agent-C): base dtsi provides uSDHC1/uSDHC3 pinmux + WiFi child nodes.
  * ------------------------------------------------------------------------- */
 /*
- * uSDHC1 / Broadcom WiFi (mmc0): NOT overridden here — the DART base dtsi
- * already fully configures it (status=okay, pinctrl usdhc1grp+wifigrp,
- * non-removable, keep-power, and the brcmf wifi@1 child). The WiFi outage was
- * never the device tree; it was the brcmfmac driver missing from the image
- * (module built but not installed). Fixed by building the WiFi stack in (=y).
+ * uSDHC1 / Broadcom WiFi (mmc0): the DART base dtsi configures the bus side
+ * (status=okay, pinctrl usdhc1grp+wifigrp, non-removable, keep-power, brcmf
+ * wifi@1 child) but NOTHING powers the module — see the wifi regulator/pwrseq
+ * comment above. Wire the module power into the host so the mmc core raises
+ * WIFI_3V3 -> WIFI_1V8 -> WL_REG_ON before its one-and-only SDIO scan.
+ * (Firmware note: the chip is a Laird LWB5, BCM4339 — the rootfs must carry
+ * /lib/firmware/brcm/brcmfmac4339-sdio.bin AND the Laird NVRAM
+ * brcmfmac4339-sdio.txt, both present on the stock image but absent from
+ * upstream linux-firmware's brcm/ directory.)
  */
+&usdhc1 {			/* mmc0 — SoM WiFi (SDIO) */
+	vmmc-supply = <&reg_wifi_3v3>;
+	mmc-pwrseq = <&wifi_pwrseq>;
+};
 
 &usdhc3 {			/* mmc2 — on-SoM eMMC */
 	status = "okay";

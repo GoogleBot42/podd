@@ -152,6 +152,9 @@ BR2_PACKAGE_WPA_SUPPLICANT_DBUS=y
 BR2_PACKAGE_OPENSSH=y
 BR2_PACKAGE_IPTABLES=y
 BR2_PACKAGE_E2FSPROGS=y
+# tzdata: podd (jiff) parses a timezone from its config and needs the zoneinfo
+# database, else it fails "failed to find time zone ... in time zone database".
+BR2_PACKAGE_TZDATA=y
 # WiFi firmware for the on-board Broadcom (brcmfmac BCM4339 SDIO).
 BR2_PACKAGE_LINUX_FIRMWARE=y
 BR2_PACKAGE_LINUX_FIRMWARE_BRCM_BCM43XXX=y
