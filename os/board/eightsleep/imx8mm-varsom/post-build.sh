@@ -72,6 +72,11 @@ mask_unit() { ln -sf /dev/null "$TARGET_DIR/etc/systemd/system/$1"; }
 enable_unit podd-muzzle.service sysinit.target
 mask_unit systemd-networkd.service
 mask_unit systemd-networkd-wait-online.service
+# Also mask networkd's sockets: with only the service masked, systemd logs
+# "systemd-networkd.socket: Socket service systemd-networkd.service not loaded,
+# refusing" / "Failed to listen on Network Service ... Socket" at every boot.
+mask_unit systemd-networkd.socket
+mask_unit systemd-networkd-varlink.socket
 # Boot diagnostics -> /data/bootlog (no serial console; read the card post-mortem).
 enable_unit podd-bootlog-early.service sysinit.target
 enable_unit podd-bootlog.timer timers.target
@@ -117,5 +122,19 @@ if [ -f "$WIFI_FW_DIR/brcmfmac4339-sdio.bin" ]; then
 else
 	echo "post-build: WARNING no WiFi firmware at $WIFI_FW_DIR — brcmfmac probe will fail" >&2
 fi
+
+# --- WiFi driver module sanity check -----------------------------------------
+# The WiFi stack is =m in linux-podd.config ON PURPOSE: built-in (=y) it probes
+# the SDIO card BEFORE the rootfs is mounted, so the firmware above is invisible
+# and wlan0 never appears (observed on-device). But =m has its own historical
+# trap: an incremental build once shipped a stale /lib/modules without the .ko
+# (which is what prompted the ill-fated =y switch). Fail the build loudly if the
+# module didn't make it into the target tree.
+if ! find "$TARGET_DIR/lib/modules" -name 'brcmfmac.ko*' 2>/dev/null | grep -q .; then
+	echo "post-build: FATAL brcmfmac.ko missing from $TARGET_DIR/lib/modules —" \
+	     "stale incremental build? (make linux-rebuild, or wipe output/) " >&2
+	exit 1
+fi
+echo "post-build: brcmfmac.ko present in /lib/modules"
 
 echo "post-build: reachability (sshd 8822, muzzle, NM) + data mount + RAUC staged"

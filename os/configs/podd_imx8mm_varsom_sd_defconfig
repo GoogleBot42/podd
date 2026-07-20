@@ -154,10 +154,20 @@ BR2_PACKAGE_IPTABLES=y
 BR2_PACKAGE_E2FSPROGS=y
 # tzdata: podd (jiff) parses a timezone from its config and needs the zoneinfo
 # database, else it fails "failed to find time zone ... in time zone database".
-BR2_PACKAGE_TZDATA=y
+# NOTE: BR2_PACKAGE_TZDATA is a *blind* (promptless) symbol — setting it in a
+# defconfig is silently DROPPED by Kconfig (exactly what shipped in the broken
+# image: no /usr/share/zoneinfo despite the line being present). The
+# user-visible knob is BR2_TARGET_TZ_INFO, which selects tzdata and installs
+# the compiled zoneinfo db (zonelist "default" includes America/New_York).
+BR2_TARGET_TZ_INFO=y
+BR2_TARGET_LOCALTIME="Etc/UTC"
 # WiFi firmware for the on-board Broadcom (brcmfmac BCM4339 SDIO).
 BR2_PACKAGE_LINUX_FIRMWARE=y
 BR2_PACKAGE_LINUX_FIRMWARE_BRCM_BCM43XXX=y
+# Regulatory database for cfg80211 (/lib/firmware/regulatory.db + .p7s); the
+# booted image logged "cfg80211: failed to load regulatory.db" (file absent).
+# Loads correctly now that cfg80211 is a module (probes after rootfs mount).
+BR2_PACKAGE_WIRELESS_REGDB=y
 
 # --- rootfs overlay (non-secret reachability config: NM.conf, muzzle, sshd) ---
 # Owner-specific secrets (WiFi PSK, SSH authorized_keys) are NOT here — they are

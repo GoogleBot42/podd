@@ -3,6 +3,11 @@ Description=podd - open Eight Sleep Pod control daemon
 Documentation=https://github.com/GoogleBot42/podd
 After=network-online.target
 Wants=network-online.target
+# Wait for /data to mount before any Exec line runs. This is a [Unit] directive;
+# it was previously (wrongly) under [Service], where systemd ignores it with
+# "Unknown key 'RequiresMountsFor' in section [Service]" — so podd could race
+# the /data mount.
+RequiresMountsFor=/data
 
 [Service]
 Type=simple
@@ -12,11 +17,9 @@ Type=simple
 # by podd's own updater — hence PODD_UPDATER_ENABLED=false here.
 # Seed the persistent config from the baked default on first boot (the data
 # partition starts empty); after that the user's copy is authoritative.
-# Wait for /data to mount, then seed the config. No WorkingDirectory=/data/podd:
-# systemd chdirs there before EVERY Exec line (incl. ExecStartPre), so it must
-# already exist -> chicken/egg (status=200/CHDIR on first boot). Run from /data
-# (the mountpoint always exists) instead.
-RequiresMountsFor=/data
+# No WorkingDirectory=/data/podd: systemd chdirs there before EVERY Exec line
+# (incl. ExecStartPre), so it must already exist -> chicken/egg (status=200/CHDIR
+# on first boot). Run from /data (the mountpoint always exists) instead.
 ExecStartPre=/bin/sh -c 'mkdir -p /data/podd; test -f /data/podd/config.ron || cp /etc/podd/config.ron /data/podd/config.ron'
 ExecStart=/usr/bin/podd /data/podd/config.ron
 WorkingDirectory=/data
