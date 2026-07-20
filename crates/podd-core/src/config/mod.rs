@@ -27,8 +27,19 @@ pub enum ConfigError {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LEDConfig {
+    /// No side enabled (outside the schedule window, away mode, etc.).
     pub idle: LedPattern,
+    /// A side is enabled and AT its target temperature ("holding"). Kept under
+    /// its legacy name so existing configs parse unchanged.
     pub active: LedPattern,
+    /// Actively raising the water temperature toward a target.
+    /// Defaults to a red-orange slow breath.
+    #[serde(default)]
+    pub heating: Option<LedPattern>,
+    /// Actively lowering the water temperature toward a target.
+    /// Defaults to a blue slow breath.
+    #[serde(default)]
+    pub cooling: Option<LedPattern>,
     pub band: CurrentBand,
 }
 

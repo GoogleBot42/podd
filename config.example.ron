@@ -15,8 +15,14 @@
         // FastRainbowBreath
         // SlowRainbowBreath
         //  .. see more in `src/led/patterns.rs`
+        // idle    = no side enabled (outside the schedule window / away mode)
+        // active  = a side is enabled and AT its target ("holding")
         idle: Fixed(0, 255, 0),
-        active: SlowBreath(255, 0, 0),      
+        active: Fixed(0, 30, 0),
+        // While moving toward a target the LED shows heating/cooling instead.
+        // Optional; defaults shown:
+        // heating: SlowBreath(255, 30, 0),
+        // cooling: SlowBreath(0, 60, 255),
 
         // One: 0mA\~10mA, Imax=10mA
         // Two: 0mA\~20mA, Imax=20mA

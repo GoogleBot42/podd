@@ -1,7 +1,7 @@
 use crate::bus::{Command, DeviceSnapshot, StatusTx};
 use crate::config::{Config, SidesConfig};
 use crate::frozen::state::FrozenState;
-use crate::led::{IS31FL3194Config, IS31FL3194Controller};
+use crate::led::{IS31FL3194Config, IS31FL3194Controller, LedPattern};
 use pod_proto::codec::{CommandTrait, PacketCodec};
 use pod_proto::frozen::packet::FrozenTarget;
 use pod_proto::frozen::{FrozenCommand, FrozenPacket};
@@ -54,7 +54,19 @@ pub async fn run(
 
     let cfg = config_rx.borrow_and_update();
     let led_idle = cfg.led.idle.get_config(cfg.led.band.clone());
-    let led_active = cfg.led.active.get_config(cfg.led.band.clone());
+    let led_holding = cfg.led.active.get_config(cfg.led.band.clone());
+    let led_heating = cfg
+        .led
+        .heating
+        .clone()
+        .unwrap_or(LedPattern::SlowBreath(255, 30, 0))
+        .get_config(cfg.led.band.clone());
+    let led_cooling = cfg
+        .led
+        .cooling
+        .clone()
+        .unwrap_or(LedPattern::SlowBreath(0, 60, 255))
+        .get_config(cfg.led.band.clone());
     set_led(&mut led, &led_idle);
     let timezone = cfg.timezone.clone();
     let mut away_mode = cfg.away_mode;
@@ -80,6 +92,7 @@ pub async fn run(
     let mut interval = interval(Duration::from_millis(20));
     let mut timers = CommandTimers::default();
     let mut was_active = false;
+    let mut led_state: Option<LedThermalState> = None;
     let mut wake_attempts = 0;
 
     loop {
@@ -92,12 +105,28 @@ pub async fn run(
                     if state.is_active() != was_active {
                         if was_active {
                             log::info!("Profile ended!");
-                            set_led(&mut led, &led_idle);
                         } else {
                             log::info!("Starting profile!");
-                            set_led(&mut led, &led_active);
                         }
                         was_active = !was_active;
+                    }
+
+                    // LED mirrors the real thermal state (heating / cooling /
+                    // holding / idle), not just profile-active — a bed that is
+                    // cooling must not show the "heating" pattern.
+                    let wanted_led = led_thermal_state(&state);
+                    if led_state != Some(wanted_led) {
+                        log::info!("LED: {:?} -> {wanted_led:?}", led_state);
+                        led_state = Some(wanted_led);
+                        set_led(
+                            &mut led,
+                            match wanted_led {
+                                LedThermalState::Idle => &led_idle,
+                                LedThermalState::Heating => &led_heating,
+                                LedThermalState::Cooling => &led_cooling,
+                                LedThermalState::Holding => &led_holding,
+                            },
+                        );
                     }
                 }
                 Err(e) => {
@@ -314,6 +343,45 @@ async fn send_command(writer: &mut Writer, cmd: FrozenCommand) {
     log::debug!(" -> {name}");
     if let Err(e) = writer.send(cmd).await {
         log::error!("Failed to write {name}: {e}");
+    }
+}
+
+/// What the bed is physically doing, for the LED.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LedThermalState {
+    Idle,
+    Heating,
+    Cooling,
+    Holding,
+}
+
+/// Derive the LED state from live targets + water temps. The side furthest
+/// from its target wins when both are enabled; within the deadband the bed is
+/// "holding" (at temperature).
+fn led_thermal_state(state: &FrozenState) -> LedThermalState {
+    const DEADBAND_CENTIDEG: i32 = 50; // 0.5 C
+    let Some(temp) = &state.temp else {
+        return LedThermalState::Idle;
+    };
+    let mut worst: Option<i32> = None; // target - current, furthest from 0
+    for (target, current) in [
+        (&state.left_target, temp.left_temp),
+        (&state.right_target, temp.right_temp),
+    ] {
+        if let Some(t) = target
+            && t.enabled
+        {
+            let delta = t.temp as i32 - current as i32;
+            if worst.is_none_or(|w: i32| delta.abs() > w.abs()) {
+                worst = Some(delta);
+            }
+        }
+    }
+    match worst {
+        None => LedThermalState::Idle,
+        Some(d) if d.abs() <= DEADBAND_CENTIDEG => LedThermalState::Holding,
+        Some(d) if d > 0 => LedThermalState::Heating,
+        Some(_) => LedThermalState::Cooling,
     }
 }
 
