@@ -49,6 +49,50 @@ pub enum SensorError {
     Timeout,
 }
 
+/// Run the sensor subsystem, retrying forever on failure.
+///
+/// The sensor MCU is observed to drop off transiently (discovery pings unanswered,
+/// or the stream going quiet mid-run). That must NOT take down the control core:
+/// the frozen/TEC manager is what keeps the bed at temperature, and presence/piezo
+/// data is a nice-to-have by comparison. Each retry reopens the port and redoes
+/// discovery (which includes the bootloader->firmware jump), so an MCU that
+/// recovers on its own is picked back up automatically.
+#[allow(clippy::too_many_arguments)]
+pub async fn supervise(
+    port: &str,
+    bootloader_baud: u32,
+    firmware_baud: u32,
+    config_tx: watch::Sender<Config>,
+    config_rx: watch::Receiver<Config>,
+    mut calibrate_rx: mpsc::Receiver<()>,
+    client: AsyncClient,
+    status: StatusTx,
+    mut cmd_rx: mpsc::Receiver<Command>,
+    dry_run: bool,
+) -> Result<(), SensorError> {
+    const RETRY_DELAY: Duration = Duration::from_secs(10);
+    loop {
+        let res = run(
+            port,
+            bootloader_baud,
+            firmware_baud,
+            config_tx.clone(),
+            config_rx.clone(),
+            &mut calibrate_rx,
+            client.clone(),
+            status.clone(),
+            &mut cmd_rx,
+            dry_run,
+        )
+        .await;
+        match res {
+            Ok(()) => log::error!("Sensor task exited cleanly; restarting it"),
+            Err(e) => log::error!("Sensor task failed: {e}; retrying in {RETRY_DELAY:?}"),
+        }
+        tokio::time::sleep(RETRY_DELAY).await;
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     port: &str,
@@ -56,10 +100,10 @@ pub async fn run(
     firmware_baud: u32,
     config_tx: watch::Sender<Config>,
     mut config_rx: watch::Receiver<Config>,
-    mut calibrate_rx: mpsc::Receiver<()>,
+    calibrate_rx: &mut mpsc::Receiver<()>,
     mut client: AsyncClient,
     status: StatusTx,
-    mut cmd_rx: mpsc::Receiver<Command>,
+    cmd_rx: &mut mpsc::Receiver<Command>,
     dry_run: bool,
 ) -> Result<(), SensorError> {
     log::info!("Initializing Sensor Subsystem...");

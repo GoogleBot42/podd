@@ -223,7 +223,10 @@ async fn run_inner(
             }
         }
 
-        res = sensor::run(
+        // supervise() retries the sensor internally forever — a flaky sensor
+        // MCU must not take the frozen/TEC control loop down with it. This arm
+        // completing at all is therefore unexpected.
+        res = sensor::supervise(
             &device.sensor_port,
             device.sensor_bootloader_baud,
             device.sensor_firmware_baud,
@@ -236,8 +239,8 @@ async fn run_inner(
             dry_run,
         ) => {
             match res {
-                Ok(_) => anyhow::anyhow!("Sensor task unexpectedly exited"),
-                Err(e) => anyhow::anyhow!("Sensor task failed: {e}"),
+                Ok(_) => anyhow::anyhow!("Sensor supervisor unexpectedly exited"),
+                Err(e) => anyhow::anyhow!("Sensor supervisor failed: {e}"),
             }
         }
 
