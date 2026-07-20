@@ -1,22 +1,28 @@
 # Buildroot defconfig — podd clean-room image, Eight Sleep i.MX8M-Mini Variscite
-# "SD" hub (Variscite DART-MX8M-MINI SoM, compatible = "variscite,dart-mx8mm").
+# "SD" hub. The SoM is a VAR-SOM-MX8M-MINI (DDR4): confirmed from the live
+# device's U-Boot env (board_name=VAR-SOM-MX8M-MINI, som_rev13, sdram_size=4096)
+# and its kernel DTB (imx8mm-var-som-symphony-eight.dtb). Variscite's U-Boot
+# unifies DART-MX8M-MINI (LPDDR4) + VAR-SOM (DDR4) in one imx8mm_var_dart build
+# that runtime-selects DDR timing and control DTB from the SOM EEPROM.
 #
 # The upstream source revisions are PINNED here (U-Boot, kernel, ATF, firmware,
 # Buildroot itself — see os/scripts/build-image.sh for the Buildroot pin). They
 # correspond to the Variscite Yocto Hardknott v1.4 BSP that the live stock device
-# was built from (Linux 5.4.127), so we are rebuilding a *supported* board, not
-# porting a new one. See docs/CLEANROOM-OS.md.
+# was built from (Linux 5.4.127; the stock bootloader banner is
+# "U-Boot 2020.04-imx_v2020.04_5.4.70_2.3.0_var01"), so we are rebuilding a
+# *supported* board, not porting a new one. See docs/CLEANROOM-OS.md.
 #
-# Boot-chain assembly (verified against Buildroot's freescale_imx8mmevk board):
-#   * U-Boot builds u-boot-nodtb.bin + u-boot-spl.bin + the DART control dtb.
-#   * ATF builds bl31.bin (imx8mm platform).
-#   * firmware-imx installs the NXP LPDDR4 PHY training blobs and links them as
-#     ddr_fw.bin; host imx-mkimage installs mkimage_imx8 / mkimage_fit_atf.sh.
-#   * Buildroot's stock board/freescale/common/imx/imx8-bootloader-prepare.sh
-#     (first post-image script, below) stitches all of the above into
-#     output/images/imx8-boot-sd.bin — the i.MX8MM boot container.
-#   * Our board post-image.sh then places that container at 0x8400, bakes the
-#     RAUC U-Boot env, and runs genimage to emit podd-sd.img(.gz).
+# Boot-chain assembly (from source; verified against the stock Pod 3 SD dump):
+#   * U-Boot (Variscite fork) builds u-boot-nodtb.bin + u-boot-spl.bin + BOTH
+#     control DTBs (imx8mm-var-dart-customboard + imx8mm-var-som-symphony).
+#   * ATF (Variscite fork) builds bl31.bin (imx8mm platform, BL31 @ 0x920000).
+#   * firmware-imx provides the NXP DDR PHY training blobs (LPDDR4 *and* DDR4 —
+#     the unified SPL needs both, ddr4 set at fixed offset 73728 after the
+#     lpddr4 set); host imx-mkimage installs mkimage_imx8 / mkimage_fit_atf.sh.
+#   * Our board post-image.sh assembles the whole boot container itself (the
+#     generic Buildroot imx8 prepare script packs lpddr4-only fw + one DTB,
+#     which is dead-on-arrival on this DDR4 VAR-SOM), places it at 0x8400,
+#     bakes the RAUC U-Boot env, and runs genimage to emit podd-sd.img(.gz).
 #
 # Build with (see os/scripts/build-image.sh which wraps this):
 #   make BR2_EXTERNAL=/abs/path/os -C <buildroot> podd_imx8mm_varsom_sd_defconfig
@@ -43,16 +49,14 @@ BR2_TARGET_GENERIC_ISSUE="podd (open Eight Sleep firmware)"
 
 # --- board hooks -------------------------------------------------------------
 BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_PODD_PATH)/board/eightsleep/imx8mm-varsom/post-build.sh"
-# Two post-image scripts, run in order:
-#   1. Buildroot's stock i.MX8MM boot-container assembler (emits imx8-boot-sd.bin).
-#      It takes the U-Boot *control* DTB as its extra arg (see POST_SCRIPT_ARGS).
-#   2. our board script (imx-boot placement + env + genimage -> podd-sd.img).
-# The stock prepare script emits "imx8-boot-sd.bin"; board post-image.sh maps it
-# to "imx-boot" for genimage (resolved).
-BR2_ROOTFS_POST_IMAGE_SCRIPT="board/freescale/common/imx/imx8-bootloader-prepare.sh $(BR2_EXTERNAL_PODD_PATH)/board/eightsleep/imx8mm-varsom/post-image.sh"
-# U-Boot control dtb consumed by mkimage_fit_atf.sh inside the prepare script.
-# DART-MX8M-MINI CONFIG_DEFAULT_DEVICE_TREE = imx8mm-var-dart-customboard.
-BR2_ROOTFS_POST_SCRIPT_ARGS="${UBOOT_DIR}/arch/arm/dts/imx8mm-var-dart-customboard.dtb"
+# ONE post-image script: our board post-image.sh assembles the ENTIRE boot
+# container itself (SPL + dual LPDDR4/DDR4 DDR fw + ATF + dual-DTB U-Boot FIT),
+# then env + genimage -> podd-sd.img. We deliberately do NOT use Buildroot's
+# generic board/freescale/common/imx/imx8-bootloader-prepare.sh: it appends only
+# ONE DDR fw set (lpddr4) and packs only ONE control DTB — both fatally wrong
+# for Variscite's unified DART/VAR-SOM U-Boot on our VAR-SOM (DDR4) hardware.
+# See the analysis comments in post-image.sh.
+BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_PODD_PATH)/board/eightsleep/imx8mm-varsom/post-image.sh"
 
 # --- bootloader: ARM Trusted Firmware (BL31) ---------------------------------
 # Variscite's imx-atf fork, branch imx_5.4.70_2.3.0_var01 — the exact ATF that
