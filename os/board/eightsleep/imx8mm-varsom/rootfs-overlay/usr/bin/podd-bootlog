@@ -28,4 +28,29 @@ mkdir -p "$dir"
 
 dmesg > "$dir/dmesg-$tag.txt" 2>&1
 journalctl -b --no-pager > "$dir/journal-$tag.txt" 2>&1
+
+# WiFi / MMC deep diagnostics (mmc0 = uSDHC1 = Broadcom SDIO; chip not enumerating)
+{
+	echo "=== mmc hosts ==="; ls -l /sys/class/mmc_host/ 2>/dev/null
+	for h in /sys/class/mmc_host/mmc*; do
+		echo "--- $h -> $(readlink -f "$h" 2>/dev/null) ---"
+	done
+	echo "=== SDIO devices ==="; ls -l /sys/bus/sdio/devices/ 2>/dev/null
+	echo "=== mmc block devices ==="; ls -l /dev/mmcblk* 2>/dev/null
+	echo "=== regulator summary ==="; cat /sys/kernel/debug/regulator/regulator_summary 2>/dev/null
+	echo "=== clocks (usdhc1 root) ==="; grep -iE 'usdhc1|sdio' /sys/kernel/debug/clk/clk_summary 2>/dev/null | head
+	echo "=== brcmfmac module present? ==="
+	find /lib/modules -name 'brcmfmac*' 2>/dev/null
+	echo "--- modinfo ---"; modinfo brcmfmac 2>&1 | head -5
+	echo "=== firmware dir (brcm) ==="; ls -l /lib/firmware/brcm/ 2>/dev/null
+	echo "=== manual re-scan attempt ==="
+	# enable mmc/core dynamic debug (if built) then re-scan mmc0, capture new dmesg
+	echo 'file drivers/mmc/core/* +p' > /sys/kernel/debug/dynamic_debug/control 2>/dev/null
+	echo 'file drivers/mmc/host/sdhci* +p' > /sys/kernel/debug/dynamic_debug/control 2>/dev/null
+	for r in /sys/class/mmc_host/mmc0/device/../mmc0*/rescan; do echo 1 > "$r" 2>/dev/null; done
+	modprobe brcmfmac 2>&1 | head
+	sleep 2
+	echo "=== dmesg tail after rescan ==="; dmesg | tail -30
+} > "$dir/wifi-$tag.txt" 2>&1
+
 sync

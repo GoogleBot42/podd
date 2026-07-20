@@ -12,9 +12,14 @@ Type=simple
 # by podd's own updater — hence PODD_UPDATER_ENABLED=false here.
 # Seed the persistent config from the baked default on first boot (the data
 # partition starts empty); after that the user's copy is authoritative.
-ExecStartPre=/bin/sh -c 'test -f /data/podd/config.ron || { mkdir -p /data/podd && cp /etc/podd/config.ron /data/podd/config.ron; }'
+# Wait for /data to mount, then seed the config. No WorkingDirectory=/data/podd:
+# systemd chdirs there before EVERY Exec line (incl. ExecStartPre), so it must
+# already exist -> chicken/egg (status=200/CHDIR on first boot). Run from /data
+# (the mountpoint always exists) instead.
+RequiresMountsFor=/data
+ExecStartPre=/bin/sh -c 'mkdir -p /data/podd; test -f /data/podd/config.ron || cp /etc/podd/config.ron /data/podd/config.ron'
 ExecStart=/usr/bin/podd /data/podd/config.ron
-WorkingDirectory=/data/podd
+WorkingDirectory=/data
 Restart=always
 RestartSec=3
 
