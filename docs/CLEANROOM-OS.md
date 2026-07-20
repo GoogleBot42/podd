@@ -1,18 +1,19 @@
 # Clean-room OS image (L2) — architecture
 
-> **Status: image BUILDS from source; on-hardware boot test pending.** The
-> complete clean-room image (`os/scripts/build.sh` → `dist/podd-sd.img.gz`) now
-> builds end-to-end — from-source `imx-boot` (SPL + ATF + U-Boot + NXP DDR fw),
-> the 5.4 kernel + our device tree, and a Buildroot rootfs with podd, the web UI,
-> systemd, NetworkManager, and RAUC. Verified the assembled image's `rootfs_a`
-> carries `/usr/bin/podd`, `/boot/Image.gz`, `/boot/podd.dtb`,
-> `/etc/rauc/system.conf`, and an enabled `podd.service`. What remains is
-> **booting it on the Pod** (dd to a spare SD; the stock card is the instant
-> revert) plus the RAUC A/B slot-device wiring (MBR has no partlabels — the
-> `rauc-system.conf` device paths need reconciling). This supersedes the L1
-> "bolt podd onto Eight's Yocto rootfs" model (`scripts/build-podd-sd.sh`), which
-> stays as the working fallback until the L2 image is confirmed booting on
-> hardware. See [ARCHITECTURE.md](ARCHITECTURE.md) for the userland (podd).
+> **Status: PROVEN ON HARDWARE (2026-07-20).** The clean-room image
+> (`os/scripts/build.sh` → `dist/podd-sd.img.gz`) boots the Pod 3-SD hub with
+> **zero Eight Sleep binaries**: from-source `imx-boot` (Variscite SPL/U-Boot +
+> ATF + NXP DDR fw), the 5.4 kernel + our DTB, and the Buildroot rootfs.
+> Verified live: WiFi joins, sshd answers on 8822, podd drives **both** bed
+> sides to their configured setpoints through the frozen MCU, sensor telemetry
+> streams, and the free-sleep-compat API/UI serves on :3000. This retires both
+> the L1 "bolt podd onto Eight's Yocto rootfs" model (`scripts/build-podd-sd.sh`,
+> kept as documentation — see [SD-BOOT.md](SD-BOOT.md)) and the interim
+> hand-derived "stockboot" image that borrowed Eight's bootloader region.
+> Remaining: RAUC A/B slot-device wiring (MBR has no partlabels — the
+> `rauc-system.conf` device paths need reconciling) and CI publishing. See
+> [ARCHITECTURE.md](ARCHITECTURE.md) for the userland (podd) and "Bring-up
+> field notes" below for the pitfalls hit on first boot.
 
 ## Why this exists
 
@@ -89,9 +90,16 @@ Net: the OS **image** is 100% free of **Eight-authored** code and is publishable
   enforced on these units (unsigned SPL runs), so a from-source boot chain works.
 - **U-Boot env** at `0x400000` carries the RAUC A/B selection logic
   (`BOOT_ORDER` + `BOOT_x_LEFT` bootcount) and `mmcdev` (SD=1 / eMMC=2).
-- **SoM = Variscite DART-MX8M-MINI** (`compatible = "variscite,dart-mx8mm"`, read
-  from the live DTB) — the U-Boot/kernel base. Console is UART4 (`ttymxc3`, not
-  broken out). MCU UARTs: UART1 `ttymxc0` = Sensor, UART3 `ttymxc2` = Frozen.
+- **SoM = Variscite VAR-SOM-MX8M-MINI (DDR4), *not* a DART** — despite the live
+  DTB's `compatible = "variscite,dart-mx8mm"` (Variscite's single Yocto MACHINE
+  covers both SoMs; the U-Boot env's `board_name=VAR-SOM-MX8M-MINI` and the SOM
+  EEPROM are authoritative). This matters: the DART is LPDDR4, the VAR-SOM is
+  **DDR4**, and Variscite's single U-Boot build runtime-selects the DDR timing
+  and control DTB from the SOM EEPROM — so `imx-boot` must append **both** DDR
+  training firmware sets and pack **both** control DTBs in the FIT (see
+  `os/board/eightsleep/imx8mm-varsom/post-image.sh`). Console is UART4
+  (`ttymxc3`, not broken out). MCU UARTs: UART1 `ttymxc0` = Sensor, UART3
+  `ttymxc2` = Frozen.
 - **podd** is cross-compiled by the existing `nix build .#podd-aarch64` and
   installed into the rootfs as a Buildroot package.
 
@@ -185,31 +193,66 @@ spare-SD swap** — so it is designed to be un-brickable rather than debuggable:
   bootloader does. It either comes up on WiFi/writes logs, or it doesn't and you
   swap back.
 
-**Why this is a low-risk rebuild, not a blind port:** the live DTB reports
-`compatible = "variscite,dart-mx8mm"`, so U-Boot and the kernel are built from
-Variscite's DART-MX8M-MINI tree — the same source the running stock system was
-built from proves this SoM boots this code. Our deltas are the New-Rat carrier
-specifics (no Ethernet PHY, the two STM32 MCU UARTs, I²C peripherals), read
-straight from the stock DTB reference.
+**How it was actually validated (2026-07-19/20):** U-Boot and the kernel are
+built from Variscite's `imx_v2020.04_5.4.70_2.3.0_var01` tree — the exact
+branch the stock bootloader banner names — and the stock SD dump was used as a
+byte-level *reference* (never as an ingredient): the assembled `imx-boot`'s
+IVT offset, SPL entry, DDR-firmware block, and dual-DTB FIT were compared
+against the dump before ever powering hardware, then live-booted. The two bugs
+that made the *first* from-source attempt completely dead (no console on this
+board, so total silence) are exactly the kind this comparison catches: the
+generic Buildroot helper appended only the **LPDDR4** training firmware while
+this SoM's SPL reads the **DDR4** set at `SPL end + 73728`, and it packed only
+the DART control DTB while SPL's board-match wants
+`imx8mm-var-som-symphony`.
 
 ## Bring-up phases
 
-Ordered so the risky blind step (from-source bootloader) comes **last**, on top
+Ordered so the risky blind step (from-source bootloader) came **last**, on top
 of an already-proven upper stack:
 
-1. **Kernel + rootfs on a known-good bootloader** (spare SD): our Buildroot
+1. ✅ **Kernel + rootfs on a known-good bootloader** (spare SD): our Buildroot
    kernel + DTS + rootfs, booted by a working bootloader, brings up eMMC/SD, the
    two MCU UARTs (`ttymxc0`/`ttymxc2`), I²C (PMIC, RTC, LED, GPIO expander), and
-   WiFi. Validate over SSH + the diag partition. This is most of the work and is
-   fully adapter-free.
-2. **podd on the clean rootfs**: podd + UI + NetworkManager + sshd + muzzle;
-   podd drives the MCUs (dry-run then live) exactly as on L1.
-3. **From-source boot chain** (spare SD, stock card = recovery): SPL + ATF +
-   U-Boot from the Variscite DART tree → `imx-boot`, with LED progress codes for
-   blind feedback. Swap in only after 1–2 boot cleanly.
+   WiFi. Validated over SSH + the diag partition (via the interim "stockboot"
+   image, since retired).
+2. ✅ **podd on the clean rootfs**: podd + UI + NetworkManager + sshd + muzzle;
+   podd drives the MCUs live — both sides tested on/off + setpoints, water
+   temps converge (2026-07-20).
+3. ✅ **From-source boot chain** (spare SD, stock card = recovery): SPL + ATF +
+   U-Boot from the Variscite tree → `imx-boot`, validated byte-level against
+   the stock dump, then live-booted (2026-07-20).
 4. **RAUC A/B**: two slots, signed bundle, install-to-inactive + boot flip +
    bootcount rollback, proven by deliberately shipping a broken slot.
 5. **CI publish**: reproducible SD image + update bundle attached to a release.
+
+## Bring-up field notes (pitfalls that cost real debugging time)
+
+- **WiFi driver must be `=m`, not `=y`.** Built-in, brcmfmac probes the SDIO
+  bus ~80ms *before* the rootfs (which holds the firmware) mounts; the firmware
+  load fails with ENOENT, never retries, and wlan0 never exists. As a module,
+  udev coldplug loads it post-mount. `post-build.sh` hard-fails the build if
+  `brcmfmac.ko` is missing from the target (the stale-incremental-build trap
+  that originally motivated `=y`).
+- **Buildroot tzdata is `BR2_TARGET_TZ_INFO`, not `BR2_PACKAGE_TZDATA`** (the
+  latter is a blind Kconfig symbol that is silently dropped) — and even with
+  zoneinfo installed, **jiff won't follow Buildroot's symlinked top-level zone
+  dirs** (`America -> posix/America`), nor fall back to its bundled tzdb while
+  a system zoneinfo dir exists. Net effect: podd crash-loops parsing any
+  `timezone:` in config.ron. `post-build.sh` hardlinks the trees into place.
+- **systemd-networkd must be masked including its sockets**, or it fights
+  NetworkManager for wlan0 / spams the journal.
+- **`RequiresMountsFor` belongs in `[Unit]`**, not `[Service]` — systemd
+  silently ignores it there and podd raced the `/data` mount.
+- **The frozen MCU drops any command frame containing `0x7E`** (the LSP frame
+  delimiter — no byte-stuffing exists). See `FrozenTarget::delimiter_safe` in
+  `pod-proto`; this was the long-standing "left side won't heat at 88°F" bug.
+- **The Pod 4 sensor MCU intermittently goes silent** (~60s after connect, not
+  deterministic on host traffic) and, when hard-wedged, only the PCAL6416A
+  reset pulse revives it. podd's sensor supervisor retries in-process (frozen
+  keeps holding temperature) and escalates to a process restart — which pulses
+  the reset — after 6 straight failures. Root cause is an open RE item
+  (`docs/research/pod4-sensor-protocol.md`).
 
 ## Parked / out of scope
 

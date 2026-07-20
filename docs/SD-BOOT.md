@@ -1,17 +1,22 @@
-# podd SD-boot image (`podd-sd.img.gz`)
+# podd SD-boot image, L1 stock-clone variant (LEGACY)
 
-**The safest way to run podd on an Eight Sleep i.MX8M-Mini / Variscite SD-variant
-hub (Pod 3-SD / Pod 4).** You write one image to a microSD, swap it for the
-stock card, and the Pod boots a **complete podd system entirely from the SD**.
-The eMMC is **never touched** — swapping the original card back reverts to stock
-instantly.
+> **SUPERSEDED (2026-07-20).** `dist/podd-sd.img.gz` now refers to the
+> **clean-room L2 image** built by `os/scripts/build.sh` — from-source
+> bootloader/kernel/rootfs, zero Eight Sleep binaries, proven booting the Pod
+> and driving the bed. Use [CLEANROOM-OS.md](CLEANROOM-OS.md). This document
+> describes the earlier L1 image (a patched clone of the owner's stock SD,
+> built by `scripts/build-podd-sd.sh`); it is kept because its boot-flow
+> analysis (offsets, env, mmc numbering, revert model) remains accurate and
+> the L1 clone remains a working fallback for an owner with their own backups.
+> The L1 image cannot be published (it contains Eight's copyrighted OS).
 
-> Built by `scripts/build-podd-sd.sh`. **This image is UNTESTED on hardware
-> until you boot it.** It is assembled offline from the owner's own confirmed
-> backups; every boot-flow assumption is called out below and flagged for
-> hardware verification. Because the eMMC is untouched, the worst case is "it
-> doesn't boot" — you swap the stock card back and you're exactly where you
-> started.
+**The SD-swap model (still true for both L1 and L2 images):** you write one
+image to a microSD, swap it for the stock card, and the Pod boots a complete
+podd system entirely from the SD. The eMMC is **never touched** — swapping the
+original card back reverts to stock instantly.
+
+> The L1 variant was validated on hardware 2026-07-18/19 (booted, joined WiFi,
+> podd drove the bed) before being retired in favor of the clean-room image.
 
 ---
 

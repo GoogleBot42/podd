@@ -11,14 +11,18 @@ frontend), a local REST API (with server-sent-event log streaming), a
 thermostat/scheduler, MCU firmware flashing, and — the part the existing
 projects get wrong — a **signed, atomic, reproducible update system**.
 
-> Status: **software stack built; hardware bring-up in progress.** The full
-> userland (protocol, control core, API, web UI, signed update system, CI, and
-> installers) is implemented and unit-tested throughout (100+ tests),
-> with reproducible Nix builds and static aarch64 binaries. The protocol is **validated against a live Pod 4**
-> (both MCUs). Real bed-control writes are gated off (`PODD_DRY_RUN`) pending the
-> careful hardware cutover; the Pod-4 sensor packet payloads and the live cutover
-> are the remaining work. See [`docs/REPLACEMENT_PLAN.md`](docs/REPLACEMENT_PLAN.md)
-> for the full design and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the layout.
+> Status: **running in production on real hardware (2026-07-20).** podd boots
+> from the clean-room OS image — from-source bootloader/kernel/rootfs, **zero
+> Eight Sleep binaries** ([docs/CLEANROOM-OS.md](docs/CLEANROOM-OS.md)) — and
+> **drives a live Pod nightly**: both bed sides tested on/off and holding their
+> setpoints (live MCU writes, `PODD_DRY_RUN=false`), scheduler, API, and web UI
+> all exercised against hardware. The full userland is unit-tested throughout
+> (100+ tests) with reproducible Nix builds and static aarch64 binaries.
+> Remaining work: RAUC A/B OTA wiring, decoding the Pod-4 sensor's biometric
+> packet payloads, and an open reliability item on the Pod-4 sensor MCU
+> (auto-recovers; see `docs/research/pod4-sensor-protocol.md` §5). See
+> [`docs/REPLACEMENT_PLAN.md`](docs/REPLACEMENT_PLAN.md) for the full design
+> and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the layout.
 
 ## Flashing & updating
 
@@ -29,9 +33,12 @@ Full, beginner-friendly guides live in [`docs/`](docs/):
   paths on the i.MX "SD" hub (whose JTAG-footprint header is real JTAG, *not* a
   UART). Covers hardware to buy, pinouts, and the honest "what's unverified"
   caveats.
-- **[docs/SD-BOOT.md](docs/SD-BOOT.md)** — the validated i.MX install method:
-  boot a complete podd system from a swapped microSD, eMMC untouched; swap the
-  stock card back to revert.
+- **[docs/CLEANROOM-OS.md](docs/CLEANROOM-OS.md)** — the primary, validated
+  i.MX install method: `os/scripts/build.sh` builds a complete from-source OS
+  image (no Eight Sleep binaries); dd it to a microSD, swap it in, eMMC
+  untouched; swap the stock card back to revert.
+- **[docs/SD-BOOT.md](docs/SD-BOOT.md)** — the boot-flow analysis behind the
+  SD-swap model, plus the legacy L1 stock-clone image (superseded).
 - **[docs/INSTALL.md](docs/INSTALL.md)** — install podd once you have root (the
   one-command userland install; the advanced A/B slot install).
 - **[docs/UPDATING.md](docs/UPDATING.md)** — the on-device OTA agent: sources,

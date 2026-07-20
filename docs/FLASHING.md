@@ -22,7 +22,7 @@ unlock step.
 | Your situation | Do this |
 |---|---|
 | **Already rooted** (you run free-sleep / opensleep, have SSH) | Skip straight to [INSTALL.md](INSTALL.md) — it's literally one command. |
-| **Fresh i.MX hub with an SD card inside** (Pod 3 "SD" hub) | **No serial console exists on this board** — the JTAG-footprint header is real JTAG, not a UART. Use the SD paths: boot podd entirely from a swapped SD card ([SD-BOOT.md](SD-BOOT.md), the validated method, eMMC untouched), or [root the stock system via the SD backdoor](#path-b-imx-only-solder-free-sd-backdoor-aka-zerosleep) → [INSTALL.md](INSTALL.md). |
+| **Fresh i.MX hub with an SD card inside** (Pod 3 "SD" hub) | **No serial console exists on this board** — the JTAG-footprint header is real JTAG, not a UART. Use the SD paths: boot podd entirely from a swapped SD card (the validated method, eMMC untouched — write the from-source clean-room image, [CLEANROOM-OS.md](CLEANROOM-OS.md); boot-flow details in [SD-BOOT.md](SD-BOOT.md)), or [root the stock system via the SD backdoor](#path-b-imx-only-solder-free-sd-backdoor-aka-zerosleep) → [INSTALL.md](INSTALL.md). |
 | **Fresh i.MX hub with NO SD** (Pod 4 hub) | Not yet analyzed. No SD slot, so no SD paths; whether it has a reachable console UART is **unknown** (if its carrier matches the analyzed board, the header is JTAG, not UART). Deep unbrick is USB (uuu/SDP), also unverified. |
 | **Fresh MediaTek "no-SD" hub (FCC 2AYXT61100001)** | [Buy a serial adapter](#what-to-buy) → [get root over serial at J7](#path-a-serial--u-boot--root-mediatek-boards) → [INSTALL.md](INSTALL.md). Deep recovery differs and is less-tested — read [the MediaTek notes](#mediatek-pod-3-no-sd-specifics). |
 

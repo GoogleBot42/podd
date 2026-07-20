@@ -230,3 +230,59 @@ E8` (ProbeTemperature → 0xAF). Capacitance `0x33` should appear on its own.
 - Inferred (medium): G0 still uses 7E + same opcodes (supported by the shared
   gain/response strings but not byte-proven at the correct baud).
 - Unknown: the exact numeric baud — must be measured (plan A/B/C).
+
+---
+
+## 5. LIVE VALIDATION + behavioral findings (2026-07-19/20, podd driving the real Pod 4 cover)
+
+Everything below is from podd running live against the G0 sensor (and frozen)
+MCUs — this section supersedes the open questions above.
+
+### Transport: CONFIRMED
+- Baud = **921600** in firmware mode, **38400** in bootloader mode. Same
+  `7E | LEN | payload | CRC16(CCITT, init 0x1D0F, payload-only, BE)` framing.
+- Discovery works: bootloader ping → Pong (byte2 `0x42`) → JumpToFirmware →
+  reopen at 921600 → streams `0x33` (capacitance) / `0x34` (piezo, 214B) /
+  `0x35` (accelerometer aux, 176B).
+- `0x34` header carries `freq:u32` = **500 Hz fixed** (not Pod 3's 1000) and a
+  single `gain:u32`.
+
+### ⚠ Framing hazard (bit us on the FROZEN MCU; applies to every LSP frame)
+**There is no byte-stuffing.** The MCUs' RX parsers resync on every `0x7E`
+byte, so any *command* frame whose payload or CRC happens to contain `0x7E` is
+**silently dropped** — no error, no echo, no effect. Real-world hit: frozen
+`SetTargetTemperature(Left, 3111)` (= 88.0 °F, an entirely ordinary setpoint)
+encodes to `7E 05 40 00 01 0C 27 C6 7E` — CRC low byte = the delimiter — and
+was dropped forever, which presented as "the left side never heats at 88 °F"
+(the right side at the same temperature has a different side byte, hence a
+different CRC, and worked). Mitigation: `FrozenTarget::delimiter_safe` in
+`pod-proto` nudges setpoints ±0.01 °C until the frame is clean. **Any new
+host→MCU command type must check its encoded frame for interior `0x7E`.**
+
+### Commands the G0 firmware does NOT ack (Pod 3-isms)
+Observed live; podd's scheduler now caps these at 10 attempts instead of
+re-sending every 800 ms forever:
+
+| Command | Pod 3 behavior | Pod 4 G0 behavior |
+|---|---|---|
+| `EnableVibration` (0x??→ack 0xAE) | 3-byte ack | usually **no ack**; a 2-byte `AE xx` was seen once (parser now accepts both). podd assumes enabled after the attempt cap so alarms can still arm. |
+| `GetHardwareInfo` | CBOR ack | **no reply observed** |
+| `ProbeTemperature` (0x2F→0xAF) | 0xAF temp reply | **no reply observed** (bed temps come via the stream) |
+| `SetPiezoFreq` | ack + applied | moot — G0 samples at fixed 500 Hz, reported in the 0x34 header; podd treats 500 as healthy |
+| `SetPiezoGain` (0x2B→0xAB) | ack `AB 00 hi lo hi lo` | **works** (ack parses, gain 400→405 within tolerance) |
+| `Ping` (0x01→0x81) | Pong | **works** (firmware mode byte2 = 0x46) |
+
+### ⚠ Open: the ~60s sensor wedge
+The G0 sensor intermittently goes **completely silent** (stream stops, then no
+response to pings at either baud) roughly 54–65 s after connect — but not
+every run, and **not deterministically caused by host traffic** (reproduced
+with all scheduler commands stopped; also seen a back-to-back run with
+identical traffic survive). When hard-wedged, port-reopen + rediscovery never
+revives it; the **PCAL6416A reset pulse** (podd startup) revives it in ~3 s
+every time. podd mitigation: `sensor::supervise` retries in-process every 10 s
+(the frozen/TEC manager keeps holding temperature throughout) and escalates to
+a process restart — which pulses the reset — after 6 consecutive fast
+failures. Next RE step: capture what stock `frank` sends the G0 (existing
+captures only recorded the MCU→host direction), and work out per-MCU reset
+bits on the PCAL6416A (port-0 output semantics are only half-understood) so a
+sensor reset needn't disturb the frozen MCU.
