@@ -86,11 +86,71 @@ impl CommandTrait for FrozenCommand {
     }
 }
 
+impl FrozenTarget {
+    /// Nudge the setpoint (±0.01 °C steps) until the encoded
+    /// SetTargetTemperature frame contains no 0x7E byte after the leading
+    /// frame delimiter.
+    ///
+    /// The wire protocol has no byte-stuffing, and the frozen MCU's parser
+    /// resyncs on every 0x7E it sees — a frame whose payload or CRC happens to
+    /// contain 0x7E is silently dropped by the MCU (no echo, no effect).
+    /// Observed live: (Left, 3111) = 88 °F encodes to `7E 05 40 00 01 0C 27
+    /// C6 7E` — CRC low byte 0x7E — so a left-side 88 °F setpoint could never
+    /// be set while e.g. (Right, 3111) worked fine. Callers must use the
+    /// nudged value both for sending AND for comparing against the MCU's
+    /// TargetUpdate echo, or the scheduler re-sends forever.
+    pub fn delimiter_safe(self, side: BedSide) -> Self {
+        const DELIM: u8 = 0x7E;
+        for delta in [0i32, -1, 1, -2, 2, -3, 3] {
+            let Ok(temp) = u16::try_from(self.temp as i32 + delta) else {
+                continue;
+            };
+            let candidate = FrozenTarget { temp, ..self.clone() };
+            let frame = FrozenCommand::SetTargetTemperature {
+                side,
+                tar: candidate.clone(),
+            }
+            .to_bytes();
+            if !frame[1..].contains(&DELIM) {
+                return candidate;
+            }
+        }
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::codec::CommandTrait;
     use hex_literal::hex;
+
+    #[test]
+    fn delimiter_safe_nudges_colliding_frames() {
+        // (Left, 3111): CRC low byte is 0x7E -> must nudge away from 3111.
+        let tar = FrozenTarget { enabled: true, temp: 3111 };
+        let raw = FrozenCommand::SetTargetTemperature { side: BedSide::Left, tar: tar.clone() }.to_bytes();
+        assert!(raw[1..].contains(&0x7E), "premise: left/3111 frame collides");
+        let safe = tar.clone().delimiter_safe(BedSide::Left);
+        assert_ne!(safe.temp, 3111);
+        assert!((safe.temp as i32 - 3111).abs() <= 3);
+        assert!(safe.enabled);
+        let frame = FrozenCommand::SetTargetTemperature { side: BedSide::Left, tar: safe }.to_bytes();
+        assert!(!frame[1..].contains(&0x7E));
+
+        // (Right, 3111) doesn't collide -> unchanged.
+        assert_eq!(tar.clone().delimiter_safe(BedSide::Right).temp, 3111);
+
+        // Exhaustive: every nudged frame is clean over the physical range.
+        for side in [BedSide::Left, BedSide::Right] {
+            for temp in 0..=4500u16 {
+                let safe = FrozenTarget { enabled: true, temp }.delimiter_safe(side);
+                let frame =
+                    FrozenCommand::SetTargetTemperature { side, tar: safe }.to_bytes();
+                assert!(!frame[1..].contains(&0x7E), "side {side:?} temp {temp}");
+            }
+        }
+    }
 
     #[test]
     fn test_ping() {

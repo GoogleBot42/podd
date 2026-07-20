@@ -196,7 +196,8 @@ async fn handle_command(writer: &mut Writer, state: &FrozenState, dry_run: bool,
             tar: FrozenTarget {
                 enabled: true,
                 temp: f_to_centi_c(f),
-            },
+            }
+            .delimiter_safe(side),
         }),
         Command::SetPower {
             side,
@@ -214,7 +215,8 @@ async fn handle_command(writer: &mut Writer, state: &FrozenState, dry_run: bool,
                 tar: FrozenTarget {
                     enabled: on,
                     temp: last.map(|t| t.temp).unwrap_or(2750),
-                },
+                }
+                .delimiter_safe(side),
             })
         }
         Command::Prime => Some(FrozenCommand::Prime),
@@ -261,7 +263,8 @@ fn get_next_command(
             &left_cfg.temperatures,
             left_cfg.sleep,
             left_cfg.wake,
-        );
+        )
+        .delimiter_safe(BedSide::Left);
         timers.last_left_temp = now;
         if state.left_target.as_ref() != Some(&wanted_left) {
             return Some(FrozenCommand::SetTargetTemperature {
@@ -279,7 +282,8 @@ fn get_next_command(
             &right_cfg.temperatures,
             right_cfg.sleep,
             right_cfg.wake,
-        );
+        )
+        .delimiter_safe(BedSide::Right);
         timers.last_right_temp = now;
 
         if state.right_target.as_ref() != Some(&wanted_right) {
