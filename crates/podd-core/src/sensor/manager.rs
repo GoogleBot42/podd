@@ -39,6 +39,13 @@ struct RegisteredCommand {
     interval: Duration,
     last_run: Instant,
     can_run: CommandCheck,
+    /// Give up (with a warning) after this many sends whose expected ack never
+    /// arrived. The Pod 4 G0 firmware doesn't ack everything the Pod 3 F0 does
+    /// (EnableVibration, GetHardwareInfo observed), and endlessly re-sending
+    /// every 800ms bombards the MCU — suspected trigger of its hard wedge.
+    /// None = unlimited (keepalives/telemetry polls).
+    max_attempts: Option<u32>,
+    attempts: u32,
 }
 
 #[derive(Error, Debug)]
@@ -174,7 +181,7 @@ pub async fn run(
             _ = interval.tick() => {
                 // this is not expensive so its fine to do at 20hz
                 let now = Timestamp::now().to_zoned(timezone.clone()).time();
-                let _ = scheduler.update(&state, &now).await?;
+                let _ = scheduler.update(&mut state, &now).await?;
 
                 if Instant::now().duration_since(last_recv) > TIMEOUT {
                     break Err(SensorError::Timeout);
@@ -222,12 +229,16 @@ impl CommandScheduler {
             cmds: vec![
                 RegisteredCommand {
                     name: "ping",
+                    max_attempts: None,
+                    attempts: 0,
                     interval: Duration::from_secs(4),
                     last_run: now,
                     can_run: |_, _, _, _| Some(SensorCommand::Ping),
                 },
                 RegisteredCommand {
                     name: "probe_temperature",
+                    max_attempts: None,
+                    attempts: 0,
                     interval: Duration::from_secs(4),
                     // stagger
                     last_run: now + Duration::from_millis(2500),
@@ -235,6 +246,8 @@ impl CommandScheduler {
                 },
                 RegisteredCommand {
                     name: "hwinfo",
+                    max_attempts: Some(10),
+                    attempts: 0,
                     interval: CONFIG_RES_TIME,
                     last_run: now,
                     can_run: |state, _, _, _| {
@@ -247,6 +260,8 @@ impl CommandScheduler {
                 },
                 RegisteredCommand {
                     name: "enable_vibration",
+                    max_attempts: Some(10),
+                    attempts: 0,
                     interval: CONFIG_RES_TIME,
                     last_run: now,
                     can_run: |s, _, _, _| {
@@ -259,6 +274,8 @@ impl CommandScheduler {
                 },
                 RegisteredCommand {
                     name: "piezo_gain",
+                    max_attempts: Some(10),
+                    attempts: 0,
                     interval: CONFIG_RES_TIME,
                     last_run: now,
                     can_run: |state, _, _, _| {
@@ -271,6 +288,8 @@ impl CommandScheduler {
                 },
                 RegisteredCommand {
                     name: "piezo_freq",
+                    max_attempts: Some(10),
+                    attempts: 0,
                     interval: CONFIG_RES_TIME,
                     last_run: now,
                     can_run: |state, _, _, _| {
@@ -283,6 +302,8 @@ impl CommandScheduler {
                 },
                 RegisteredCommand {
                     name: "enable_piezo",
+                    max_attempts: Some(10),
+                    attempts: 0,
                     interval: CONFIG_RES_TIME,
                     last_run: now,
                     can_run: |s, _, _, _| {
@@ -295,6 +316,8 @@ impl CommandScheduler {
                 },
                 RegisteredCommand {
                     name: "left_alarm",
+                    max_attempts: None,
+                    attempts: 0,
                     interval: Duration::from_secs(5),
                     last_run: now,
                     can_run: |state, now, away, sides_cfg| {
@@ -307,6 +330,8 @@ impl CommandScheduler {
                 },
                 RegisteredCommand {
                     name: "right_alarm",
+                    max_attempts: None,
+                    attempts: 0,
                     interval: Duration::from_secs(5),
                     last_run: now,
                     can_run: |state, now, away, sides_cfg| {
@@ -323,16 +348,36 @@ impl CommandScheduler {
 
     /// finds the first command to send and sends it
     /// returns if it send a command
-    async fn update(&mut self, state: &SensorState, time: &Time) -> Result<bool, SensorError> {
+    async fn update(&mut self, state: &mut SensorState, time: &Time) -> Result<bool, SensorError> {
         let now = Instant::now();
 
         // find command to send
         for reg_cmd in &mut self.cmds {
             if now.duration_since(reg_cmd.last_run) > reg_cmd.interval
                 && let Some(sen_cmd) =
-                    (reg_cmd.can_run)(state, time, &self.away_mode, &self.sides_config)
+                    (reg_cmd.can_run)(&*state, time, &self.away_mode, &self.sides_config)
             {
+                if let Some(max) = reg_cmd.max_attempts
+                    && reg_cmd.attempts >= max
+                {
+                    if reg_cmd.attempts == max {
+                        reg_cmd.attempts += 1; // warn only once
+                        log::warn!(
+                            "{}: no ack after {max} attempts; giving up (Pod 4 firmware \
+                             doesn't ack everything Pod 3 does)",
+                            reg_cmd.name
+                        );
+                        // The command itself almost certainly took effect — the
+                        // G0 firmware just doesn't ack it. Without this, alarms
+                        // (gated on vibration_enabled) could never arm on Pod 4.
+                        if reg_cmd.name == "enable_vibration" {
+                            state.vibration_enabled = true;
+                        }
+                    }
+                    continue;
+                }
                 reg_cmd.last_run = now;
+                reg_cmd.attempts += 1;
                 log::debug!(" -> {:?} (from {})", sen_cmd, reg_cmd.name);
                 if let Err(e) = self.writer.send(sen_cmd).await {
                     log::error!("Failed to send {}: {e}", reg_cmd.name);

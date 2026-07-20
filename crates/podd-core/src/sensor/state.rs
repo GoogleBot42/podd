@@ -42,7 +42,10 @@ impl SensorState {
     }
 
     pub fn piezo_freq_ok(&self) -> bool {
-        self.piezo_freq == Some(PIEZO_FREQ)
+        // Pod 3 is configured to PIEZO_FREQ; the Pod 4 G0 firmware samples at
+        // a fixed 500 Hz and reports that in its stream header — treat it as
+        // healthy instead of re-sending SetPiezoFreq forever.
+        matches!(self.piezo_freq, Some(f) if f == PIEZO_FREQ || f == 500)
     }
 
     pub fn piezo_ok(&self) -> bool {
@@ -182,6 +185,27 @@ impl SensorState {
                     self.piezo_enabled = true;
                     self.piezo_gain = Some(u.gain);
                     self.piezo_freq = Some(u.freq);
+                }
+                if gain_changed || freq_changed || enabled_changed {
+                    self.publish_piezo_ok(client).await;
+                }
+            }
+            // Pod 4 piezo stream: the header carries freq + a single gain. Not
+            // registering these left piezo_freq None forever, so the scheduler
+            // re-sent SetPiezoFreq every 800ms indefinitely (observed live).
+            SensorPacket::Pod4Piezo(u) => {
+                let enabled_changed = !self.piezo_enabled;
+                let freq_changed = self.piezo_freq != Some(u.freq);
+                self.piezo_enabled = true;
+                self.piezo_freq = Some(u.freq);
+                // The SetPiezoGain ack (0xAB) is the authoritative gain source
+                // (its units are verified); the header gain only seeds an
+                // otherwise-unknown state so gain scheduling can settle.
+                let mut gain_changed = false;
+                if self.piezo_gain.is_none() {
+                    let gain = u.gain.min(u16::MAX as u32) as u16;
+                    self.piezo_gain = Some((gain, gain));
+                    gain_changed = true;
                 }
                 if gain_changed || freq_changed || enabled_changed {
                     self.publish_piezo_ok(client).await;

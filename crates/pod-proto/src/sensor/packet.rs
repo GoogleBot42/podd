@@ -190,6 +190,12 @@ impl SensorPacket {
     }
 
     fn parse_vibration_enabled(buf: BytesMut) -> Result<Self, PacketError> {
+        // Pod 3 acks with 3 bytes, the Pod 4 (STM32G0 "pod5") firmware with 2.
+        // Rejecting the short form left `vibration_enabled` false forever, so
+        // EnableVibration was re-sent every 800ms indefinitely (observed live).
+        if buf.len() == 2 {
+            return Ok(SensorPacket::VibrationEnabled(buf[1], 0));
+        }
         validate_packet_size("Sensor/VibrationEnabled", &buf, 3)?;
         Ok(SensorPacket::VibrationEnabled(buf[1], buf[2]))
     }
@@ -460,7 +466,12 @@ mod tests {
             SensorPacket::parse(BytesMut::from(&[0xAE, 0, 2][..])),
             Ok(SensorPacket::VibrationEnabled(0, 2))
         );
-        assert!(SensorPacket::parse(BytesMut::from(&[0xAE, 1][..])).is_err());
+        // Pod 4 short-form ack.
+        assert_eq!(
+            SensorPacket::parse(BytesMut::from(&[0xAE, 1][..])),
+            Ok(SensorPacket::VibrationEnabled(1, 0))
+        );
+        assert!(SensorPacket::parse(BytesMut::from(&[0xAE][..])).is_err());
     }
 
     #[test]
