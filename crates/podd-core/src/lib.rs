@@ -201,7 +201,12 @@ async fn run_inner(
         Err(_) => log::warn!("MQTT not connected within 3s (continuing; retrying in background)"),
     }
 
-    tokio::select! {
+    // Any manager ending — Ok or Err — means the control core is no longer
+    // driving the hardware, so the whole process must die and let systemd
+    // restart it. Returning Ok here would leave the api task serving stale
+    // state while every command is dropped (observed live: transient "Sensor
+    // not responding" killed the core but podd kept answering HTTP).
+    let failure: anyhow::Error = tokio::select! {
         res = frozen::run(
             &device.frozen_port,
             device.frozen_baud,
@@ -213,8 +218,8 @@ async fn run_inner(
             dry_run,
         ) => {
             match res {
-                Ok(_) => log::error!("Frozen task unexpectedly exited"),
-                Err(e) => log::error!("Frozen task failed: {e}"),
+                Ok(_) => anyhow::anyhow!("Frozen task unexpectedly exited"),
+                Err(e) => anyhow::anyhow!("Frozen task failed: {e}"),
             }
         }
 
@@ -231,16 +236,17 @@ async fn run_inner(
             dry_run,
         ) => {
             match res {
-                Ok(_) => log::error!("Sensor task unexpectedly exited"),
-                Err(e) => log::error!("Sensor task failed: {e}"),
+                Ok(_) => anyhow::anyhow!("Sensor task unexpectedly exited"),
+                Err(e) => anyhow::anyhow!("Sensor task failed: {e}"),
             }
         }
 
         _ = mqtt_man.run() => {
-            log::error!("MQTT manager unexpectedly exited");
+            anyhow::anyhow!("MQTT manager unexpectedly exited")
         }
-    }
+    };
 
+    log::error!("{failure}");
     log::info!("Shutting down {NAME}...");
-    Ok(())
+    Err(failure)
 }
