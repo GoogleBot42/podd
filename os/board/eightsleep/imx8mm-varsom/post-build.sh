@@ -34,12 +34,20 @@ fi
 # --- persistent data partition (survives A/B slot swaps) ---------------------
 # Mutable state lives here; the rootfs slots stay effectively read-only.
 mkdir -p "$TARGET_DIR/data"
-if ! grep -q '/data' "$TARGET_DIR/etc/fstab" 2>/dev/null; then
-	printf '%s\n' 'LABEL=podd_data\t/data\text4\tdefaults,noatime\t0\t2' \
-		>> "$TARGET_DIR/etc/fstab"
+# Idempotent: drop any prior podd_data line (incl. a stale malformed one from an
+# earlier build, since the target tree is reused across builds), then add the
+# correct space-separated entry. nofail => a missing/bad data card still boots.
+if [ -f "$TARGET_DIR/etc/fstab" ]; then
+	sed -i '/podd_data/d' "$TARGET_DIR/etc/fstab"
 fi
+echo 'LABEL=podd_data /data ext4 defaults,noatime,nofail 0 2' >> "$TARGET_DIR/etc/fstab"
 # podd expects /data/podd for its config + state.
 mkdir -p "$TARGET_DIR/data/podd"
+
+# Default podd config baked into the rootfs; podd.service seeds it onto /data on
+# first boot (see ExecStartPre) so the persistent copy is user-editable.
+install -D -m 0644 "$BOARD_DIR/../../../../config.pod4.example.ron" \
+	"$TARGET_DIR/etc/podd/config.ron"
 
 # --- RAUC --------------------------------------------------------------------
 install -D -m 0644 "$BOARD_DIR/rauc-system.conf" \

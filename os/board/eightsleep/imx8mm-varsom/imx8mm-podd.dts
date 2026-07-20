@@ -130,8 +130,24 @@
  * them. If the pinned base leaves any of these already "okay", these re-affirm.
  * CONFIRM(agent-C): base dtsi provides uSDHC1/uSDHC3 pinmux + WiFi child nodes.
  * ------------------------------------------------------------------------- */
-&usdhc1 {			/* mmc0 — Broadcom WiFi over SDIO */
+&usdhc1 {			/* mmc0 — Broadcom WiFi over SDIO (soldered on the SoM) */
 	status = "okay";
+	/*
+	 * The DART base leaves this as a removable host, so mmc0 comes up but never
+	 * scans for the soldered SDIO WiFi chip (no card-detect line) -> no wlan0.
+	 * Mirror the stock/VAR-SOM config: force a non-removable scan and declare the
+	 * brcmfmac child. Pinmux + clocks come from the SoM base (WiFi is on-SoM).
+	 */
+	non-removable;
+	keep-power-in-suspend;
+	bus-width = <4>;
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	wifi@1 {
+		reg = <1>;
+		compatible = "brcm,bcm4329-fmac";
+	};
 };
 
 &usdhc3 {			/* mmc2 — on-SoM eMMC */
