@@ -71,7 +71,19 @@ pub async fn supervise(
     dry_run: bool,
 ) -> Result<(), SensorError> {
     const RETRY_DELAY: Duration = Duration::from_secs(10);
+    // A sensor MCU that answers nothing at either baud is usually hard-wedged:
+    // observed live that in-process reopen+rediscovery never brings it back,
+    // while the PCAL6416A reset pulse at process start revives it immediately.
+    // The reset line is only pulsed in podd_core's bringup (and resets BOTH
+    // MCUs), so after this many consecutive failures escalate by returning the
+    // error: the process exits and systemd's restart performs the reset.
+    const MAX_CONSECUTIVE_FAILURES: u32 = 6;
+    // An attempt that survived this long connected and did real work; its
+    // eventual failure is a fresh dropout, not part of a bring-up failure run.
+    const PROGRESS: Duration = Duration::from_secs(60);
+    let mut consecutive = 0u32;
     loop {
+        let attempt_started = Instant::now();
         let res = run(
             port,
             bootloader_baud,
@@ -86,8 +98,24 @@ pub async fn supervise(
         )
         .await;
         match res {
-            Ok(()) => log::error!("Sensor task exited cleanly; restarting it"),
-            Err(e) => log::error!("Sensor task failed: {e}; retrying in {RETRY_DELAY:?}"),
+            Ok(()) => {
+                consecutive = 0;
+                log::error!("Sensor task exited cleanly; restarting it");
+            }
+            Err(e) => {
+                if attempt_started.elapsed() >= PROGRESS {
+                    consecutive = 0;
+                }
+                consecutive += 1;
+                if consecutive >= MAX_CONSECUTIVE_FAILURES {
+                    log::error!(
+                        "Sensor task failed {consecutive}x in a row ({e}); escalating to a \
+                         process restart for an MCU reset"
+                    );
+                    return Err(e);
+                }
+                log::error!("Sensor task failed: {e}; retrying in {RETRY_DELAY:?}");
+            }
         }
         tokio::time::sleep(RETRY_DELAY).await;
     }
