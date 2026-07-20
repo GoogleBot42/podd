@@ -1,0 +1,18 @@
+[Unit]
+Description=podd WiFi provisioning (setup AP + web form when no credentials)
+# Needs NM up to query/activate connections, and /data (nofail mount) for the
+# persisted profiles — After= only, so a missing data partition still boots.
+After=NetworkManager.service local-fs.target
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/podd-wifi-setup run
+# If the service is stopped (or dies) while the AP is still up, take it down;
+# harmless no-op when the AP was never activated.
+ExecStopPost=-/usr/bin/nmcli connection down podd-setup
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

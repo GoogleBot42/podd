@@ -46,6 +46,8 @@ BR2_TOOLCHAIN_BUILDROOT_CXX=y
 BR2_INIT_SYSTEMD=y
 BR2_TARGET_GENERIC_HOSTNAME="podd"
 BR2_TARGET_GENERIC_ISSUE="podd (open Eight Sleep firmware)"
+# busybox httpd (+CGI) for the WiFi provisioning portal (podd-wifi-setup).
+BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_PODD_PATH)/board/eightsleep/imx8mm-varsom/busybox.fragment"
 
 # --- board hooks -------------------------------------------------------------
 BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_PODD_PATH)/board/eightsleep/imx8mm-varsom/post-build.sh"
@@ -153,6 +155,10 @@ BR2_PACKAGE_NETWORK_MANAGER=y
 BR2_PACKAGE_WPA_SUPPLICANT=y
 BR2_PACKAGE_WPA_SUPPLICANT_NL80211=y
 BR2_PACKAGE_WPA_SUPPLICANT_DBUS=y
+# NM shells out to dnsmasq at runtime for shared-mode (AP) connections; needed
+# by the podd-wifi-setup provisioning AP. DHCP support is on by default.
+BR2_PACKAGE_DNSMASQ=y
+# BR2_PACKAGE_DNSMASQ_TFTP is not set
 BR2_PACKAGE_OPENSSH=y
 BR2_PACKAGE_IPTABLES=y
 BR2_PACKAGE_E2FSPROGS=y

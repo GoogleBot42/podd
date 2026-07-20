@@ -70,6 +70,9 @@ mask_unit() { ln -sf /dev/null "$TARGET_DIR/etc/systemd/system/$1"; }
 
 [ -f "$TARGET_DIR/usr/lib/systemd/system/sshd.service" ] && enable_unit sshd.service multi-user.target
 enable_unit podd-muzzle.service sysinit.target
+# WiFi provisioning: no stored WiFi profile at boot => open setup AP + web form
+# (see rootfs-overlay/usr/bin/podd-wifi-setup).
+enable_unit podd-wifi-setup.service multi-user.target
 mask_unit systemd-networkd.service
 mask_unit systemd-networkd-wait-online.service
 # Also mask networkd's sockets: with only the service masked, systemd logs
@@ -96,7 +99,8 @@ if [ -f "$SECRETS_DIR/network-manager/MOMCorp.nmconnection" ]; then
 		"$TARGET_DIR/etc/NetworkManager/system-connections/MOMCorp.nmconnection"
 	echo "post-build: injected WiFi profile (MOMCorp)"
 else
-	echo "post-build: WARNING no WiFi profile at $SECRETS_DIR — image won't join WiFi" >&2
+	echo "post-build: no baked WiFi profile at $SECRETS_DIR — first boot will" \
+	     "start the podd-setup provisioning AP (podd-wifi-setup)"
 fi
 if [ -f "$SECRETS_DIR/authorized_keys" ]; then
 	install -d -m 0700 "$TARGET_DIR/root/.ssh"

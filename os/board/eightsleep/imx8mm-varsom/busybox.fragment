@@ -1,0 +1,9 @@
+# Busybox config fragment merged on top of Buildroot's default busybox config.
+# httpd (off by default) serves the WiFi provisioning portal
+# (podd-wifi-setup.service): CGI for the form POST, error-pages so unknown
+# paths (phone captive-portal probes) get the setup form instead of a 404.
+# The httpd applet also provides `httpd -d`, the URL-decoder the CGI uses.
+CONFIG_HTTPD=y
+CONFIG_FEATURE_HTTPD_CGI=y
+CONFIG_FEATURE_HTTPD_ERROR_PAGES=y
+CONFIG_FEATURE_HTTPD_PORT_DEFAULT=80

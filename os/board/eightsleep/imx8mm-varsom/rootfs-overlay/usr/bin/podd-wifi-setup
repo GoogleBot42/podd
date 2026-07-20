@@ -1,0 +1,146 @@
+#!/bin/sh
+# podd-wifi-setup — WiFi provisioning for the podd hub (no serial console, so
+# this is the only way to get credentials onto a generic image in the field).
+#
+#   run          Boot entry point (podd-wifi-setup.service). Restores any WiFi
+#                profiles persisted on /data, then — only if NO WiFi profile
+#                exists anywhere (or the force flag is set) — brings up an open
+#                setup AP "podd-setup" on wlan0 (10.42.0.1) and serves a web
+#                form asking for the owner's network name + password.
+#   save S P     Write an NM keyfile for SSID S / passphrase P (empty P = open
+#                network) into NM's runtime dir + /data. Called by the CGI.
+#   join S       Drop the setup AP and try to join S; on failure delete the
+#                just-saved profile and restore the AP for another attempt.
+#                Called detached by the CGI after the response is sent.
+#   force        Re-run provisioning even though credentials exist (change of
+#                WiFi network; also the hook point for a future physical-button
+#                trigger). Touches the force flag and restarts the service.
+#
+# Profiles are written to NM's runtime keyfile dir (/run/NetworkManager/
+# system-connections, always scanned by the keyfile plugin) so the rootfs slot
+# stays read-only; a copy on /data survives reboots and A/B slot swaps.
+
+RUN_DIR=/run/NetworkManager/system-connections
+DATA_DIR=/data/podd/wifi
+WWW_DIR=/usr/share/podd-wifi-setup/www
+HTTPD_CONF=/usr/share/podd-wifi-setup/httpd.conf
+AP_CON=podd-setup
+USER_KEYFILE=user-wifi.nmconnection
+FORCE_FLAG=/run/podd-wifi-setup.force
+
+# Any non-AP WiFi profile counts, wherever it lives (baked into /etc at build
+# time, restored into /run from /data, or freshly saved).
+has_wifi_profile() {
+	nmcli -g NAME,TYPE connection show 2>/dev/null \
+		| grep ':802-11-wireless$' | grep -qv "^$AP_CON:"
+}
+
+# brcmfmac is =m and NM starts before the module settles; give wlan0 time.
+wait_wlan() {
+	i=0
+	while [ "$i" -lt 90 ]; do
+		nmcli -g DEVICE device status 2>/dev/null | grep -qx wlan0 && return 0
+		i=$((i + 1))
+		sleep 1
+	done
+	echo "podd-wifi-setup: wlan0 never appeared" >&2
+	return 1
+}
+
+start_ap() {
+	cat > "$RUN_DIR/$AP_CON.nmconnection" <<-EOF
+	[connection]
+	id=$AP_CON
+	uuid=$(cat /proc/sys/kernel/random/uuid)
+	type=wifi
+	autoconnect=false
+
+	[wifi]
+	mode=ap
+	ssid=$AP_CON
+
+	[ipv4]
+	method=shared
+
+	[ipv6]
+	method=disabled
+	EOF
+	chmod 600 "$RUN_DIR/$AP_CON.nmconnection"
+	nmcli connection reload
+	# Right after boot the radio can still be settling; retry a few times.
+	for _ in 1 2 3 4 5; do
+		nmcli connection up "$AP_CON" && return 0
+		sleep 3
+	done
+	echo "podd-wifi-setup: could not bring up setup AP" >&2
+	return 1
+}
+
+cmd_run() {
+	mkdir -p "$RUN_DIR"
+	for f in "$DATA_DIR"/*.nmconnection; do
+		[ -f "$f" ] && install -m 0600 "$f" "$RUN_DIR/"
+	done
+	nmcli connection reload
+
+	force=0
+	if [ -e "$FORCE_FLAG" ]; then
+		force=1
+		rm -f "$FORCE_FLAG"
+	fi
+
+	wait_wlan || exit 1
+	if [ "$force" = 0 ] && has_wifi_profile; then
+		echo "podd-wifi-setup: WiFi profile present, nothing to do"
+		exit 0
+	fi
+
+	start_ap || exit 1
+	echo "podd-wifi-setup: AP '$AP_CON' up, form at http://10.42.0.1/"
+	exec httpd -f -p 80 -h "$WWW_DIR" -c "$HTTPD_CONF"
+}
+
+cmd_save() {
+	ssid=$1
+	psk=$2
+	tmp=$(mktemp) || exit 1
+	{
+		printf '[connection]\nid=%s\nuuid=%s\ntype=wifi\n\n' \
+			"$ssid" "$(cat /proc/sys/kernel/random/uuid)"
+		printf '[wifi]\nmode=infrastructure\nssid=%s\n\n' "$ssid"
+		if [ -n "$psk" ]; then
+			printf '[wifi-security]\nkey-mgmt=wpa-psk\npsk=%s\n\n' "$psk"
+		fi
+		printf '[ipv4]\nmethod=auto\n\n[ipv6]\nmethod=auto\n'
+	} > "$tmp"
+	install -m 0600 "$tmp" "$RUN_DIR/$USER_KEYFILE"
+	mkdir -p "$DATA_DIR"
+	install -m 0600 "$tmp" "$DATA_DIR/$USER_KEYFILE"
+	rm -f "$tmp"
+	nmcli connection reload
+}
+
+cmd_join() {
+	ssid=$1
+	# Let the CGI response reach the browser before the AP vanishes.
+	sleep 3
+	nmcli connection down "$AP_CON"
+	if nmcli -w 60 connection up id "$ssid"; then
+		echo "podd-wifi-setup: joined '$ssid'"
+		# We are inside the service's own cgroup; stop is the last thing we do.
+		exec systemctl stop podd-wifi-setup.service
+	fi
+	echo "podd-wifi-setup: joining '$ssid' failed, restoring setup AP" >&2
+	rm -f "$RUN_DIR/$USER_KEYFILE" "$DATA_DIR/$USER_KEYFILE"
+	nmcli connection reload
+	start_ap
+}
+
+case "${1:-run}" in
+run)   cmd_run ;;
+save)  cmd_save "$2" "$3" ;;
+join)  cmd_join "$2" ;;
+force) touch "$FORCE_FLAG" && exec systemctl restart podd-wifi-setup.service ;;
+*)     echo "usage: podd-wifi-setup [run|save SSID PSK|join SSID|force]" >&2
+       exit 2 ;;
+esac

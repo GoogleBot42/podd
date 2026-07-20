@@ -1,0 +1,52 @@
+#!/bin/sh
+# CGI endpoint for the podd WiFi setup form (POST /cgi-bin/setup).
+#
+# Parses ssid/psk from the form body, persists the profile, answers the browser
+# IMMEDIATELY, and only then hands off to `podd-wifi-setup join` in a detached
+# process — joining tears the AP down, so the response must already be on the
+# wire when that happens.
+
+page() { # $1 = heading, $2 = body html
+	printf 'Content-Type: text/html\r\n\r\n'
+	cat <<-EOF
+	<!doctype html>
+	<html lang="en"><head><meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>podd WiFi setup</title>
+	<style>body{font-family:system-ui,sans-serif;max-width:26rem;
+	margin:3rem auto;padding:0 1rem;color:#222}h1{font-size:1.4rem}
+	p{color:#555}a{color:#1a6ee0}</style></head>
+	<body><h1>$1</h1><p>$2</p></body></html>
+	EOF
+}
+
+body=$(head -c "${CONTENT_LENGTH:-0}")
+
+field() { # $1 = form field name; + -> space, then %XX-decode
+	printf '%s' "$body" | tr '&' '\n' | sed -n "s/^$1=//p" | head -n 1 \
+		| tr '+' ' '
+}
+ssid=$(httpd -d "$(field ssid)")
+psk=$(httpd -d "$(field psk)")
+
+if [ -z "$ssid" ]; then
+	page "Missing network name" \
+		'Please <a href="/">go back</a> and enter your WiFi network name.'
+	exit 0
+fi
+if [ -n "$psk" ] && [ ${#psk} -lt 8 ]; then
+	page "Password too short" \
+		'WPA passwords are at least 8 characters. <a href="/">Go back</a> and try again.'
+	exit 0
+fi
+
+/usr/bin/podd-wifi-setup save "$ssid" "$psk"
+
+page "Connecting&hellip;" \
+	"The pod is now joining <b>$ssid</b> and this setup network will
+	disappear. If <b>podd-setup</b> is still gone after a minute, the pod is
+	online. If it comes back, the password was probably wrong &mdash;
+	reconnect to it and try again."
+
+setsid /usr/bin/podd-wifi-setup join "$ssid" </dev/null >/dev/null 2>&1 &
+exit 0

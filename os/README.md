@@ -116,6 +116,26 @@ gunzip -c dist/podd-sd.img.gz \
 CI wraps `build.sh` to publish `podd-sd-<version>.img.gz` + the RAUC bundle on
 tag releases (replacing the `recovery-sd` stub job).
 
+### WiFi provisioning (no baked credentials needed)
+
+If the image boots with **no WiFi profile** (nothing injected at build time,
+nothing previously provisioned), `podd-wifi-setup.service` brings up an open
+access point **`podd-setup`** on wlan0 and serves a one-field-each SSID/password
+form at **http://10.42.0.1/** (busybox httpd + a shell CGI; a wildcard-DNS
+`dnsmasq-shared.d` entry makes phone captive-portal detection open the form
+automatically). Submitting the form writes a NetworkManager keyfile to
+`/run/NetworkManager/system-connections/` (the rootfs slot stays read-only) and
+persists a copy in `/data/podd/wifi/`, which the service restores on every boot
+— so credentials survive reboots **and** A/B updates. If the join fails (wrong
+password), the profile is deleted and the AP comes back for another try.
+
+To re-provision a pod that already has credentials (e.g. a new router), run
+`podd-wifi-setup force` over SSH. That subcommand is also the intended hook for
+a future physical trigger: the rear factory-reset pinhole button is an input on
+the PCAL6416A I²C expander (`0x20` on `/dev/i2c-1`, input port register `0x00`
+— the same chip podd's `reset.rs` drives), *not* a gpio-keys input device, so a
+button-hold trigger would be a small userspace poller of that register.
+
 ### Host mkimage workaround
 
 Buildroot 2026.02.3's own host `u-boot-tools` (mkimage 2025.10) is built with an
