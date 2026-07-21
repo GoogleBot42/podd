@@ -454,8 +454,8 @@ const createServerStatus = (): ServerStatus => ({
 });
 
 const createLogs = (): LogStore => ({
-  'free-sleep.log': [
-    `[${new Date(now.getTime() - 3 * MINUTES_TO_MS).toISOString()}] INFO Starting Free Sleep demo mode`,
+  'podd.log': [
+    `[${new Date(now.getTime() - 3 * MINUTES_TO_MS).toISOString()}] INFO Starting podd demo mode`,
     `[${new Date(now.getTime() - 2 * MINUTES_TO_MS).toISOString()}] INFO Schedules loaded successfully`,
     `[${new Date(now.getTime() - 90 * 1000).toISOString()}] INFO Biometrics stream connected`,
     `[${new Date(now.getTime() - 30 * 1000).toISOString()}] INFO Demo data refreshed`,
@@ -593,7 +593,7 @@ export const filterByQuery = <T extends { side?: Side }>(records: T[], filters: 
 export const handleJobs = (jobs: Jobs) => {
   const timestamp = new Date().toISOString();
   jobs.forEach((job) => {
-    appendLogEntry('free-sleep.log', `[${timestamp}] INFO Job executed: ${job}`);
+    appendLogEntry('podd.log', `[${timestamp}] INFO Job executed: ${job}`);
   });
 };
 

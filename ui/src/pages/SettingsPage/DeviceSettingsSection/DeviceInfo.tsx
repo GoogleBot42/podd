@@ -1,7 +1,6 @@
 import { Box, Chip, Typography } from '@mui/material';
 import { useDeviceStatus } from '@api/deviceStatus.ts';
 import { Version } from '@api/deviceStatusSchema';
-import VersionStatus from '@components/VersionStatus.tsx';
 import WifiStrength from './WifiStrength.tsx';
 import RebootButton from './RebootButton.tsx';
 
@@ -24,7 +23,7 @@ export default function DeviceInfo() {
         }
       </Box>
       <Box sx={ { display: 'flex', gap: 1, align: 'center', alignItems: 'center', mb: 1 } }>
-        <Typography variant='body2'>Free Sleep Build</Typography>
+        <Typography variant='body2'>podd Build</Typography>
         <Chip label={ `v${deviceStatus?.freeSleep?.version}` } size='small'/>
         <Chip label={ deviceStatus?.freeSleep?.branch } size='small'/>
       </Box>
@@ -32,7 +31,6 @@ export default function DeviceInfo() {
         <RebootButton />
         <WifiStrength />
       </Box>
-      <VersionStatus />
     </>
   );
 }
