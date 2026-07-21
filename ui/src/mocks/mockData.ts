@@ -255,9 +255,6 @@ const createSettings = (): Settings => ({
 });
 
 const createServices = (): Services => ({
-  sentryLogging: {
-    enabled: true,
-  },
   biometrics: {
     enabled: true,
     jobs: {

@@ -16,9 +16,6 @@ export const ServicesSchema = z.object({
       calibrateRight: StatusInfoSchema,
     }),
   }),
-  sentryLogging: z.object({
-    enabled: z.boolean(),
-  }),
 }).strict();
 
 export type Services = z.infer<typeof ServicesSchema>;
