@@ -33,6 +33,15 @@ struct CommandScheduler {
     away_mode: bool,
     sides_config: SidesConfig,
     writer: Writer,
+    /// A manually fired alarm (API test) we haven't seen start yet. The G0
+    /// eats writes early in a connection, so resend until the FW confirms.
+    pending_fire: Option<PendingFire>,
+}
+
+struct PendingFire {
+    cmd: AlarmCommand,
+    last_sent: Instant,
+    attempts: u32,
 }
 
 struct RegisteredCommand {
@@ -317,6 +326,7 @@ impl CommandScheduler {
             away_mode,
             sides_config,
             writer,
+            pending_fire: None,
             cmds: vec![
                 RegisteredCommand {
                     name: "ping",
@@ -458,6 +468,44 @@ impl CommandScheduler {
             }
         }
 
+        // Resend an unconfirmed manual fire (the G0 eats early writes).
+        let resend = match &mut self.pending_fire {
+            Some(pending) => {
+                if state.get_alarm_for_side(&pending.cmd.side) {
+                    self.pending_fire = None; // FW confirmed the start
+                    None
+                } else if now.duration_since(pending.last_sent) > Duration::from_secs(2) {
+                    if pending.attempts >= 30 {
+                        log::warn!(
+                            "FireAlarm[{}]: no FW confirmation after {} sends; giving up",
+                            pending.cmd.side,
+                            pending.attempts
+                        );
+                        self.pending_fire = None;
+                        None
+                    } else {
+                        pending.attempts += 1;
+                        pending.last_sent = now;
+                        log::info!(
+                            "FireAlarm[{}] unconfirmed; resending (attempt {})",
+                            pending.cmd.side,
+                            pending.attempts
+                        );
+                        Some(SensorCommand::SetAlarm(pending.cmd.clone()))
+                    }
+                } else {
+                    None
+                }
+            }
+            None => None,
+        };
+        if let Some(frame) = resend {
+            if let Err(e) = self.writer.send(frame).await {
+                log::error!("Failed to resend manual alarm: {e}");
+            }
+            return Ok(true);
+        }
+
         // find command to send
         for reg_cmd in &mut self.cmds {
             if now.duration_since(reg_cmd.last_run) > reg_cmd.interval
@@ -537,9 +585,13 @@ impl CommandScheduler {
         let frame = match cmd {
             Command::ClearAlarm { side } => {
                 // Dismissal: hold until the alarm window ends so the scheduler
-                // doesn't re-arm in 5s, and drop any manual-alarm grace.
+                // doesn't re-arm in 5s, drop any manual-alarm grace, and stop
+                // retrying an unconfirmed manual fire.
                 state.set_dismissed(&side, true);
                 state.set_manual_alarm(&side, None);
+                if self.pending_fire.as_ref().is_some_and(|p| p.cmd.side == side) {
+                    self.pending_fire = None;
+                }
                 Some(SensorCommand::SetAlarm(AlarmCommand {
                     side,
                     intensity: 0,
@@ -555,15 +607,23 @@ impl CommandScheduler {
                     &spec.side,
                     Some(
                         std::time::Instant::now()
-                            + Duration::from_secs(u64::from(spec.duration_s) + 5),
+                            + Duration::from_secs(u64::from(spec.duration_s) + 65),
                     ),
                 );
-                Some(SensorCommand::SetAlarm(AlarmCommand {
+                let cmd = AlarmCommand {
                     side: spec.side,
                     intensity: spec.intensity,
                     duration: spec.duration_s,
                     pattern: spec.pattern,
-                }))
+                };
+                if !dry_run {
+                    self.pending_fire = Some(PendingFire {
+                        cmd: cmd.clone(),
+                        last_sent: Instant::now(),
+                        attempts: 1,
+                    });
+                }
+                Some(SensorCommand::SetAlarm(cmd))
             }
             other => {
                 log::warn!("Sensor subsystem received unroutable command: {other:?}");
@@ -606,9 +666,10 @@ fn get_alarm_cmd(
     let cfg = sides_config.get_side(side);
     let alarm_cfg = cfg.alarm.as_ref()?;
     let alarm_running = state.get_alarm_for_side(side);
+    let should_run = in_alarm_window(cfg, now) && !state.get_dismissed(side);
 
-    if in_alarm_window(cfg, now) {
-        if !alarm_running && !state.get_dismissed(side) {
+    if should_run {
+        if !alarm_running {
             if !state.clock_synced {
                 log::warn!(
                     "Alarm[{side}] is due, but the clock is not NTP-synced yet; \
@@ -624,14 +685,13 @@ fn get_alarm_cmd(
                 pattern: alarm_cfg.pattern.clone(),
             }));
         }
-    } else if alarm_running {
-        if state.manual_alarm_active(side) {
-            // A manually fired alarm (API test) is allowed outside the window.
-            return None;
-        }
-        // Cancel via an intensity-0 SetAlarm (ClearAlarm 0x2D is unverified
-        // and has crashed the MCU — see pod-proto). Retries every interval
-        // until the FW's "alarm[side] off" message clears alarm_running.
+    } else if alarm_running && !state.manual_alarm_active(side) {
+        // Out of window, or dismissed mid-window. Cancel via an intensity-0
+        // SetAlarm (ClearAlarm 0x2D is unverified and has crashed the MCU —
+        // see pod-proto). Retrying here every interval matters: the G0 eats
+        // one-shot writes early in a connection, so a single ClearAlarm from
+        // the API path is not enough. Manually fired alarms (API test) are
+        // exempt for their grace period.
         log::info!("Alarm[{side}] should NOT be running, but is. Cancelling.");
         return Some(SensorCommand::SetAlarm(AlarmCommand {
             side: *side,
