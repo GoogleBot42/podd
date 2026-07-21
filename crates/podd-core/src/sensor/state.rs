@@ -24,6 +24,10 @@ pub struct SensorState {
     /// Wall time is NTP-synced. Until then it may be a restored pre-shutdown
     /// timestamp (no RTC battery), so scheduled alarms must not arm.
     pub clock_synced: bool,
+    /// Until when a manually fired alarm (API test alarm) may run per side
+    /// (left, right). Stops the scheduler's out-of-window cancel from killing
+    /// it seconds after it starts.
+    pub manual_alarm_until: [Option<std::time::Instant>; 2],
 }
 
 pub const PIEZO_GAIN: u16 = 400;
@@ -90,6 +94,25 @@ impl SensorState {
             BedSide::Left => self.alarm_left_dismissed = dismissed,
             BedSide::Right => self.alarm_right_dismissed = dismissed,
         }
+    }
+
+    fn manual_slot(&mut self, side: &BedSide) -> &mut Option<std::time::Instant> {
+        match side {
+            BedSide::Left => &mut self.manual_alarm_until[0],
+            BedSide::Right => &mut self.manual_alarm_until[1],
+        }
+    }
+
+    pub fn set_manual_alarm(&mut self, side: &BedSide, until: Option<std::time::Instant>) {
+        *self.manual_slot(side) = until;
+    }
+
+    pub fn manual_alarm_active(&self, side: &BedSide) -> bool {
+        let until = match side {
+            BedSide::Left => self.manual_alarm_until[0],
+            BedSide::Right => self.manual_alarm_until[1],
+        };
+        until.is_some_and(|t| std::time::Instant::now() < t)
     }
 
     async fn publish_piezo_ok(&self, client: &mut AsyncClient) {

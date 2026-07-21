@@ -265,7 +265,7 @@ pub async fn run(
 
             // api / scheduler commands routed to the Sensor subsystem.
             Some(cmd) = cmd_rx.recv() => {
-                scheduler.handle_command(dry_run, cmd).await;
+                scheduler.handle_command(dry_run, cmd, &mut state).await;
             }
         }
     }
@@ -524,22 +524,39 @@ impl CommandScheduler {
     /// Translate a bus [`Command`] into a Sensor control frame.
     ///
     /// **The actual MCU write is gated behind `dry_run` (default true).** While
-    /// dry-running we log the intended frame + bytes and send nothing. Flipping
-    /// this off is part of the live cutover — see `TODO(live-cutover)`.
-    async fn handle_command(&mut self, dry_run: bool, cmd: Command) {
+    /// dry-running we log the intended frame + bytes and send nothing.
+    async fn handle_command(&mut self, dry_run: bool, cmd: Command, state: &mut SensorState) {
         let frame = match cmd {
-            Command::ClearAlarm { side } => Some(SensorCommand::SetAlarm(AlarmCommand {
-                side,
-                intensity: 0,
-                duration: 0,
-                pattern: AlarmPattern::Double,
-            })),
-            Command::FireAlarm(spec) => Some(SensorCommand::SetAlarm(AlarmCommand {
-                side: spec.side,
-                intensity: spec.intensity,
-                duration: spec.duration_s,
-                pattern: spec.pattern,
-            })),
+            Command::ClearAlarm { side } => {
+                // Dismissal: hold until the alarm window ends so the scheduler
+                // doesn't re-arm in 5s, and drop any manual-alarm grace.
+                state.set_dismissed(&side, true);
+                state.set_manual_alarm(&side, None);
+                Some(SensorCommand::SetAlarm(AlarmCommand {
+                    side,
+                    intensity: 0,
+                    duration: 0,
+                    pattern: AlarmPattern::Double,
+                }))
+            }
+            Command::FireAlarm(spec) => {
+                // Manually fired (API test alarm): give it grace for its whole
+                // duration or the scheduler's out-of-window cancel kills it.
+                state.set_dismissed(&spec.side, false);
+                state.set_manual_alarm(
+                    &spec.side,
+                    Some(
+                        std::time::Instant::now()
+                            + Duration::from_secs(u64::from(spec.duration_s) + 5),
+                    ),
+                );
+                Some(SensorCommand::SetAlarm(AlarmCommand {
+                    side: spec.side,
+                    intensity: spec.intensity,
+                    duration: spec.duration_s,
+                    pattern: spec.pattern,
+                }))
+            }
             other => {
                 log::warn!("Sensor subsystem received unroutable command: {other:?}");
                 None
@@ -550,12 +567,11 @@ impl CommandScheduler {
 
         if dry_run {
             log::warn!(
-                "[dry-run] Sensor would send {:?}: {:02X?} // TODO(live-cutover)",
+                "[dry-run] Sensor would send {:?}: {:02X?}",
                 frame,
                 frame.to_bytes()
             );
         } else {
-            // TODO(live-cutover): live alarm write to the Sensor MCU.
             if let Err(e) = self.writer.send(frame).await {
                 log::error!("Failed to send sensor command: {e}");
             }
@@ -601,6 +617,10 @@ fn get_alarm_cmd(
             }));
         }
     } else if alarm_running {
+        if state.manual_alarm_active(side) {
+            // A manually fired alarm (API test) is allowed outside the window.
+            return None;
+        }
         // Cancel via an intensity-0 SetAlarm (ClearAlarm 0x2D is unverified
         // and has crashed the MCU — see pod-proto). Retries every interval
         // until the FW's "alarm[side] off" message clears alarm_running.
