@@ -32,13 +32,9 @@
     <meta name="theme-color" content="#000000">
 
     <title>podd</title>
-
-    <!-- Preconnect to external resources for performance -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-
-    <!-- Google Fonts -->
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" />
+    <!-- Fonts are bundled locally (@fontsource/roboto, imported in main.tsx);
+         the pod usually has no internet access, so no external font CDN. -->
+  </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>

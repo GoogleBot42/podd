@@ -6,6 +6,13 @@ import { StrictMode } from 'react';
 import { ThemeProvider } from '@mui/material/styles';
 import { theme } from './theme';
 
+// Self-hosted Roboto (the pod usually has no internet access, so fonts must
+// ship in the bundle). Weights match what the MUI theme uses.
+import '@fontsource/roboto/300.css';
+import '@fontsource/roboto/400.css';
+import '@fontsource/roboto/500.css';
+import '@fontsource/roboto/700.css';
+
 import ControlTempPage from './pages/ControlTempPage/ControlTempPage';
 import SettingsPage from './pages/SettingsPage/SettingsPage';
 import Layout from './components/Layout';

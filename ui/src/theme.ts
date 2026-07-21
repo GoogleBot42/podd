@@ -6,7 +6,7 @@ const LIGHT_THEME_BORDER = '#E0E0E0';
 const DARK_APP_BAR = '#0B0B0B';
 
 const typography = {
-  fontFamily: 'poppins, Geist Sans, system-ui, -apple-system, BlinkMacSystemFont, sans-serif',
+  fontFamily: 'Roboto, system-ui, -apple-system, BlinkMacSystemFont, sans-serif',
   allVariants: {
     fontSize: 15,
     letterSpacing: '0.05em',
