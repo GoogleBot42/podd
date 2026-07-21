@@ -2,9 +2,10 @@ use std::io::ErrorKind;
 use std::time::Duration;
 
 use crate::bus::{Command, DeviceSnapshot, StatusTx};
-use crate::config::{Config, SidesConfig};
+use crate::config::{Config, SideConfig, SidesConfig};
 use crate::sensor::presence::PresenseManager;
 use crate::sensor::state::{PIEZO_FREQ, PIEZO_GAIN, SensorState};
+use crate::sensor::tap::{Tap, TapDetector};
 use pod_proto::codec::{CommandTrait, PacketCodec};
 use pod_proto::packet::BedSide;
 use pod_proto::sensor::command::{AlarmCommand, AlarmPattern};
@@ -89,6 +90,10 @@ pub async fn supervise(
     // eventual failure is a fresh dropout, not part of a bring-up failure run.
     const PROGRESS: Duration = Duration::from_secs(60);
     let mut consecutive = 0u32;
+    // Dismissals must survive sensor-task restarts: SensorState is rebuilt per
+    // attempt, and a mid-window restart after a double-tap dismissal must not
+    // re-fire the alarm.
+    let mut dismissed = [false; 2];
     loop {
         let attempt_started = Instant::now();
         let res = run(
@@ -102,6 +107,7 @@ pub async fn supervise(
             status.clone(),
             &mut cmd_rx,
             dry_run,
+            &mut dismissed,
         )
         .await;
         match res {
@@ -140,12 +146,16 @@ pub async fn run(
     status: StatusTx,
     cmd_rx: &mut mpsc::Receiver<Command>,
     dry_run: bool,
+    dismissed: &mut [bool; 2],
 ) -> Result<(), SensorError> {
     log::info!("Initializing Sensor Subsystem...");
 
     let mut presense_man = PresenseManager::new(config_tx, config_rx.clone(), client.clone());
 
     let mut state = SensorState::default();
+    state.alarm_left_dismissed = dismissed[0];
+    state.alarm_right_dismissed = dismissed[1];
+    state.clock_synced = clock_is_synced();
     state.publish_reset(&mut client).await;
 
     let (writer, mut reader) =
@@ -157,8 +167,17 @@ pub async fn run(
     let mut scheduler = CommandScheduler::new(cfg.away_mode, cfg.profile.clone(), writer);
     drop(cfg);
 
+    // Defensive: we may have (re)started mid-alarm with no memory of starting
+    // one (process restart, sensor-task restart, boot after power loss). Stop
+    // both sides up front; the scheduler re-arms within seconds if an alarm
+    // really should be running now.
+    scheduler.send_alarm_stop(dry_run, BedSide::Left).await;
+    scheduler.send_alarm_stop(dry_run, BedSide::Right).await;
+
+    let mut taps = TapDetector::default();
     let mut interval = interval(Duration::from_millis(50));
     let mut last_recv = Instant::now();
+    let mut last_sync_check = Instant::now();
 
     loop {
         tokio::select! {
@@ -166,6 +185,42 @@ pub async fn run(
                 Ok(packet) => {
                     if let SensorPacket::Capacitance(data) = &packet {
                         presense_man.update(data);
+                    }
+
+                    // Double tap on a side's piezo while its alarm vibrates =
+                    // dismiss (stock Eight Sleep gesture).
+                    let tap_now = std::time::Instant::now();
+                    let mut double_tapped = Vec::new();
+                    match &packet {
+                        SensorPacket::Pod4Piezo(d) => {
+                            for (side, samples) in
+                                [(BedSide::Left, &d.left), (BedSide::Right, &d.right)]
+                            {
+                                let samples = samples.iter().map(|s| *s as f64);
+                                if taps.feed(&side, samples, tap_now) == Some(Tap::Double) {
+                                    double_tapped.push(side);
+                                }
+                            }
+                        }
+                        SensorPacket::Piezo(d) => {
+                            for (side, samples) in [
+                                (BedSide::Left, &d.left_samples),
+                                (BedSide::Right, &d.right_samples),
+                            ] {
+                                let samples = samples.iter().map(|s| *s as f64);
+                                if taps.feed(&side, samples, tap_now) == Some(Tap::Double) {
+                                    double_tapped.push(side);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    for side in double_tapped {
+                        if state.get_alarm_for_side(&side) {
+                            log::info!("Double tap on {side} piezo: dismissing alarm");
+                            scheduler.send_alarm_stop(dry_run, side).await;
+                            state.set_dismissed(&side, true);
+                        }
                     }
 
                     state.handle_packet(&mut client, packet).await;
@@ -179,9 +234,21 @@ pub async fn run(
             },
 
             _ = interval.tick() => {
+                if !state.clock_synced
+                    && Instant::now().duration_since(last_sync_check) > Duration::from_secs(5)
+                {
+                    last_sync_check = Instant::now();
+                    state.clock_synced = clock_is_synced();
+                    if state.clock_synced {
+                        log::info!("System clock is NTP-synced; scheduled alarms armed");
+                    }
+                }
+
                 // this is not expensive so its fine to do at 20hz
                 let now = Timestamp::now().to_zoned(timezone.clone()).time();
-                let _ = scheduler.update(&mut state, &now).await?;
+                let _ = scheduler.update(&mut state, &now, dry_run).await?;
+                dismissed[0] = state.alarm_left_dismissed;
+                dismissed[1] = state.alarm_right_dismissed;
 
                 if Instant::now().duration_since(last_recv) > TIMEOUT {
                     break Err(SensorError::Timeout);
@@ -202,6 +269,22 @@ pub async fn run(
             }
         }
     }
+}
+
+/// systemd-timesyncd creates this file once the clock is NTP-synced. The pod
+/// has no battery-backed RTC: at boot the clock is a restored pre-shutdown
+/// timestamp, which on 2026-07-20 landed inside the morning alarm window on
+/// replug and re-fired the alarm. Until sync, wall time can't gate actuation.
+const CLOCK_SYNC_FILE: &str = "/run/systemd/timesync/synchronized";
+
+fn clock_is_synced() -> bool {
+    if matches!(
+        std::env::var("PODD_ASSUME_CLOCK_SYNC").ok().as_deref(),
+        Some("1") | Some("true")
+    ) {
+        return true;
+    }
+    std::path::Path::new(CLOCK_SYNC_FILE).exists()
 }
 
 /// Publish the Sensor subsystem's live telemetry into the state watch.
@@ -350,8 +433,22 @@ impl CommandScheduler {
 
     /// finds the first command to send and sends it
     /// returns if it send a command
-    async fn update(&mut self, state: &mut SensorState, time: &Time) -> Result<bool, SensorError> {
+    async fn update(
+        &mut self,
+        state: &mut SensorState,
+        time: &Time,
+        dry_run: bool,
+    ) -> Result<bool, SensorError> {
         let now = Instant::now();
+
+        // A dismissal holds for the rest of its alarm window; re-arm afterwards.
+        for side in [BedSide::Left, BedSide::Right] {
+            if state.get_dismissed(&side)
+                && !in_alarm_window(self.sides_config.get_side(&side), time)
+            {
+                state.set_dismissed(&side, false);
+            }
+        }
 
         // find command to send
         for reg_cmd in &mut self.cmds {
@@ -378,6 +475,19 @@ impl CommandScheduler {
                     }
                     continue;
                 }
+                // dry_run means no actuation: alarms are only logged. Sensing
+                // config (piezo/ping/hwinfo) still goes out, or there would be
+                // no presence/HR data to look at while dry-running.
+                if dry_run && matches!(sen_cmd, SensorCommand::SetAlarm(_)) {
+                    reg_cmd.last_run = now;
+                    log::warn!(
+                        "[dry-run] {} would send {:?}: {:02X?}",
+                        reg_cmd.name,
+                        sen_cmd,
+                        sen_cmd.to_bytes()
+                    );
+                    return Ok(true);
+                }
                 reg_cmd.last_run = now;
                 reg_cmd.attempts += 1;
                 log::debug!(" -> {:?} (from {})", sen_cmd, reg_cmd.name);
@@ -389,6 +499,26 @@ impl CommandScheduler {
         }
 
         Ok(false)
+    }
+
+    /// Stop any vibration on `side` right now.
+    ///
+    /// Uses an intensity-0/duration-0 `SetAlarm`: the dedicated ClearAlarm
+    /// opcode (0x2D) is unverified and has crashed the MCU (see pod-proto).
+    async fn send_alarm_stop(&mut self, dry_run: bool, side: BedSide) {
+        let stop = SensorCommand::SetAlarm(AlarmCommand {
+            side,
+            intensity: 0,
+            duration: 0,
+            pattern: AlarmPattern::Double,
+        });
+        if dry_run {
+            log::warn!("[dry-run] would send alarm stop: {:02X?}", stop.to_bytes());
+            return;
+        }
+        if let Err(e) = self.writer.send(stop).await {
+            log::error!("Failed to send alarm stop for {side}: {e}");
+        }
     }
 
     /// Translate a bus [`Command`] into a Sensor control frame.
@@ -434,6 +564,15 @@ impl CommandScheduler {
 }
 
 /// alarm runs from (wake - alarm_offset) to ((wake - alarm_offset) + alarm_duration)
+fn in_alarm_window(cfg: &SideConfig, now: &Time) -> bool {
+    let Some(alarm_cfg) = cfg.alarm.as_ref() else {
+        return false;
+    };
+    let alarm_start = cfg.wake - Span::new().seconds(alarm_cfg.offset);
+    let alarm_end = alarm_start + Span::new().seconds(alarm_cfg.duration);
+    *now > alarm_start && *now < alarm_end
+}
+
 fn get_alarm_cmd(
     state: &SensorState,
     now: &Time,
@@ -442,12 +581,17 @@ fn get_alarm_cmd(
 ) -> Option<SensorCommand> {
     let cfg = sides_config.get_side(side);
     let alarm_cfg = cfg.alarm.as_ref()?;
-    let alarm_start = cfg.wake - Span::new().seconds(alarm_cfg.offset);
-    let alarm_end = alarm_start + Span::new().seconds(alarm_cfg.duration);
     let alarm_running = state.get_alarm_for_side(side);
 
-    if now > &alarm_start && now < &alarm_end {
-        if !alarm_running {
+    if in_alarm_window(cfg, now) {
+        if !alarm_running && !state.get_dismissed(side) {
+            if !state.clock_synced {
+                log::warn!(
+                    "Alarm[{side}] is due, but the clock is not NTP-synced yet; \
+                     suppressing (wall time can't be trusted without an RTC)"
+                );
+                return None;
+            }
             log::info!("Alarm[{side}] requesting to start");
             return Some(SensorCommand::SetAlarm(AlarmCommand {
                 side: *side,
@@ -457,9 +601,10 @@ fn get_alarm_cmd(
             }));
         }
     } else if alarm_running {
-        log::info!("Alarm[{side}] should NOT be running, but is. Trying to cancel.");
-        // FIXME TODO not working
-        // return Some(SensorCommand::ClearAlarm);
+        // Cancel via an intensity-0 SetAlarm (ClearAlarm 0x2D is unverified
+        // and has crashed the MCU — see pod-proto). Retries every interval
+        // until the FW's "alarm[side] off" message clears alarm_running.
+        log::info!("Alarm[{side}] should NOT be running, but is. Cancelling.");
         return Some(SensorCommand::SetAlarm(AlarmCommand {
             side: *side,
             intensity: 0,

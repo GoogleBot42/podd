@@ -15,6 +15,15 @@ pub struct SensorState {
     pub piezo_enabled: bool,
     pub alarm_left_running: bool,
     pub alarm_right_running: bool,
+    // Host-side alarm policy, not MCU state. Kept here so the scheduler's
+    // plain-fn `can_run` checks (which only see &SensorState) can read them.
+    /// User dismissed this side's alarm (double tap / API); holds until the
+    /// current alarm window ends so the scheduler doesn't immediately re-arm.
+    pub alarm_left_dismissed: bool,
+    pub alarm_right_dismissed: bool,
+    /// Wall time is NTP-synced. Until then it may be a restored pre-shutdown
+    /// timestamp (no RTC battery), so scheduled alarms must not arm.
+    pub clock_synced: bool,
 }
 
 pub const PIEZO_GAIN: u16 = 400;
@@ -66,6 +75,20 @@ impl SensorState {
         match side {
             BedSide::Left => self.alarm_left_running,
             BedSide::Right => self.alarm_right_running,
+        }
+    }
+
+    pub fn get_dismissed(&self, side: &BedSide) -> bool {
+        match side {
+            BedSide::Left => self.alarm_left_dismissed,
+            BedSide::Right => self.alarm_right_dismissed,
+        }
+    }
+
+    pub fn set_dismissed(&mut self, side: &BedSide, dismissed: bool) {
+        match side {
+            BedSide::Left => self.alarm_left_dismissed = dismissed,
+            BedSide::Right => self.alarm_right_dismissed = dismissed,
         }
     }
 
