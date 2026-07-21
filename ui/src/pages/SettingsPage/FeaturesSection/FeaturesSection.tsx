@@ -40,11 +40,7 @@ export default function FeaturesSection() {
         <InfoIcon sx={ { color: 'text.secondary' } }/>
 
         <Typography color='text.secondary'>
-          Calculate biometrics for the pod.
-          Requires you to run this command on your pod. Once installation completes successfully, you can toggle this on/off.
-          <Typography color='text.secondary' sx={ { fontFamily: 'monospace' } }>
-            sh /home/dac/free-sleep/scripts/enable_biometrics.sh
-          </Typography>
+          Calculate biometrics (heart rate, breathing, HRV) from the bed sensors.
         </Typography>
 
       </Box>

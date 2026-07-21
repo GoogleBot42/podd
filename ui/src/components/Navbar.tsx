@@ -9,7 +9,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { useAppStore } from '@state/appStore.tsx';
 import { useTheme } from '@mui/material/styles';
 import { PAGES } from './pages';
-import freeSleepIcon from '../../public/free-sleep-icon.svg';
+import appIcon from '../../public/free-sleep-icon.svg';
 
 export default function Navbar() {
   const navigate = useNavigate();
@@ -76,7 +76,7 @@ export default function Navbar() {
       >
         <Toolbar>
           <div style={ { flexGrow: 1 } }>
-            <img src={ freeSleepIcon } alt="Join our Discord" width={ 45 } height={ 45 } />
+            <img src={ appIcon } alt="podd" width={ 45 } height={ 45 } />
           </div>
           <Box sx={ { display: 'flex', gap: 2 } }>
             { PAGES.map(({ title, route }) => (
