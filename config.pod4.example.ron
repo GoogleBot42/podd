@@ -57,21 +57,20 @@
             // Time to end temperature profile
             wake: "10:30",
 
-            // Vibration alarm
-            alarm: (
-                // Double or Single
-                pattern: Double,
-
-                // Intensity 0-100
-                intensity: 80,
-
-                // Duration in seconds
-                duration: 600,
-
-                // Offset from wake time in seconds.
-                // In this case it will trigger at 10:25
-                offset: 300,
-            ),
+            // Vibration alarm — OFF unless you opt in. (This example used to
+            // ship with an active alarm; installs seeded from it woke people
+            // who never asked for one.) To enable, uncomment:
+            // alarm: (
+            //     // Double or Single
+            //     pattern: Double,
+            //     // Intensity 0-100
+            //     intensity: 80,
+            //     // Duration in seconds
+            //     duration: 600,
+            //     // Offset from wake time in seconds.
+            //     // In this case it will trigger at 10:25
+            //     offset: 300,
+            // ),
         )
     ),
 
