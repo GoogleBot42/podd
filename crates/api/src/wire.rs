@@ -480,15 +480,8 @@ pub struct Biometrics {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct SentryLogging {
-    pub enabled: bool,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
 pub struct Services {
     pub biometrics: Biometrics,
-    pub sentry_logging: SentryLogging,
 }
 
 impl Default for Services {
@@ -505,7 +498,6 @@ impl Default for Services {
                     calibrate_right: StatusInfo::healthy("calibrateRight", "Calibration (right)"),
                 },
             },
-            sentry_logging: SentryLogging { enabled: false },
         }
     }
 }

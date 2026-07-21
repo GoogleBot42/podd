@@ -63,7 +63,7 @@
             src = ./ui;
             # Regenerate after any package-lock.json change:
             #   nix build .#ui  → read the "got:" hash from the mismatch error.
-            npmDepsHash = "sha256-P6/qFXgOUXoE+Z0y25unNjlxPyCHWiNMVwdgATyhOZU=";
+            npmDepsHash = "sha256-+KgVV8AX68ark3xZPxIQbHMrgAeU4Ymx1lEQEy042Bc=";
             nodejs = pkgs.nodejs_22;
             # Upstream deps carry stale peer ranges (e.g. @react-spring/web pins
             # react-dom <=18 while the app is on 19); npm resolves these with

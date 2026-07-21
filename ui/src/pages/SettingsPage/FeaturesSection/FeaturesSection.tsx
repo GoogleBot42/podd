@@ -44,20 +44,6 @@ export default function FeaturesSection() {
         </Typography>
 
       </Box>
-      <br />
-      <FormControlLabel
-        control={
-          <Switch
-            disabled={ isUpdating }
-            checked={ services.sentryLogging.enabled }
-            onChange={ (event) => updateServices({ sentryLogging: { enabled: event.target.checked } }) }
-          />
-        }
-        label="Enable Sentry error reporting"
-      />
-      <Typography color='text.secondary'>
-        Help improve stability by sending anonymous error reports to the free-sleep maintainers.
-      </Typography>
     </Section>
   );
 }
