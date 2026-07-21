@@ -169,10 +169,12 @@ pub async fn run(
 
     // Defensive: we may have (re)started mid-alarm with no memory of starting
     // one (process restart, sensor-task restart, boot after power loss). Stop
-    // both sides up front; the scheduler re-arms within seconds if an alarm
-    // really should be running now.
-    scheduler.send_alarm_stop(dry_run, BedSide::Left).await;
-    scheduler.send_alarm_stop(dry_run, BedSide::Right).await;
+    // both sides once the connection settles; the scheduler re-arms within
+    // seconds if an alarm really should be running now. NOT sent immediately:
+    // writes in the first moments after (re)discovery get lost (observed live
+    // — the freshly reconfigured UART eats them, no ack, no FW reaction).
+    let hygiene_at = Instant::now() + Duration::from_secs(2);
+    let mut hygiene_done = false;
 
     let mut taps = TapDetector::default();
     let mut interval = interval(Duration::from_millis(50));
@@ -234,6 +236,12 @@ pub async fn run(
             },
 
             _ = interval.tick() => {
+                if !hygiene_done && Instant::now() >= hygiene_at {
+                    hygiene_done = true;
+                    scheduler.send_alarm_stop(dry_run, BedSide::Left).await;
+                    scheduler.send_alarm_stop(dry_run, BedSide::Right).await;
+                }
+
                 if !state.clock_synced
                     && Instant::now().duration_since(last_sync_check) > Duration::from_secs(5)
                 {
