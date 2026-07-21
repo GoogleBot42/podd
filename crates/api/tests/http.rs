@@ -153,7 +153,7 @@ async fn services_and_server_status() {
     let v = body_json(resp).await;
     assert_eq!(v["biometrics"]["enabled"], false);
     assert!(v["biometrics"]["jobs"]["analyzeSleepLeft"]["status"].is_string());
-    assert_eq!(v["sentryLogging"]["enabled"], false);
+    assert!(v.get("sentryLogging").is_none());
 
     let resp = app.oneshot(get("/api/serverStatus")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
