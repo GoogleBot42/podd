@@ -1,11 +1,11 @@
 {
-  "name": "Free Sleep",
-  "short_name": "Free Sleep",
+  "name": "podd",
+  "short_name": "podd",
   "start_url": "/temperature",
   "display": "standalone",
   "background_color": "#ffffff",
   "theme_color": "#000000",
-  "description": "Free Sleep",
+  "description": "FOSS firmware for the Eight Sleep Pod",
   "icons": [
     {
       "src": "/free-sleep-icon_96.png",
