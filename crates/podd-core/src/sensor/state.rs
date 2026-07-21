@@ -188,6 +188,13 @@ impl SensorState {
             SensorPacket::Message(msg) => {
                 if let Some(stripped) = strip_alarm_prefix(&msg) {
                     self.handle_alarm_msg(stripped);
+                } else if let Some(side) = fw_tap_dismissal(&msg) {
+                    // The sensor FW detects double taps itself (LIS accel in
+                    // the puck) and stops the alarm. Mark the side dismissed
+                    // or the scheduler re-arms it 5s later — which is exactly
+                    // what made the 2026-07-20 alarm undismissable.
+                    log::info!("FW tap-dismissal on {side}; honoring for the rest of the window");
+                    self.set_dismissed(&side, true);
                 } else {
                     log::debug!("Message: {msg}");
                 }
@@ -281,6 +288,23 @@ fn strip_alarm_prefix(msg: &str) -> Option<&str> {
     rest.strip_prefix("alarm")
 }
 
+/// Detect the FW's own accelerometer tap-dismissal message and which side it
+/// came from. Observed live (Pod 4 G0):
+/// `FW: 1392074 [lisR] dismissing alarm (2 taps)`
+fn fw_tap_dismissal(msg: &str) -> Option<BedSide> {
+    if !msg.starts_with("FW:") || !msg.contains("dismissing alarm") {
+        return None;
+    }
+    if msg.contains("[lisL]") {
+        Some(BedSide::Left)
+    } else if msg.contains("[lisR]") {
+        Some(BedSide::Right)
+    } else {
+        log::warn!("FW tap-dismissal with unknown side: {msg}");
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,6 +325,20 @@ mod tests {
         );
         assert_eq!(strip_alarm_prefix("FW: 123 something else"), None);
         assert_eq!(strip_alarm_prefix("unrelated"), None);
+    }
+
+    #[test]
+    fn fw_tap_dismissal_parses_side() {
+        assert_eq!(
+            fw_tap_dismissal("FW: 1392074 [lisR] dismissing alarm (2 taps)"),
+            Some(BedSide::Right)
+        );
+        assert_eq!(
+            fw_tap_dismissal("FW: 55 [lisL] dismissing alarm (4 taps)"),
+            Some(BedSide::Left)
+        );
+        assert_eq!(fw_tap_dismissal("FW: 55 [lisR] some other message"), None);
+        assert_eq!(fw_tap_dismissal("[lisR] dismissing alarm (2 taps)"), None);
     }
 
     #[test]
