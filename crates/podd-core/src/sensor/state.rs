@@ -82,7 +82,6 @@ impl SensorState {
     /// [%s] no longer running (max duration)
     /// [%s] new sequence run. ramp power to %u
     fn handle_alarm_msg(&mut self, msg: &str) {
-        // TODO test
         let (bedside, rest) = if let Some(start) = msg.find('[') {
             if let Some(end) = msg.find(']') {
                 let bedside = &msg[start + 1..end];
@@ -141,7 +140,7 @@ impl SensorState {
                 self.set_device_mode(client, DeviceMode::Firmware).await;
             }
             SensorPacket::Message(msg) => {
-                if let Some(stripped) = msg.strip_prefix("FW: alarm") {
+                if let Some(stripped) = strip_alarm_prefix(&msg) {
                     self.handle_alarm_msg(stripped);
                 } else {
                     log::debug!("Message: {msg}");
@@ -219,5 +218,60 @@ impl SensorState {
             }
             _ => {}
         }
+    }
+}
+
+/// Extract the alarm-status part of a firmware log message.
+///
+/// The Pod 3 F0 firmware logs `FW: alarm[left] off`; the Pod 4 G0 firmware
+/// prefixes a millis counter: `FW: 604914 alarm[left] off`. Matching only the
+/// Pod 3 form left `alarm_*_running` false forever on Pod 4, so podd never
+/// noticed a running alarm and never tried to cancel one (2026-07-20 incident).
+fn strip_alarm_prefix(msg: &str) -> Option<&str> {
+    let rest = msg.strip_prefix("FW: ")?;
+    let rest = rest
+        .trim_start_matches(|c: char| c.is_ascii_digit())
+        .trim_start();
+    rest.strip_prefix("alarm")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strips_pod3_and_pod4_alarm_prefixes() {
+        assert_eq!(
+            strip_alarm_prefix("FW: alarm[left] off"),
+            Some("[left] off")
+        );
+        assert_eq!(
+            strip_alarm_prefix("FW: 604914 alarm[right] no longer running (max duration)"),
+            Some("[right] no longer running (max duration)")
+        );
+        assert_eq!(
+            strip_alarm_prefix("FW: 4914 alarm[left] start: power 80, pattern 1, dur 600000 ms"),
+            Some("[left] start: power 80, pattern 1, dur 600000 ms")
+        );
+        assert_eq!(strip_alarm_prefix("FW: 123 something else"), None);
+        assert_eq!(strip_alarm_prefix("unrelated"), None);
+    }
+
+    #[test]
+    fn alarm_msgs_track_running_state() {
+        let mut state = SensorState::default();
+
+        state.handle_alarm_msg("[left] start: power 80, pattern 1, dur 600000 ms");
+        assert!(state.alarm_left_running);
+        assert!(!state.alarm_right_running);
+
+        state.handle_alarm_msg("[right] new sequence run. ramp power to 80");
+        assert!(state.alarm_right_running);
+
+        state.handle_alarm_msg("[left] off");
+        assert!(!state.alarm_left_running);
+
+        state.handle_alarm_msg("[right] no longer running (max duration)");
+        assert!(!state.alarm_right_running);
     }
 }
