@@ -167,7 +167,9 @@ impl SensorPacket {
     }
 
     fn parse_alarm_set(buf: BytesMut) -> Result<Self, PacketError> {
-        validate_packet_size("Sensor/AlarmSet", &buf, 2)?;
+        // Pod 3 F0 acks with 2 bytes; the Pod 4 G0 ack is 3 (observed live:
+        // AC 00 01 — trailing byte meaning unknown, plausibly the side).
+        validate_packet_at_least("Sensor/AlarmSet", &buf, 2)?;
         Ok(SensorPacket::AlarmSet(buf[1]))
     }
 
@@ -588,6 +590,11 @@ mod tests {
         assert_eq!(
             SensorPacket::parse(BytesMut::from(&[0xAC, 0x01][..])),
             Ok(SensorPacket::AlarmSet(0x01))
+        );
+        // Pod 4 G0 form (3 bytes), observed live on SetAlarm.
+        assert_eq!(
+            SensorPacket::parse(BytesMut::from(&[0xAC, 0x00, 0x01][..])),
+            Ok(SensorPacket::AlarmSet(0x00))
         );
         assert!(SensorPacket::parse(BytesMut::from(&[0xAC][..])).is_err());
     }
