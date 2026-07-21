@@ -28,7 +28,9 @@ RestartSec=3
 
 Environment=PODD_API_ADDR=0.0.0.0:3000
 Environment=PODD_SPA_DIR=/usr/share/podd/ui
-# SAFETY: MCU control writes are LOGGED, not sent, until deliberately armed.
+# SAFETY: actuation (TEC/pump control, vibration alarms) is LOGGED, not sent,
+# until deliberately armed via a drop-in setting PODD_DRY_RUN=false. Sensing
+# config (piezo enable/gain) still goes to the MCU so presence data works.
 Environment=PODD_DRY_RUN=true
 Environment=RUST_LOG=info
 Environment=PODD_UPDATER_ENABLED=false
