@@ -82,6 +82,19 @@ stays intact; the units just don't start.
   will even `mkfs.ext4` it if the fsck fails badly. Masked, so a podd SD boot
   **never mounts, fscks, trims, or reformats the eMMC.** podd stores everything
   under `/opt/podd` on the SD, so it doesn't need the cage.
+  > **Gotcha (hand-built L1 images):** masking `persistent.mount` silently
+  > breaks WiFi if the stock `NetworkManager.conf` is left as-is. Stock reads
+  > connection profiles from `/persistent/system-connections/` (see
+  > `docs/research/connectivity-and-diff.md`), which lives on the now-masked
+  > eMMC cage — so a profile written anywhere else (e.g.
+  > `/etc/NetworkManager/system-connections/`) is silently ignored.
+  > `scripts/build-podd-sd.sh` does not carry a fix for this (it masks the unit
+  > but doesn't repoint NetworkManager). The clean-room L2 image ships the
+  > fix — an overridden `[keyfile] path=/etc/NetworkManager/system-connections/`
+  > (`os/board/eightsleep/imx8mm-varsom/rootfs-overlay/etc/NetworkManager/NetworkManager.conf`)
+  > plus masking `systemd-networkd-wait-online.service` (`post-build.sh`), which
+  > otherwise blocks on a network that will never come up and stalls the boot.
+  > If you hand-patch an L1 image, carry both changes yourself.
 - **`free-sleep*`** — found pre-installed on this eMMC image. It binds port
   `3000` (which podd's API also uses) and drives the same MCUs, so it must not
   run alongside podd.

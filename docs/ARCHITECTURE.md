@@ -39,8 +39,11 @@ privileged.
   hard-coded 115200 is wrong for Pod 4. See
   `crates/podd-core/src/config/device.rs`.
 - **LSP UART framing**: `0x7E | LEN | payload | CRC16`, CRC-CCITT seed `0x1D0F`,
-  response opcode = request `| 0x80`, `0x7E` escaped in payload. (Now the
-  `pod-proto` crate, extracted from opensleep `common/`.)
+  response opcode = request `| 0x80`. **No byte-stuffing exists** — a frame
+  whose payload or CRC contains `0x7E` is silently dropped by the frozen MCU's
+  parser (no echo, no error). podd avoids the byte by nudging setpoints instead
+  (`FrozenTarget::delimiter_safe` in `pod-proto`). (Now the `pod-proto` crate,
+  extracted from opensleep `common/`.)
 - **I²C** (`/dev/i2c-1`): PCAL6416A `0x20` (MCU reset/enable + button),
   IS31FL3194 LED `0x53`, RV-3028 RTC `0x68`.
 - **Temps on the API wire**: integer °F, 55–110 (free-sleep-compatible). Sides:

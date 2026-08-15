@@ -52,8 +52,8 @@ Full, beginner-friendly guides live in [`docs/`](docs/):
 the one-command install — from a root shell on the Pod:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/GoogleBot42/podd/main/install/install.sh \
-  | sh -s -- --source github:GoogleBot42/podd
+curl -fsSL https://git.neet.dev/zuckerberg/podd/raw/branch/main/install/install.sh \
+  | sh -s -- --source gitea:https://git.neet.dev/zuckerberg/podd
 ```
 
 Then open `http://<pod-ip>:3000`. podd installs in safe **dry-run** mode (it logs

@@ -15,4 +15,9 @@ ui/dist/
 result-brenv
 result-podd
 result-ui
-.claude/
+# Claude Code: track rules/skills/settings, ignore runtime state + local notes
+.claude/*
+!.claude/rules
+!.claude/skills
+!.claude/settings.json
+CLAUDE.local.md

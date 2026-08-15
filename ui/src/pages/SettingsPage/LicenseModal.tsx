@@ -58,7 +58,7 @@ const LicenseModal: React.FC = () => {
 podd is not affiliated with, authorized, endorsed, or supported by Eight Sleep, Inc. "Eight Sleep" and "Pod" are trademarks of Eight Sleep, Inc., used here only to identify the hardware this software runs on. Installing replacement firmware may void your device's warranty or violate Eight Sleep's terms of service.
 
 **2. License**
-podd — including this web app — is free software, licensed under the GNU General Public License, version 3 or (at your option) any later version (GPL-3.0-or-later). You are free to use, study, modify, and redistribute it under the terms of that license. The full license text is in the LICENSE file of the source repository: https://github.com/GoogleBot42/podd
+podd — including this web app — is free software, licensed under the GNU General Public License, version 3 or (at your option) any later version (GPL-3.0-or-later). You are free to use, study, modify, and redistribute it under the terms of that license. The full license text is in the LICENSE file of the source repository: https://git.neet.dev/zuckerberg/podd
 
 This web app is derived in part from the free-sleep project (https://github.com/throwaway31265/free-sleep). The original free-sleep code is MIT licensed, and its notice is reproduced below.
 

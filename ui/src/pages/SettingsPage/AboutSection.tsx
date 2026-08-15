@@ -12,8 +12,8 @@ export default function AboutSection() {
         </Typography>
         <Typography variant='body2' color='text.secondary'>
           Source code and issue tracker:&nbsp;
-          <Link href='https://github.com/GoogleBot42/podd' target='_blank' rel='noopener noreferrer'>
-            github.com/GoogleBot42/podd
+          <Link href='https://git.neet.dev/zuckerberg/podd' target='_blank' rel='noopener noreferrer'>
+            git.neet.dev/zuckerberg/podd
           </Link>
         </Typography>
         <Typography variant='body2' color='text.secondary'>

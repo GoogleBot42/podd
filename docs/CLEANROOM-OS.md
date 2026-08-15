@@ -170,10 +170,17 @@ none of which need a debug adapter or a port this board lacks:
   blind bootloader bring-up safe: the worst case is "the spare SD doesn't boot."
 - **Self-logging diag partition** — boot logs (dmesg/journal/status) written to
   the persistent partition, read post-mortem in a host card reader. Covers the
-  pre-network window (`install/diag/`).
+  pre-network window. On the clean-room image this is baked into every build:
+  `os/board/eightsleep/imx8mm-varsom/rootfs-overlay/usr/bin/podd-bootlog` plus
+  its early/late units write to `/data/bootlog` (partition p3, label
+  `podd_data`). (`install/diag/` is the equivalent mechanism for the legacy L1
+  image, patched in separately and logging to p1's `/opt/podd/bootlog`.)
 - **LED boot-progress codes** — the IS31FL3194 LED is on I²C and drivable from
   both U-Boot and Linux. Patch coarse "reached stage N" blink codes into U-Boot /
   early init to localize a blind bootloader failure without a console.
+  **Stock-boot ground truth** (observed on real hardware, useful as the
+  reference sequence when comparing a from-source boot): steady LED at
+  power-on → off → green → blue on a healthy stock boot.
 - **U-Boot-to-SD post-mortem** — once U-Boot proper is running (DRAM + MMC up) it
   can write a marker/log to a FAT partition on the SD before it fails, read back
   in a card reader. Covers the U-Boot-proper window that LED codes can only hint at.
@@ -233,7 +240,23 @@ of an already-proven upper stack:
   load fails with ENOENT, never retries, and wlan0 never exists. As a module,
   udev coldplug loads it post-mount. `post-build.sh` hard-fails the build if
   `brcmfmac.ko` is missing from the target (the stale-incremental-build trap
-  that originally motivated `=y`).
+  that originally motivated `=y`). The module also needs power sequencing the
+  base DART/VAR-SOM dtsi doesn't provide, and its firmware/NVRAM blobs aren't
+  in upstream `linux-firmware` — see the WiFi power/firmware comment block in
+  `os/board/eightsleep/imx8mm-varsom/imx8mm-podd.dts` (~lines 126-197).
+- **Bootloader-region splice, for bisecting boot-chain vs. rootfs failures.**
+  `imx-boot` occupies raw sectors 66–8191 (bytes `0x8400` up to, but not
+  including, the U-Boot env at `0x400000`/sector 8192). Copying just that
+  range from a known-good image into a candidate image isolates whether a dead
+  board is the boot chain or something downstream (env/rootfs), without
+  touching either:
+  ```
+  dd if=<known-good>.img of=<target>.img bs=512 skip=66 seek=66 count=8126 conv=notrunc
+  ```
+  This range (and the "sector 66 (0x8400) .. just before env (sector 8192)"
+  framing) is exactly what `scripts/slim-podd-sd.sh` hashes to verify its own
+  imx-boot splice. Used historically to ship a working image while the
+  from-source bootloader was still being debugged.
 - **Buildroot tzdata is `BR2_TARGET_TZ_INFO`, not `BR2_PACKAGE_TZDATA`** (the
   latter is a blind Kconfig symbol that is silently dropped) — and even with
   zoneinfo installed, **jiff won't follow Buildroot's symlinked top-level zone
@@ -253,6 +276,22 @@ of an already-proven upper stack:
   keeps holding temperature) and escalates to a process restart — which pulses
   the reset — after 6 straight failures. Root cause is an open RE item
   (`docs/research/pod4-sensor-protocol.md`).
+- **Sensor-MCU zombie window on every (re)connect, not just hard-wedges.**
+  After podd's startup reset pulse, the G0 sensor MCU streams telemetry and
+  answers Ping normally but silently discards alarm/actuation writes (`SetAlarm`)
+  for tens of seconds — observed live: fires attempted <25s after connect never
+  start, while fires attempted >60s in do work. One-shot writes are not enough
+  for anything alarm-related. Mitigation shipped: alarm-critical commands (manual test
+  fires, dismissals) become a pending write the scheduler resends every 2s, up
+  to 60s, until the firmware confirms — see `PendingFire`/the resend loop in
+  `crates/podd-core/src/sensor/manager.rs` (commits `db2c17f`, `d9f9f7d`,
+  `dd1de39`).
+- **The G0 firmware dismisses alarms on its own double-tap detection**
+  (accelerometer in the puck; logs `FW: <millis> [lisR] dismissing alarm (2
+  taps)`). podd used to be blind to this and re-armed the alarm ~5s later —
+  the original "double-tap doesn't dismiss" bug. Fixed by parsing the FW
+  message and marking the side dismissed for the rest of the window (commit
+  `0acd6b2`).
 
 ## Parked / out of scope
 

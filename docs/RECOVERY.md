@@ -34,6 +34,14 @@ Not sure? See [FLASHING.md → Identify your Pod](FLASHING.md#step-1--identify-y
 
 Four nested safety nets, cheapest and least invasive first. Try them in order.
 
+> **Before any of the nets below: verify your SD card.** A card that reports
+> full capacity but throws `No space left on device` early into a `dd` write
+> is counterfeit or failing, not a script bug — this was the real root cause
+> of at least one "device never comes up" incident that looked like a boot
+> problem. Check the claimed size (`lsblk -b`) and, if you doubt it, confirm
+> with `f3probe --destructive --time-ops /dev/sdX` (destructive — spare cards
+> only, it writes and reads back the whole card).
+
 ### Net 1 — Revert the boot slot (fixes almost everything)
 
 This is the primary net and it's almost always enough. It fixes any bad-slot,
@@ -64,6 +72,18 @@ To make it stick across reboots, `saveenv` after `setenv`. From a running root
 shell the equivalent is `fw_setenv mmcpart 1` + reboot. If you're recovering
 from a failed slot install, set `mmcpart` to the **other** slot from the one
 that failed. On newer builds you can also set `current_slot a` (or `b`).
+
+> **Caution: don't trust `fw_printenv`'s exit code.** On this board
+> `fw_printenv` false-negatives its own CRC verification — it fails even
+> against a known-good, byte-for-byte-correct stock env (a tool quirk, not a
+> real corruption). Don't gate a script's "success" on `fw_printenv`'s return
+> code. `scripts/build-podd-sd.sh` hit this and works around it by skipping
+> `fw_printenv` for verification entirely: it reads the raw env region back
+> and parses the NUL-separated `key=value` pairs directly (past the 4-byte CRC
+> header), trusting `mkenvimage` to have written a correct CRC32 — which it
+> confirmed once, manually, out-of-band (recomputing U-Boot's CRC32 over the
+> env bytes and comparing to the stored value) rather than relying on
+> `fw_printenv` to tell it so.
 
 That's it — you're booted back into a known-good system. No data is touched.
 

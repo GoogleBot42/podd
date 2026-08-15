@@ -19,7 +19,7 @@ export default function WaterNotification() {
       <Alert severity="warning">
         { `Unhandled deviceStatus.waterLevel: '${deviceStatus?.waterLevel}'` }
         <br />
-        Please create an issue and include the message above <Link href='https://github.com/GoogleBot42/podd/issues'>here</Link>
+        Please create an issue and include the message above <Link href='https://git.neet.dev/zuckerberg/podd/issues'>here</Link>
       </Alert>
     );
   }

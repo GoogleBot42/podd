@@ -1,6 +1,6 @@
 [Unit]
 Description=podd - open Eight Sleep Pod control daemon
-Documentation=https://github.com/GoogleBot42/podd
+Documentation=https://git.neet.dev/zuckerberg/podd
 After=network-online.target
 Wants=network-online.target
 # Wait for /data to mount before any Exec line runs. This is a [Unit] directive;
