@@ -173,6 +173,18 @@ impl StateStore {
         *self.status.write().unwrap() = status;
     }
 
+    /// Set the hub board identity ("Pod 3", "Pod 4", ...). Host fact — owned by
+    /// the podd binary's host-info task, preserved across `apply_snapshot`.
+    pub fn set_hub_version(&self, hub_version: String) {
+        self.status.write().unwrap().hub_version = hub_version;
+    }
+
+    /// Set the WiFi signal strength as a 0–100 percentage (0 = unknown/hidden).
+    /// Host fact — owned by the podd binary's host-info task.
+    pub fn set_wifi_strength(&self, percent: i32) {
+        self.status.write().unwrap().wifi_strength = percent;
+    }
+
     // ---- presence (in-memory only) ----
 
     pub fn presence(&self) -> PresenceState {

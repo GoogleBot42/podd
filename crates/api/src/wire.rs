@@ -124,12 +124,14 @@ impl Default for DeviceStatus {
                 led_brightness: 100,
             },
             cover_version: "Pod 3".to_string(),
-            hub_version: "unknown".to_string(),
+            // "Version not found" / 0 are the UI's hide-the-chip sentinels;
+            // real values come from the host-info task in the podd binary.
+            hub_version: "Version not found".to_string(),
             free_sleep: FreeSleepInfo {
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 branch: "main".to_string(),
             },
-            wifi_strength: -50,
+            wifi_strength: 0,
         }
     }
 }

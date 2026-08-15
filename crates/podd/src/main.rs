@@ -30,6 +30,8 @@ use std::sync::Arc;
 
 use api::{PoddControl, PodControl, StateStore, StoreConfig};
 
+mod hostinfo;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
@@ -74,6 +76,9 @@ async fn main() -> anyhow::Result<()> {
     // Live status store (fed by the watch) + real control (feeds the mpsc).
     let store = StateStore::from_watch(shared.status.clone(), store_config);
     let control = Arc::new(PoddControl::new(shared.commands.clone())) as Arc<dyn PodControl>;
+
+    // Hub identity + WiFi strength for /api/deviceStatus (host facts, not MCU).
+    hostinfo::spawn(store.clone());
 
     // The on-device update agent: polls a signed release channel and applies
     // Tier-2 (app) updates atomically with a health-checked rollback; Tier-1
