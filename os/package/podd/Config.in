@@ -11,4 +11,4 @@ config BR2_PACKAGE_PODD
 	  service. Point PODD_BIN / PODD_UI_DIR at those `result-*` paths (see
 	  package/podd/podd.mk).
 
-	  https://github.com/GoogleBot42/podd
+	  https://git.neet.dev/zuckerberg/podd
