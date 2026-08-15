@@ -1,3 +1,4 @@
+import { useRef } from 'react';
 import { CircularSliderWithChildren } from 'react-circular-slider-svg';
 import { postDeviceStatus } from '@api/deviceStatus.ts';
 import { useAppStore } from '@state/appStore';
@@ -9,6 +10,12 @@ import { useTheme } from '@mui/material/styles';
 import { useResizeDetector } from 'react-resize-detector';
 import { useSettings } from '@api/settings.ts';
 import { MAX_TEMP_F, MIN_TEMP_F, getTemperatureColor } from '@lib/temperatureConversions.ts';
+
+// How far (px) from the track's centerline a press still counts as grabbing the
+// slider. The library itself accepts presses anywhere in its square SVG, which
+// makes it far too easy to set a temperature by tapping near — but not on — the
+// arc; anything outside this band is swallowed before the library sees it.
+const TRACK_HIT_TOLERANCE_PX = 28;
 
 type SliderProps = {
   isOn: boolean;
@@ -51,6 +58,22 @@ export default function Slider({ isOn, currentTargetTemp, refetch, currentTemper
 
   const arcBackgroundColor = theme.palette.grey[700];
 
+  // True while the current touch interaction started on the track, so its
+  // move/end events may reach the slider.
+  const touchOnTrackRef = useRef(false);
+
+  // The track's centerline radius mirrors react-circular-slider-svg's own
+  // geometry: trackInnerRadius = size/2 - trackWidth - 20 (shadow width).
+  const isNearTrack = (clientX: number, clientY: number, target: HTMLElement) => {
+    const rect = target.getBoundingClientRect();
+    const trackRadius = rect.width / 2 - 20 - 6 / 2;
+    const distance = Math.hypot(
+      clientX - (rect.left + rect.width / 2),
+      clientY - (rect.top + rect.height / 2),
+    );
+    return Math.abs(distance - trackRadius) <= TRACK_HIT_TOLERANCE_PX;
+  };
+
   const sideStatus = deviceStatus?.[side];
   const minTemp = Math.min(sideStatus?.currentTemperatureF || 55, sideStatus?.targetTemperatureF || 55);
   const maxTemp = Math.max(sideStatus?.currentTemperatureF || 55, sideStatus?.targetTemperatureF || 55);
@@ -62,7 +85,23 @@ export default function Slider({ isOn, currentTargetTemp, refetch, currentTemper
       style={ { position: 'relative', display: 'inline-block', width: '100%', maxWidth: '400px' } }
     >
       { /* Circular Slider */ }
-      <div className={ `${styles.Slider} ${disabled && styles.Disabled} ${isHeating && styles.Heating}` }>
+      <div
+        className={ `${styles.Slider} ${disabled && styles.Disabled} ${isHeating && styles.Heating}` }
+        onMouseDownCapture={ (e) => {
+          if (!isNearTrack(e.clientX, e.clientY, e.currentTarget)) e.stopPropagation();
+        } }
+        onTouchStartCapture={ (e) => {
+          const touch = e.touches[0];
+          touchOnTrackRef.current = touch != null && isNearTrack(touch.clientX, touch.clientY, e.currentTarget);
+          if (!touchOnTrackRef.current) e.stopPropagation();
+        } }
+        onTouchMoveCapture={ (e) => {
+          if (!touchOnTrackRef.current) e.stopPropagation();
+        } }
+        onTouchEndCapture={ (e) => {
+          if (!touchOnTrackRef.current) e.stopPropagation();
+        } }
+      >
         <CircularSliderWithChildren
           disabled={ disabled }
           onControlFinished={ handleControlFinished }
