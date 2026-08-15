@@ -77,6 +77,9 @@ anything on the actuation path as safety-critical.
   Still confirm before anything beyond that: flashing, power-cycling, config
   pushes that change alarm/actuation semantics. Live-device access details
   live in `CLAUDE.local.md` (untracked).
+- When handing Jeremy a built artifact (SD image, binary), point him at the
+  ready-to-use uncompressed file — he should never have to gunzip/extract
+  anything himself. Keep the raw `.img` in `dist/` alongside the `.gz`.
 - Use subagents for large parallelizable subtasks. Run them on Opus or Sonnet
   (`model: "opus"` / `model: "sonnet"`) wherever those suffice — searches,
   routine edits, mechanical sweeps; reserve the top-tier model for work that
