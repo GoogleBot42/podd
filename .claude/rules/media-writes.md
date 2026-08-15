@@ -1,0 +1,29 @@
+---
+paths:
+  - os/**
+  - install/**
+  - scripts/**
+---
+
+# Media writes
+
+- eMMC (`mmcblk2` on-device) is never a write target. Safety model:
+  SD-swap-to-revert — everything boots from a spare SD, stock card is a
+  total, instant revert. `install/podd-slot-install.sh` is the sole
+  exception (eMMC A/B slot install) and only ever touches the inactive slot.
+- Before `dd`-ing any image, confirm the target is a real block device, not
+  a regular file — a misdirected write to a plain file has silently
+  absorbed gigabytes of image data with no error.
+- Beware SD cards that misreport capacity: unexplained early `ENOSPC` during
+  a write is a common symptom of a counterfeit/undersized card, not a script
+  bug — see the "verify your SD card" callout in `docs/RECOVERY.md`.
+- Always verify a raw write: `cmp -n <byte-count> image.img /dev/sdX` (see
+  `scripts/slim-podd-sd.sh`'s own verify step).
+- `/var/log` is tmpfs on the SD-clone (L1) image (`docs/SD-BOOT.md`); assume
+  the same on the clean-room (L2) image unless verified. Persistent boot logs
+  differ by image: L2 bakes them in at `/data/bootlog` (partition p3); L1
+  needs `scripts/patch-podd-sd-diag.sh`, logging to p1's `/opt/podd/bootlog/`.
+  See the `build-sd-image` skill's post-mortem section.
+- `printf '%s'` does not expand `\t`/`\n` — a literal `\t` in a generated
+  `fstab` line once took out the `/data` mount (commit `4cea0fd`). Use
+  `printf '%b'`, `echo`, or literal characters instead.
