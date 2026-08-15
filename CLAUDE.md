@@ -67,8 +67,10 @@ anything on the actuation path as safety-critical.
   violate that, flag it and ask — don't take it.
 - Confirm before anything that touches the live Pod (restart, flash, config
   push). Live-device access details live in `CLAUDE.local.md` (untracked).
-- Use subagents for large parallelizable subtasks. Keep designs simple unless
-  asked to extend.
+- Use subagents for large parallelizable subtasks. Run them on Opus or Sonnet
+  (`model: "opus"` / `model: "sonnet"`) wherever those suffice — searches,
+  routine edits, mechanical sweeps; reserve the top-tier model for work that
+  actually needs it. Keep designs simple unless asked to extend.
 - When Jeremy dumps logs or bootlogs unprompted, that is a request to
   re-diagnose, not to acknowledge.
 
