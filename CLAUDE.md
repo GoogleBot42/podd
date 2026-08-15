@@ -47,7 +47,14 @@ anything on the actuation path as safety-critical.
   there. Use the `git-forges` skill for tea/issue/PR mechanics.
 - Commit work as you go: small commits per logical unit, never batched at the
   end. `main` is protected (server-enforced) — all work goes up as a branch
-  plus a PR that Jeremy merges; reference the issue number when there is one.
+  plus a PR; reference the issue number when there is one.
+- Merge your own PRs once tests pass and the work is done (Jeremy authorized
+  this 2026-08-15) — don't leave finished PRs waiting on him. Jeremy reviews
+  post-merge.
+- After merging a change that affects the running Pod (daemon, UI, config),
+  deploy it to the live Pod via the `deploy-live-pod` skill — merged-but-
+  undeployed work is unfinished. Live-Pod cautions in that skill and
+  `CLAUDE.local.md` still apply.
 - Every commit ends with the `Co-Authored-By` and `Claude-Session` trailers.
 
 ## Docs map (one owner per fact — point, don't restate)
@@ -65,8 +72,11 @@ anything on the actuation path as safety-critical.
 - Clean-room strictness: NXP/Variscite vendor blobs are acceptable; Eight Sleep
   binaries must never ship or be silently depended on. If a shortcut would
   violate that, flag it and ask — don't take it.
-- Confirm before anything that touches the live Pod (restart, flash, config
-  push). Live-device access details live in `CLAUDE.local.md` (untracked).
+- Routine deploys of merged work (binary/UI swap + podd restart) are
+  pre-authorized (2026-08-15) — see the deploy rule under "Git & forge".
+  Still confirm before anything beyond that: flashing, power-cycling, config
+  pushes that change alarm/actuation semantics. Live-device access details
+  live in `CLAUDE.local.md` (untracked).
 - Use subagents for large parallelizable subtasks. Run them on Opus or Sonnet
   (`model: "opus"` / `model: "sonnet"`) wherever those suffice — searches,
   routine edits, mechanical sweeps; reserve the top-tier model for work that
