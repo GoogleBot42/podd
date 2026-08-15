@@ -4,7 +4,7 @@ export function farenheitToCelcius(farenheit: number): number {
 }
 
 export function formatTemperature(temperature: number, celcius: boolean) {
-  return celcius ? `${farenheitToCelcius(temperature)}°C` : `${temperature}°F`;
+  return celcius ? `${farenheitToCelcius(temperature)}°C` : `${Math.round(temperature)}°F`;
 }
 
 

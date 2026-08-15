@@ -1,4 +1,4 @@
-import { useRef, useCallback } from 'react';
+import { useRef, useCallback, useEffect } from 'react';
 import { useTheme } from '@mui/material/styles';
 import { Button, Box } from '@mui/material';
 import { Add, Remove } from '@mui/icons-material';
@@ -36,10 +36,37 @@ export default function TemperatureButtons({ refetch, currentTargetTemp }: Tempe
     }
   }, [deviceStatus, side, refetch, setIsUpdating]);
 
+  // The pending debounced post, so it can be flushed early instead of lost if
+  // the page is closed/hidden or the component unmounts before the timer fires.
+  const pendingUpdateRef = useRef<(() => void) | null>(null);
+
   const scheduleUpdate = useCallback(() => {
     if (debounceTimer.current) clearTimeout(debounceTimer.current);
-    debounceTimer.current = setTimeout(postUpdate, DEBOUNCE_MS);
+    const fire = () => {
+      debounceTimer.current = null;
+      pendingUpdateRef.current = null;
+      void postUpdate();
+    };
+    pendingUpdateRef.current = fire;
+    debounceTimer.current = setTimeout(fire, DEBOUNCE_MS);
   }, [postUpdate]);
+
+  useEffect(() => {
+    const flush = () => {
+      if (debounceTimer.current) clearTimeout(debounceTimer.current);
+      pendingUpdateRef.current?.();
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') flush();
+    };
+    window.addEventListener('pagehide', flush);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      flush();
+    };
+  }, []);
 
 
   const isInAwayMode = settings?.[side].awayMode;
