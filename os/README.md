@@ -45,6 +45,17 @@ which is what the stock device was built from.
 Branch **HEADs** were pinned to their then-current commit SHAs. Re-pin by reading
 the branch tip if you want a later BSP dot-fix.
 
+One defconfig pin is easy to miss the reason for:
+`BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_5_4=y`
+([`configs/podd_imx8mm_varsom_sd_defconfig`](configs/podd_imx8mm_varsom_sd_defconfig#L42)).
+Kernel headers normally come from `AS_KERNEL` (the kernel being built), but for
+a custom-git kernel tree Buildroot can't infer a version from it and silently
+leaves `HEADERS_AT_LEAST` at the 2.6 floor. That's not just cosmetic: glibc
+needs headers >= 3.2, so under the floor Buildroot silently falls back from
+glibc to uClibc — which then breaks systemd later in the build, with no error
+pointing back at the real cause. Pinning the headers series explicitly avoids
+the fallback.
+
 ### Board-specific config supplied by this tree
 
 Authored under `board/eightsleep/imx8mm-varsom/` (kernel `.config` and DTS are
@@ -113,6 +124,14 @@ gunzip -c dist/podd-sd.img.gz \
   | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress; sync
 ```
 
+Verify the write before trusting it — `dd` reporting success doesn't mean the
+card actually holds what you sent:
+
+```sh
+gunzip -c dist/podd-sd.img.gz > /tmp/podd-sd.img
+sudo cmp -n "$(wc -c < /tmp/podd-sd.img)" /tmp/podd-sd.img /dev/sdX && echo OK
+```
+
 CI wraps `build.sh` to publish `podd-sd-<version>.img.gz` + the RAUC bundle on
 tag releases (replacing the `recovery-sd` stub job).
 
@@ -135,6 +154,13 @@ a future physical trigger: the rear factory-reset pinhole button is an input on
 the PCAL6416A I²C expander (`0x20` on `/dev/i2c-1`, input port register `0x00`
 — the same chip podd's `reset.rs` drives), *not* a gpio-keys input device, so a
 button-hold trigger would be a small userspace poller of that register.
+
+The button is currently **inert while podd runs**: `crates/podd-core/src/reset.rs`
+only writes the expander's config/output registers (subsystem reset/enable) and
+never reads the input port, so nothing in podd polls it. The only things that
+still act on it are stock U-Boot's `factory_reset` check and the stock
+Capybara daemon — neither of which run once podd owns the system. The exact
+bit mapping of the button within input port register `0x00` is undetermined.
 
 ### Host mkimage workaround
 
