@@ -163,6 +163,11 @@ EOF
 	chmod 0755 "${_hostmk}"
 fi
 
+# The podd package is install-only (artifacts built outside Buildroot), but
+# Buildroot's stamp files don't content-track PODD_BIN/PODD_UI_DIR — without
+# this, a rebuilt binary/UI silently never reaches the rootfs.
+rm -f "${BUILDROOT_DIR}"/output/build/podd-*/.stamp_target_installed
+
 log "building image (make -j${JOBS}) - this takes a while"
 make -C "${BUILDROOT_DIR}" "-j${JOBS}" \
 	PODD_BIN="${PODD_BIN}" \

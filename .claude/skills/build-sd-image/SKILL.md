@@ -63,6 +63,23 @@ image boots and the un-spliced one didn't, the bug is in your bootloader
 assembly, not the kernel/rootfs; if it still doesn't boot, look upstream of
 the bootloader region (DDR training firmware, DTB selection).
 
+### 1b. Verify the image actually contains your new podd/UI — stamps lie
+
+The `podd` Buildroot package is install-only (the binary/UI are built outside
+Buildroot), and Buildroot's stamps don't content-track those external
+artifacts. `build-image.sh` now deletes `.stamp_target_installed` before every
+make (2026-08-15) so this should not recur — but a rebuilt image that
+mysteriously lacks your change means the stamp mechanism ate the reinstall.
+Verify shipped contents against `output/images/rootfs.tar` instead of trusting
+the build log, e.g.:
+
+```sh
+tar -xOf build/buildroot/output/images/rootfs.tar ./usr/bin/podd \
+  | grep -a -c "<some string only the new binary contains>"
+tar -xOf build/buildroot/output/images/rootfs.tar ./usr/share/podd/ui/index.html \
+  | grep -o 'index-[^"]*\.js'   # must reference the bundle hash you just built
+```
+
 ### 2. Host `mkimage` is broken in this Buildroot release
 
 Buildroot 2026.02.3's own host `u-boot-tools` (mkimage 2025.10) can't compile

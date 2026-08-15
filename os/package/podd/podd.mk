@@ -49,6 +49,9 @@ PODD_PRE_INSTALL_TARGET_HOOKS += PODD_CHECK_ARTIFACTS
 
 define PODD_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0755 $(PODD_BIN) $(TARGET_DIR)/usr/bin/podd
+	# Clean first: TARGET_DIR persists across builds and the UI bundle names are
+	# content-hashed, so stale assets from earlier builds accumulate otherwise.
+	rm -rf $(TARGET_DIR)/usr/share/podd/ui
 	mkdir -p $(TARGET_DIR)/usr/share/podd/ui
 	# The UI comes from the Nix store, whose files/dirs are read-only (0444/0555).
 	# `cp -a` would preserve those perms, so Buildroot's later fakeroot cleanup
