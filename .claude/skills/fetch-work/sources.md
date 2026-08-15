@@ -6,7 +6,12 @@ update it here, not in either skill.
 
 1. **Gitea open issues.** `tea issues list --repo zuckerberg/podd --output simple`
    (see the `git-forges` skill for `tea` setup/auth). Read a specific issue
-   with `tea issues <n> --repo zuckerberg/podd`.
+   with `tea issues <n> --repo zuckerberg/podd`. Authorship gotcha: `tea`
+   shows every issue's author as "agent" because the migration re-created
+   them. Issues ≤ #23 were migrated from GitHub and were filed by Jeremy
+   (footer: "opened by GoogleBot42"); higher-numbered ones are agent-filed
+   audit findings. "Tasks I/Jeremy filed" means the migrated set. The GitHub
+   originals 404 (repo shadowbanned) — the Gitea copies are canonical.
 
 2. **README.md "Status" paragraph's "Remaining work" list.** Read the block
    under `> Status:` near the top of `README.md` — it names the current
