@@ -74,3 +74,5 @@ anything on the actuation path as safety-critical.
 
 Skills: `deploy-live-pod` (dev-loop binary/config deploys), `build-sd-image`
 (OS image + won't-boot post-mortem), `fetch-work` / `unblock` / `reflect` (meta).
+After substantial work, run the `reflect` skill before wrapping up ("no changes
+needed" is its normal outcome — don't skip it because nothing seems stale).
