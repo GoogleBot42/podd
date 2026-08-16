@@ -13,7 +13,9 @@ export const useControlTempStore = create<ControlTempStore>((set, get) => ({
   deviceStatus: undefined,
   setDeviceStatus: (newDeviceStatus) => {
     const { deviceStatus } = get();
-    const updatedDeviceStatus = _.merge(deviceStatus, newDeviceStatus);
+    // Merge into a fresh object: mutating the stored one keeps the same
+    // reference, so subscribers selecting state.deviceStatus never re-render.
+    const updatedDeviceStatus = _.merge({}, deviceStatus, newDeviceStatus);
     set({ deviceStatus: updatedDeviceStatus });
   },
 }));
