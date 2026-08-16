@@ -69,7 +69,11 @@ impl MqttManager {
             topic: TOPIC_AVAILABILITY.to_string(),
             message: OFFLINE.into(),
             qos: QoS::ExactlyOnce,
-            retain: false,
+            // Retained, like the "online" publish on connect: if only one of
+            // the pair is retained, a subscriber (re)connecting after a podd
+            // restart can latch onto a stale availability state (bit HA live
+            // 2026-08-15 — everything "unavailable" until an MQTT reload).
+            retain: true,
         });
 
         let (client, eventloop) = AsyncClient::new(opts, 10);
