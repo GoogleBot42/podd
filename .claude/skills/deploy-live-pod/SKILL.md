@@ -120,6 +120,14 @@ still holds.
   scp/install steps above and generating text on-device (fstab lines,
   config snippets), a literal `\t`/`\n` from `printf '%s'` has previously
   taken out a mount. Use `printf '%b'`, `echo`, or literal characters.
+- **Concurrent sessions deploy too.** More than one agent session can be
+  working this repo at once, and deploys have landed minutes apart
+  (2026-08-16: two deploys 03:24:57 and 03:26:52 UTC). After your swap,
+  `sha256sum` the installed binary and compare against your build — Nix
+  builds are reproducible, so a mismatch means someone else's build is live,
+  not a corrupted copy. Check `origin/main` for newer merges before assuming
+  anything is wrong: a later build of a descendant commit still contains
+  your change and needs no re-deploy.
 - **Silent no-op restarts.** `systemctl restart podd` succeeding and the
   journal showing a clean startup does not by itself prove the *new* binary
   or config is what's running — confirm you actually replaced the file at
