@@ -77,7 +77,7 @@ impl PresenseManager {
         let config = self.config.as_mut().unwrap();
 
         for i in 0..6 {
-            if data.values[i] > config.baselines[i] + config.threshold {
+            if exceeds_baseline(data.values[i], config.baselines[i], config.threshold) {
                 self.debounce[i] = self.debounce[i].saturating_add(1);
             } else {
                 self.debounce[i] = 0;
@@ -162,4 +162,30 @@ impl PresenseManager {
         let count = samples.len() as u32;
         sums.map(|sum| (sum / count) as u16)
     }
+}
+
+/// Baseline and threshold are both u16 and user-settable, so their sum can
+/// exceed u16::MAX — compare in u32.
+fn exceeds_baseline(value: u16, baseline: u16, threshold: u16) -> bool {
+    value as u32 > baseline as u32 + threshold as u32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::exceeds_baseline;
+
+    #[test]
+    fn detects_value_above_baseline_plus_threshold() {
+        assert!(exceeds_baseline(1500, 1014, 300));
+        assert!(!exceeds_baseline(1300, 1014, 300));
+    }
+
+    #[test]
+    fn baseline_plus_threshold_does_not_wrap() {
+        // 65000 + 60000 wraps to 59464 in u16; a quiet reading must not
+        // register as present, and the sum must not panic in debug builds.
+        assert!(!exceeds_baseline(60000, 65000, 60000));
+        assert!(exceeds_baseline(u16::MAX, u16::MAX - 1, 0));
+    }
+
 }
