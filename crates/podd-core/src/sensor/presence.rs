@@ -9,9 +9,9 @@ const DEFAULT_THRESHOLD: u16 = 50;
 const DEFAULT_DEBOUNCE: u8 = 5;
 const CALIBRATION_DURATION: Duration = Duration::from_secs(10);
 
-const TOPIC_ANY: &str = "opensleep/state/presence/any";
-const TOPIC_LEFT: &str = "opensleep/state/presence/left";
-const TOPIC_RIGHT: &str = "opensleep/state/presence/right";
+pub(crate) const TOPIC_ANY: &str = "opensleep/state/presence/any";
+pub(crate) const TOPIC_LEFT: &str = "opensleep/state/presence/left";
+pub(crate) const TOPIC_RIGHT: &str = "opensleep/state/presence/right";
 pub const TOPIC_CALIBRATE: &str = "opensleep/actions/calibrate";
 
 #[derive(Debug, Clone, PartialEq, Default)]

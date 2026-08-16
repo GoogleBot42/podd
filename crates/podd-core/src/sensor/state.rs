@@ -38,10 +38,10 @@ const TOPIC_MODE: &str = "opensleep/state/sensor/mode";
 const TOPIC_HWINFO: &str = "opensleep/state/sensor/hwinfo";
 const TOPIC_PIEZO_OK: &str = "opensleep/state/sensor/piezo_ok";
 const TOPIC_VIBRATION_ENABLED: &str = "opensleep/state/sensor/vibration_enabled";
-const TOPIC_BED_TEMP: &str = "opensleep/state/sensor/bed_temp";
-const TOPIC_AMBIENT_TEMP: &str = "opensleep/state/sensor/ambient_temp";
-const TOPIC_HUMIDITY: &str = "opensleep/state/sensor/humidity";
-const TOPIC_MCU_TEMP: &str = "opensleep/state/sensor/mcu_temp";
+pub(crate) const TOPIC_BED_TEMP: &str = "opensleep/state/sensor/bed_temp";
+pub(crate) const TOPIC_AMBIENT_TEMP: &str = "opensleep/state/sensor/ambient_temp";
+pub(crate) const TOPIC_HUMIDITY: &str = "opensleep/state/sensor/humidity";
+pub(crate) const TOPIC_MCU_TEMP: &str = "opensleep/state/sensor/mcu_temp";
 
 impl SensorState {
     pub fn piezo_gain_ok(&self) -> bool {
