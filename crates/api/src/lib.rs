@@ -21,7 +21,7 @@ pub mod handlers;
 pub mod state;
 pub mod wire;
 
-pub use control::{Call, MockControl, PoddControl, PodControl};
+pub use control::{Call, MockControl, NotImplemented, PoddControl, PodControl};
 pub use state::{StateStore, StoreConfig};
 
 use axum::http::{HeaderValue, Method};

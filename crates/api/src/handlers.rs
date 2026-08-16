@@ -1,6 +1,6 @@
 //! Route handlers. Business logic mapping wire JSON <-> state + control commands.
 
-use crate::control::PodControl;
+use crate::control::{NotImplemented, PodControl};
 use crate::error::{invalid_request_data, ApiJson};
 use crate::state::StateStore;
 use crate::wire::*;
@@ -87,6 +87,22 @@ pub async fn get_device_status(State(app): State<AppState>) -> Json<DeviceStatus
     Json(app.store.device_status())
 }
 
+/// Map a [`PodControl`] error onto a response. A `send` only fails when the
+/// command mpsc into podd-core is closed — the control core is dead — which
+/// must not masquerade as success (#33). [`NotImplemented`] maps to 501 (#32).
+fn control_error(e: anyhow::Error) -> Response {
+    if e.downcast_ref::<NotImplemented>().is_some() {
+        (StatusCode::NOT_IMPLEMENTED, e.to_string()).into_response()
+    } else {
+        log::error!("control command failed: {e}");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("control unavailable: {e}"),
+        )
+            .into_response()
+    }
+}
+
 pub async fn post_device_status(
     State(app): State<AppState>,
     ApiJson(patch): ApiJson<DeviceStatusPatch>,
@@ -95,21 +111,31 @@ pub async fn post_device_status(
     for (side, side_patch) in sides {
         let Some(sp) = side_patch else { continue };
         if let Some(on) = sp.is_on {
-            let _ = app.control.set_power(side, on).await;
+            if let Err(e) = app.control.set_power(side, on).await {
+                return control_error(e);
+            }
         }
         if let Some(temp) = sp.target_temperature_f {
-            let _ = app.control.set_target_temp(side, temp).await;
+            if let Err(e) = app.control.set_target_temp(side, temp).await {
+                return control_error(e);
+            }
         }
         // isAlarmVibrating can only *clear* (false), never set.
         if sp.is_alarm_vibrating == Some(false) {
-            let _ = app.control.clear_alarm(side).await;
+            if let Err(e) = app.control.clear_alarm(side).await {
+                return control_error(e);
+            }
         }
     }
     if patch.is_priming == Some(true) {
-        let _ = app.control.prime().await;
+        if let Err(e) = app.control.prime().await {
+            return control_error(e);
+        }
     }
     if let Some(settings) = patch.settings {
-        let _ = app.control.apply_device_settings(settings).await;
+        if let Err(e) = app.control.apply_device_settings(settings).await {
+            return control_error(e);
+        }
     }
     StatusCode::NO_CONTENT.into_response()
 }
@@ -174,7 +200,9 @@ pub async fn post_alarm(
     State(app): State<AppState>,
     ApiJson(job): ApiJson<AlarmJob>,
 ) -> Response {
-    let _ = app.control.fire_alarm(job).await;
+    if let Err(e) = app.control.fire_alarm(job).await {
+        return control_error(e);
+    }
     // free-sleep returns schedulesDB.data (ignored by the UI).
     Json(app.store.schedules()).into_response()
 }
@@ -193,6 +221,9 @@ pub async fn post_execute(
             message,
         })
         .into_response(),
+        Err(e) if e.downcast_ref::<NotImplemented>().is_some() => {
+            (StatusCode::NOT_IMPLEMENTED, e.to_string()).into_response()
+        }
         Err(_) => (StatusCode::BAD_REQUEST, "Invalid command").into_response(),
     }
 }
@@ -206,15 +237,14 @@ pub async fn post_jobs(
     ApiJson(jobs): ApiJson<Vec<Job>>,
 ) -> Response {
     for job in jobs {
-        match job {
-            Job::Reboot => {
-                let _ = app.control.reboot().await;
-            }
-            Job::Update => {
-                let _ = app.control.update().await;
-            }
+        let res = match job {
+            Job::Reboot => app.control.reboot().await,
+            Job::Update => app.control.update().await,
             // biometrics jobs are accepted but no-op (deferred).
-            _ => {}
+            _ => Ok(()),
+        };
+        if let Err(e) = res {
+            return control_error(e);
         }
     }
     StatusCode::NO_CONTENT.into_response()

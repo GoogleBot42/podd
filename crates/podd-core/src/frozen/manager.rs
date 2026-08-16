@@ -38,6 +38,10 @@ struct ManualOverride {
     /// (sleep/wake boundary or away-mode change) the override expires and the
     /// schedule takes back over.
     config_enabled: bool,
+    /// Session end for a `SetPower { on: true, duration_s }` override. When it
+    /// passes, the override expires and the schedule takes back over (which
+    /// turns the side off outside its window) — "on for N hours" (#31).
+    expires_at: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -210,7 +214,7 @@ pub async fn run(
 
             // api / scheduler commands routed to the Frozen subsystem.
             Some(cmd) = cmd_rx.recv() => {
-                if let Some((side, target)) = handle_command(&mut writer, &state, dry_run, cmd).await {
+                if let Some((side, target, expires_at)) = handle_command(&mut writer, &state, dry_run, cmd).await {
                     let cfg_side = side_config.get_side(&side);
                     let config_enabled = FrozenTarget::calc_wanted(
                         &timezone,
@@ -220,11 +224,17 @@ pub async fn run(
                         cfg_side.wake,
                     )
                     .enabled;
-                    log::info!(
-                        "Manual override on {side:?}: enabled={} temp={} (holds until the next schedule boundary)",
-                        target.enabled, target.temp
-                    );
-                    *overrides.side_mut(&side) = Some(ManualOverride { target, config_enabled });
+                    match expires_at {
+                        Some(at) => log::info!(
+                            "Manual override on {side:?}: enabled={} temp={} (holds for {}s or until the next schedule boundary)",
+                            target.enabled, target.temp, at.duration_since(Instant::now()).as_secs()
+                        ),
+                        None => log::info!(
+                            "Manual override on {side:?}: enabled={} temp={} (holds until the next schedule boundary)",
+                            target.enabled, target.temp
+                        ),
+                    }
+                    *overrides.side_mut(&side) = Some(ManualOverride { target, config_enabled, expires_at });
                 }
             }
         }
@@ -263,14 +273,16 @@ fn f_to_centi_c(f: i32) -> u16 {
 /// dry-running we log the intended frame + bytes and send nothing, so the
 /// managed thermostat/scheduler stays in charge of the bed. Flipping this off is
 /// the live cutover — see `TODO(live-cutover)`.
-/// Returns the `(side, target)` of a manual SetTargetTemperature it actually
-/// sent (never in dry-run), so the caller can register a [`ManualOverride`].
+/// Returns the `(side, target, session expiry)` of a manual
+/// SetTargetTemperature it actually sent (never in dry-run), so the caller can
+/// register a [`ManualOverride`].
 async fn handle_command(
     writer: &mut Writer,
     state: &FrozenState,
     dry_run: bool,
     cmd: Command,
-) -> Option<(BedSide, FrozenTarget)> {
+) -> Option<(BedSide, FrozenTarget, Option<Instant>)> {
+    let mut expires_at = None;
     let frame = match cmd {
         Command::SetTargetTempF { side, f } => Some(FrozenCommand::SetTargetTemperature {
             side,
@@ -280,13 +292,13 @@ async fn handle_command(
             }
             .delimiter_safe(side),
         }),
-        Command::SetPower {
-            side,
-            on,
-            duration_s: _,
-        } => {
+        Command::SetPower { side, on, duration_s } => {
             // Preserve the last known target temp for the side; the firmware
-            // ignores temp when disabling. duration_s is not yet honored.
+            // ignores temp when disabling. The firmware has no session timer,
+            // so duration_s becomes the override's expiry (#31).
+            if on && duration_s > 0 {
+                expires_at = Some(Instant::now() + Duration::from_secs(duration_s as u64));
+            }
             let last = match side {
                 BedSide::Left => state.left_target.clone(),
                 BedSide::Right => state.right_target.clone(),
@@ -317,7 +329,7 @@ async fn handle_command(
         None
     } else {
         let manual = if let FrozenCommand::SetTargetTemperature { side, tar } = &frame {
-            Some((*side, tar.clone()))
+            Some((*side, tar.clone(), expires_at))
         } else {
             None
         };
@@ -356,7 +368,7 @@ fn get_next_command(
             cfg.wake,
         )
         .delimiter_safe(side);
-        resolve_target(overrides.side_mut(&side), config_wanted, side)
+        resolve_target(overrides.side_mut(&side), config_wanted, side, now)
     };
 
     if now.duration_since(timers.last_left_temp) > TEMP_INT {
@@ -407,17 +419,23 @@ fn in_prime_window(now: Time, prime_time: Time) -> bool {
 
 /// Effective target for a side: the manual override while it lives, else the
 /// schedule's. The override expires when the schedule's enabled flag has
-/// flipped since it was taken (sleep/wake boundary or away-mode change) — the
-/// schedule then takes back over.
+/// flipped since it was taken (sleep/wake boundary or away-mode change) or
+/// when its session duration elapses — the schedule then takes back over.
 fn resolve_target(
     slot: &mut Option<ManualOverride>,
     config_wanted: FrozenTarget,
     side: BedSide,
+    now: Instant,
 ) -> FrozenTarget {
     if let Some(ov) = slot
-        && ov.config_enabled != config_wanted.enabled
+        && (ov.config_enabled != config_wanted.enabled
+            || ov.expires_at.is_some_and(|at| now >= at))
     {
-        log::info!("Manual override on {side:?} expired (schedule boundary)");
+        if ov.config_enabled != config_wanted.enabled {
+            log::info!("Manual override on {side:?} expired (schedule boundary)");
+        } else {
+            log::info!("Manual override on {side:?} expired (session duration elapsed)");
+        }
         *slot = None;
     }
     slot.as_ref()
@@ -541,7 +559,7 @@ mod tests {
     #[test]
     fn resolve_target_no_override_uses_schedule() {
         let mut slot = None;
-        let wanted = resolve_target(&mut slot, target(true, 2750), BedSide::Left);
+        let wanted = resolve_target(&mut slot, target(true, 2750), BedSide::Left, Instant::now());
         assert_eq!(wanted, target(true, 2750));
     }
 
@@ -550,9 +568,10 @@ mod tests {
         let mut slot = Some(ManualOverride {
             target: target(true, 3000),
             config_enabled: true,
+            expires_at: None,
         });
         // schedule still enabled (different temp) — override wins
-        let wanted = resolve_target(&mut slot, target(true, 2750), BedSide::Left);
+        let wanted = resolve_target(&mut slot, target(true, 2750), BedSide::Left, Instant::now());
         assert_eq!(wanted, target(true, 3000));
         assert!(slot.is_some());
     }
@@ -562,10 +581,11 @@ mod tests {
         let mut slot = Some(ManualOverride {
             target: target(true, 3000),
             config_enabled: true,
+            expires_at: None,
         });
         // schedule flipped to disabled (wake boundary / away mode) — override
         // expires and the schedule takes back over
-        let wanted = resolve_target(&mut slot, target(false, 0), BedSide::Right);
+        let wanted = resolve_target(&mut slot, target(false, 0), BedSide::Right, Instant::now());
         assert_eq!(wanted, target(false, 0));
         assert!(slot.is_none());
     }
@@ -576,9 +596,34 @@ mod tests {
         let mut slot = Some(ManualOverride {
             target: target(false, 2750),
             config_enabled: false,
+            expires_at: None,
         });
-        let wanted = resolve_target(&mut slot, target(true, 2800), BedSide::Left);
+        let wanted = resolve_target(&mut slot, target(true, 2800), BedSide::Left, Instant::now());
         assert_eq!(wanted, target(true, 2800));
+        assert!(slot.is_none());
+    }
+
+    #[test]
+    fn resolve_target_override_holds_until_session_expiry() {
+        // "on for N seconds" (#31): the override survives until its deadline
+        // passes, then the schedule (off, here) takes back over.
+        let now = Instant::now();
+        let mut slot = Some(ManualOverride {
+            target: target(true, 3000),
+            config_enabled: false,
+            expires_at: Some(now + Duration::from_secs(600)),
+        });
+        let wanted = resolve_target(&mut slot, target(false, 0), BedSide::Left, now);
+        assert_eq!(wanted, target(true, 3000));
+        assert!(slot.is_some());
+
+        let wanted = resolve_target(
+            &mut slot,
+            target(false, 0),
+            BedSide::Left,
+            now + Duration::from_secs(601),
+        );
+        assert_eq!(wanted, target(false, 0));
         assert!(slot.is_none());
     }
 

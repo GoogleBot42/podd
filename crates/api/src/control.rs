@@ -13,6 +13,20 @@ use pod_proto::sensor::command::AlarmPattern;
 use std::sync::Mutex;
 use tokio::sync::mpsc;
 
+/// Error marker for commands the daemon accepts on the wire but has not wired
+/// to the hardware yet. Handlers map it to `501 Not Implemented` so callers
+/// aren't told a no-op succeeded (#32).
+#[derive(Debug)]
+pub struct NotImplemented(pub &'static str);
+
+impl std::fmt::Display for NotImplemented {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} is not implemented yet", self.0)
+    }
+}
+
+impl std::error::Error for NotImplemented {}
+
 /// Async command interface the API uses to drive the pod. Decoupled from
 /// hardware on purpose: the API crate never touches `podd-core` or a UART.
 #[async_trait]
@@ -43,7 +57,8 @@ pub trait PodControl: Send + Sync {
     async fn update(&self) -> anyhow::Result<()>;
 
     /// Generic low-level command escape hatch. Returns a human-readable message
-    /// on success; an `Err` is surfaced to the client as `400 "Invalid command"`.
+    /// on success; a [`NotImplemented`] `Err` is surfaced to the client as
+    /// `501`, any other `Err` as `400 "Invalid command"`.
     async fn execute(&self, command: &str, arg: Option<&str>) -> anyhow::Result<String>;
 }
 
@@ -238,27 +253,22 @@ impl PodControl for PoddControl {
         .await
     }
 
-    async fn apply_device_settings(&self, settings: serde_json::Value) -> anyhow::Result<()> {
-        // Opaque settings block; carried as bytes for the managers to decode at
-        // cutover. (JSON bytes today; the live path will CBOR-encode.)
-        let bytes = serde_json::to_vec(&settings)?;
-        self.send(Command::SetSettingsCbor(bytes)).await
+    // Nothing downstream applies these yet: the dispatcher's warn arms in
+    // podd-core just drop them. Fail honestly instead of queueing into the
+    // void and reporting success (#32).
+    async fn apply_device_settings(&self, _settings: serde_json::Value) -> anyhow::Result<()> {
+        Err(NotImplemented("applying device settings").into())
     }
 
     async fn reboot(&self) -> anyhow::Result<()> {
-        self.send(Command::Reboot).await
+        Err(NotImplemented("reboot").into())
     }
 
     async fn update(&self) -> anyhow::Result<()> {
         self.send(Command::Update).await
     }
 
-    async fn execute(&self, command: &str, arg: Option<&str>) -> anyhow::Result<String> {
-        self.send(Command::Execute {
-            command: command.to_string(),
-            arg: arg.map(|s| s.to_string()),
-        })
-        .await?;
-        Ok(format!("queued {command}"))
+    async fn execute(&self, _command: &str, _arg: Option<&str>) -> anyhow::Result<String> {
+        Err(NotImplemented("the execute escape hatch").into())
     }
 }
