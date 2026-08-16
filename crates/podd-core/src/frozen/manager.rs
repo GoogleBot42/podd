@@ -346,8 +346,6 @@ fn get_next_command(
     }
 
     // Per side: the schedule's target, unless a live manual override holds.
-    // An override expires when the schedule's enabled flag flips (sleep/wake
-    // boundary or away-mode) — the schedule then takes back over.
     let mut wanted_for = |side: BedSide| -> FrozenTarget {
         let cfg = side_config.get_side(&side);
         let config_wanted = FrozenTarget::calc_wanted(
@@ -358,16 +356,7 @@ fn get_next_command(
             cfg.wake,
         )
         .delimiter_safe(side);
-        let slot = overrides.side_mut(&side);
-        if let Some(ov) = slot
-            && ov.config_enabled != config_wanted.enabled
-        {
-            log::info!("Manual override on {side:?} expired (schedule boundary)");
-            *slot = None;
-        }
-        slot.as_ref()
-            .map(|ov| ov.target.clone())
-            .unwrap_or(config_wanted)
+        resolve_target(overrides.side_mut(&side), config_wanted, side)
     };
 
     if now.duration_since(timers.last_left_temp) > TEMP_INT {
@@ -399,13 +388,41 @@ fn get_next_command(
     if !away_mode
         // prime if we are within 30 seconds of prime time AND we havn't tried to prime in the last minute
         && now.duration_since(timers.last_prime) > Duration::from_secs(60)
-        && now_local.duration_until(*prime_time).abs() < SignedDuration::from_secs(30)
+        && in_prime_window(now_local, *prime_time)
     {
         timers.last_prime = now;
         return Some(FrozenCommand::Prime);
     }
 
     None
+}
+
+/// True when `now` is within 30 s (either side) of `prime_time` on the
+/// wrapping 24 h clock. A plain `duration_until(..).abs()` reads ~24 h for a
+/// prime scheduled just across midnight from `now`, missing the window.
+fn in_prime_window(now: Time, prime_time: Time) -> bool {
+    let d = now.duration_until(prime_time).abs();
+    d.min(SignedDuration::from_hours(24) - d) < SignedDuration::from_secs(30)
+}
+
+/// Effective target for a side: the manual override while it lives, else the
+/// schedule's. The override expires when the schedule's enabled flag has
+/// flipped since it was taken (sleep/wake boundary or away-mode change) — the
+/// schedule then takes back over.
+fn resolve_target(
+    slot: &mut Option<ManualOverride>,
+    config_wanted: FrozenTarget,
+    side: BedSide,
+) -> FrozenTarget {
+    if let Some(ov) = slot
+        && ov.config_enabled != config_wanted.enabled
+    {
+        log::info!("Manual override on {side:?} expired (schedule boundary)");
+        *slot = None;
+    }
+    slot.as_ref()
+        .map(|ov| ov.target.clone())
+        .unwrap_or(config_wanted)
 }
 
 async fn send_command(writer: &mut Writer, cmd: FrozenCommand) {
@@ -472,5 +489,160 @@ impl Default for CommandTimers {
             last_right_temp: ago,
             last_prime: ago,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jiff::civil::time;
+    use pod_proto::frozen::packet::TemperatureUpdate;
+
+    #[test]
+    fn f_to_centi_c_table() {
+        assert_eq!(f_to_centi_c(32), 0);
+        assert_eq!(f_to_centi_c(212), 10000);
+        // 81 F = 27.222.. C
+        assert_eq!(f_to_centi_c(81), 2722);
+        // 88 F = 31.111.. C
+        assert_eq!(f_to_centi_c(88), 3111);
+        // below-freezing input clamps to 0 instead of wrapping negative
+        assert_eq!(f_to_centi_c(0), 0);
+    }
+
+    #[test]
+    fn prime_window_plain() {
+        let prime = time(15, 0, 0, 0);
+        assert!(in_prime_window(time(15, 0, 0, 0), prime));
+        assert!(in_prime_window(time(14, 59, 31, 0), prime));
+        assert!(in_prime_window(time(15, 0, 29, 0), prime));
+        assert!(!in_prime_window(time(14, 59, 30, 0), prime));
+        assert!(!in_prime_window(time(15, 0, 30, 0), prime));
+        assert!(!in_prime_window(time(3, 0, 0, 0), prime));
+    }
+
+    #[test]
+    fn prime_window_wraps_midnight() {
+        // prime at 00:00:10, now just before midnight — the raw civil diff is
+        // ~24 h but the wall-clock distance is 25 s
+        let prime = time(0, 0, 10, 0);
+        assert!(in_prime_window(time(23, 59, 45, 0), prime));
+        assert!(!in_prime_window(time(23, 59, 35, 0), prime));
+        // and the mirror case: prime just before midnight, now just after
+        let prime = time(23, 59, 55, 0);
+        assert!(in_prime_window(time(0, 0, 10, 0), prime));
+        assert!(!in_prime_window(time(0, 0, 30, 0), prime));
+    }
+
+    fn target(enabled: bool, temp: u16) -> FrozenTarget {
+        FrozenTarget { enabled, temp }
+    }
+
+    #[test]
+    fn resolve_target_no_override_uses_schedule() {
+        let mut slot = None;
+        let wanted = resolve_target(&mut slot, target(true, 2750), BedSide::Left);
+        assert_eq!(wanted, target(true, 2750));
+    }
+
+    #[test]
+    fn resolve_target_override_holds_while_schedule_state_unchanged() {
+        let mut slot = Some(ManualOverride {
+            target: target(true, 3000),
+            config_enabled: true,
+        });
+        // schedule still enabled (different temp) — override wins
+        let wanted = resolve_target(&mut slot, target(true, 2750), BedSide::Left);
+        assert_eq!(wanted, target(true, 3000));
+        assert!(slot.is_some());
+    }
+
+    #[test]
+    fn resolve_target_override_expires_at_schedule_boundary() {
+        let mut slot = Some(ManualOverride {
+            target: target(true, 3000),
+            config_enabled: true,
+        });
+        // schedule flipped to disabled (wake boundary / away mode) — override
+        // expires and the schedule takes back over
+        let wanted = resolve_target(&mut slot, target(false, 0), BedSide::Right);
+        assert_eq!(wanted, target(false, 0));
+        assert!(slot.is_none());
+    }
+
+    #[test]
+    fn resolve_target_off_override_expires_when_schedule_enables() {
+        // user turned the side off mid-day; the sleep boundary re-enables it
+        let mut slot = Some(ManualOverride {
+            target: target(false, 2750),
+            config_enabled: false,
+        });
+        let wanted = resolve_target(&mut slot, target(true, 2800), BedSide::Left);
+        assert_eq!(wanted, target(true, 2800));
+        assert!(slot.is_none());
+    }
+
+    fn temps(left: u16, right: u16) -> Option<TemperatureUpdate> {
+        Some(TemperatureUpdate {
+            left_temp: left,
+            right_temp: right,
+            heatsink_temp: 3000,
+            error: 0,
+            count: 0,
+        })
+    }
+
+    #[test]
+    fn led_state_idle_without_telemetry_or_targets() {
+        assert_eq!(
+            led_thermal_state(&FrozenState::default()),
+            LedThermalState::Idle
+        );
+        let state = FrozenState {
+            temp: temps(2700, 2700),
+            ..FrozenState::default()
+        };
+        assert_eq!(led_thermal_state(&state), LedThermalState::Idle);
+    }
+
+    #[test]
+    fn led_state_disabled_targets_are_ignored() {
+        let state = FrozenState {
+            temp: temps(2000, 2000),
+            left_target: Some(target(false, 3000)),
+            right_target: Some(target(false, 1000)),
+            ..FrozenState::default()
+        };
+        assert_eq!(led_thermal_state(&state), LedThermalState::Idle);
+    }
+
+    #[test]
+    fn led_state_heating_cooling_holding() {
+        let mut state = FrozenState {
+            temp: temps(2700, 2700),
+            left_target: Some(target(true, 3000)),
+            ..FrozenState::default()
+        };
+        assert_eq!(led_thermal_state(&state), LedThermalState::Heating);
+
+        state.left_target = Some(target(true, 2000));
+        assert_eq!(led_thermal_state(&state), LedThermalState::Cooling);
+
+        // within the 0.5 C deadband
+        state.left_target = Some(target(true, 2740));
+        assert_eq!(led_thermal_state(&state), LedThermalState::Holding);
+    }
+
+    #[test]
+    fn led_state_furthest_side_wins() {
+        // left is 0.6 C hot (cooling), right is 3 C cold (heating) — right is
+        // further from target and decides the LED
+        let state = FrozenState {
+            temp: temps(2760, 2700),
+            left_target: Some(target(true, 2700)),
+            right_target: Some(target(true, 3000)),
+            ..FrozenState::default()
+        };
+        assert_eq!(led_thermal_state(&state), LedThermalState::Heating);
     }
 }
