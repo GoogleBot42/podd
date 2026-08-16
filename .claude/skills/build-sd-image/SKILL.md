@@ -80,6 +80,27 @@ tar -xOf build/buildroot/output/images/rootfs.tar ./usr/share/podd/ui/index.html
   | grep -o 'index-[^"]*\.js'   # must reference the bundle hash you just built
 ```
 
+### 1c. You can run the image's aarch64 userland on the build host
+
+The build host has qemu-user binfmt, so image binaries run directly if you
+give them the image's own loader — no hardware needed. Used 2026-08-15 to
+reproduce (and then verify the fix for) the provisioning portal's 404 by
+running the image's actual busybox httpd against the real www dir:
+
+```sh
+mkdir t && cd t
+tar -xf .../images/rootfs.tar ./usr/bin/busybox ./usr/lib/ld-linux-aarch64.so.1 \
+    ./usr/lib/libc.so.6 ./usr/lib/libm.so.6 ./usr/lib/libresolv.so.2
+./usr/lib/ld-linux-aarch64.so.1 --library-path ./usr/lib ./usr/bin/busybox httpd ...
+```
+
+Reach for this before flashing when a userland behavior (not kernel/driver)
+is in question — a flash-boot-pull-card cycle takes 15+ minutes; this takes
+seconds. Corollary from the same day: features whose code paths hardware
+never exercised (AP mode vs STA, portal vs baked creds) tend to hide stacked
+config gaps — nmcli missing, wpa_supplicant CONFIG_AP off, busybox httpd
+index bug — so test the actual feature path, not just file presence.
+
 ### 2. Host `mkimage` is broken in this Buildroot release
 
 Buildroot 2026.02.3's own host `u-boot-tools` (mkimage 2025.10) can't compile
