@@ -83,6 +83,16 @@ pub async fn run(config_path: &Path) -> anyhow::Result<()> {
     fut.await
 }
 
+/// First non-empty (trimmed) line among `candidates`, else `"unknown"`.
+fn detect_device_label<'a>(candidates: impl IntoIterator<Item = &'a str>) -> String {
+    candidates
+        .into_iter()
+        .filter_map(|p| std::fs::read_to_string(p).ok())
+        .map(|s| s.trim().to_string())
+        .find(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 /// Route a command to the manager that owns it. System-level commands and
 /// not-yet-mapped ones are logged (dry-run) here.
 async fn dispatch_commands(
@@ -129,10 +139,14 @@ async fn run_inner(
         log::warn!("dry_run=true: MCU control writes are LOGGED, not sent (safe telemetry mode)");
     }
 
-    // read device label (best-effort; Eight's `sewer` writes this)
-    // TODO: make this path config / drop it
-    let device_label = std::fs::read_to_string("/home/dac/app/sewer/device-label")
-        .unwrap_or_else(|_| "unknown".to_string());
+    // Device label for MQTT topics + the HA discovery node id. Eight's `sewer`
+    // writes the stock path (present on L1 installs); the clean-room image
+    // doesn't have it, so fall back to the hostname instead of "unknown" (#79).
+    let device_label = detect_device_label([
+        "/home/dac/app/sewer/device-label",
+        "/etc/hostname",
+        "/proc/sys/kernel/hostname",
+    ]);
 
     // read config
     let config_path_str = config_path
@@ -256,4 +270,25 @@ async fn run_inner(
     log::error!("{failure}");
     log::info!("Shutting down {NAME}...");
     Err(failure)
+}
+
+#[cfg(test)]
+mod device_label_tests {
+    use super::detect_device_label;
+
+    #[test]
+    fn falls_back_through_missing_files_to_unknown() {
+        assert_eq!(detect_device_label(["/nonexistent/a", "/nonexistent/b"]), "unknown");
+    }
+
+    #[test]
+    fn kernel_hostname_is_a_working_fallback() {
+        // /proc/sys/kernel/hostname exists on any Linux host, so the chain
+        // used in run_inner can't reach "unknown" there.
+        let label = detect_device_label(["/nonexistent/a", "/proc/sys/kernel/hostname"]);
+        assert_ne!(label, "unknown");
+        assert!(!label.is_empty());
+        // trimmed: the proc file ends with a newline
+        assert_eq!(label, label.trim());
+    }
 }
