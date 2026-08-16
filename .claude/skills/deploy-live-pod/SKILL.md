@@ -125,6 +125,13 @@ still holds.
   (`FrozenTarget::delimiter_safe` in `pod-proto`). If a config/setpoint
   change you pushed seems to just not take effect with no error anywhere,
   this is a candidate cause, not just "the write didn't land."
+- **Busybox tar has no `-z`.** The on-device tar is busybox: `tar xzf`
+  fails mid-script (`invalid option -- 'z'`), and `-a` (by-extension) has
+  failed on a `.tgz` too ("invalid tar magic"). When shipping the UI bundle,
+  extract with `gunzip -c bundle.tgz | tar -C <dir> -xf -`. Bit a deploy
+  2026-08-16 — podd sat stopped while the tar step failed, because the swap
+  script did backup→stop→install→extract in one `set -e` block. Do the UI
+  extraction to a staging dir BEFORE `systemctl stop podd`, then swap dirs.
 - **`printf '%s'` does not expand escapes.** If you're scripting any of the
   scp/install steps above and generating text on-device (fstab lines,
   config snippets), a literal `\t`/`\n` from `printf '%s'` has previously
