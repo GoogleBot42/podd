@@ -45,6 +45,15 @@ still holds.
    `result-podd-fix2`) so you don't clobber a previous build you might still
    want to diff or roll back to. The binary lands at
    `result-podd-<label>/bin/podd` (static aarch64-musl).
+   **`nix build .#...` builds the working tree, not a branch** — if the main
+   checkout is dirty (e.g. Jeremy's WIP) or behind origin, you'll silently
+   ship the wrong code (happened 2026-08-15: a just-merged feature was
+   missing from the binary). Build from a clean worktree of origin/main
+   (`git worktree add <tmp> origin/main`) and **verify before deploying**:
+   `grep -a -c "<string only the new code contains>" result-.../bin/podd`.
+   Also: parallel agent sessions have cross-deployed within minutes of each
+   other (2026-08-16) — check `journalctl -u podd | grep "podd starting"`
+   timestamps for deploys you didn't make before assuming yours is live.
 3. **Copy it to the device as a staged file, not in place.** `scp` the binary
    to a `*.new`-style staging path on-device (see `CLAUDE.local.md` for the
    currently-live convention — it has been `/data/podd/podd.new` in recent
