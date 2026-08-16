@@ -5,7 +5,7 @@ use crate::{
     mqtt::publish_guaranteed_wait,
 };
 
-use super::{AlarmConfig, CONFIG_FILE, Config, SidesConfig};
+use super::{AlarmConfig, Config, SidesConfig};
 use jiff::civil::Time;
 use rumqttc::AsyncClient;
 use tokio::sync::watch;
@@ -179,6 +179,7 @@ pub async fn handle_action(
     payload: Cow<'_, str>,
     config_tx: &mut watch::Sender<Config>,
     mut cfg: Config,
+    config_path: &str,
 ) -> Result<(), Box<dyn Error>> {
     // modify config
     match topic {
@@ -289,7 +290,7 @@ pub async fn handle_action(
         return Err(format!("Error sending to config watch channel: {e}").into());
     }
 
-    if let Err(e) = cfg.save(CONFIG_FILE).await {
+    if let Err(e) = cfg.save(config_path).await {
         return Err(format!("Failed to save config: {e}").into());
     }
     log::debug!("Config saved to disk");

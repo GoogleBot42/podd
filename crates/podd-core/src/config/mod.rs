@@ -15,8 +15,6 @@ mod tests;
 
 pub use device::{Cover, DeviceConfig};
 
-const CONFIG_FILE: &str = "config.ron";
-
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("Failed to read config file: {0}")]
