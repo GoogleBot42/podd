@@ -342,7 +342,11 @@ pub async fn publish_guaranteed_wait<S, V>(
 {
     let fut = client.publish(topic.clone(), QoS::ExactlyOnce, retain, payload);
 
-    match timeout(Duration::from_millis(100), fut).await {
+    // Generous: with inflight capped (set_inflight) a publish legitimately
+    // waits for a slot during the post-connect burst; a cancelled publish is
+    // a DROPPED publish (and a wedged half-open QoS2 flow), so timing out
+    // must be rare-catastrophe handling, not pacing.
+    match timeout(Duration::from_secs(10), fut).await {
         Ok(Ok(())) => {}
         Ok(Err(e)) => {
             log::error!("Error publishing {topic}: {e}");
