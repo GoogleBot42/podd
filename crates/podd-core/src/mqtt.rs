@@ -64,6 +64,16 @@ impl MqttManager {
 
         let mut opts = MqttOptions::new("opensleep", &cfg.server, cfg.port);
         opts.set_keep_alive(Duration::from_secs(60));
+        // Mosquitto silently drops QoS1/2 flows past its per-client
+        // max_inflight_messages (default 20) — no error, no disconnect. The
+        // post-connect task fires ~36 concurrent QoS2 publishes (config
+        // state, HA discovery, device topics), so everything after the first
+        // ~20 vanished: rumqttc wrote the frames but the broker never
+        // processed them (observed live 2026-08-16 — every HA discovery
+        // config was lost while earlier/steady-state publishes worked).
+        // Capping our inflight below the broker's makes rumqttc pace the
+        // flows instead of overrunning the limit.
+        opts.set_inflight(10);
         opts.set_credentials(&cfg.user, &cfg.password);
         opts.set_last_will(LastWill {
             topic: TOPIC_AVAILABILITY.to_string(),
