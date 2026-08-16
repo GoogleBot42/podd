@@ -159,6 +159,10 @@ BR2_PACKAGE_NETWORK_MANAGER_CLI=y
 BR2_PACKAGE_WPA_SUPPLICANT=y
 BR2_PACKAGE_WPA_SUPPLICANT_NL80211=y
 BR2_PACKAGE_WPA_SUPPLICANT_DBUS=y
+# NM runs AP mode *through the supplicant* (CONFIG_AP), and the BCM4339 driver
+# alone advertising AP support isn't enough — without this NM rejects the
+# provisioning AP profile: "wpa_supplicant does not support Access Point mode".
+BR2_PACKAGE_WPA_SUPPLICANT_AP_SUPPORT=y
 # NM shells out to dnsmasq at runtime for shared-mode (AP) connections; needed
 # by the podd-wifi-setup provisioning AP. DHCP support is on by default.
 BR2_PACKAGE_DNSMASQ=y
