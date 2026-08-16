@@ -81,6 +81,7 @@ pub async fn supervise(
     firmware_baud: u32,
     config_tx: watch::Sender<Config>,
     config_rx: watch::Receiver<Config>,
+    config_path: std::sync::Arc<str>,
     mut calibrate_rx: mpsc::Receiver<()>,
     client: AsyncClient,
     status: StatusTx,
@@ -111,6 +112,7 @@ pub async fn supervise(
             firmware_baud,
             config_tx.clone(),
             config_rx.clone(),
+            config_path.clone(),
             &mut calibrate_rx,
             client.clone(),
             status.clone(),
@@ -150,6 +152,7 @@ pub async fn run(
     firmware_baud: u32,
     config_tx: watch::Sender<Config>,
     mut config_rx: watch::Receiver<Config>,
+    config_path: std::sync::Arc<str>,
     calibrate_rx: &mut mpsc::Receiver<()>,
     mut client: AsyncClient,
     status: StatusTx,
@@ -159,7 +162,8 @@ pub async fn run(
 ) -> Result<(), SensorError> {
     log::info!("Initializing Sensor Subsystem...");
 
-    let mut presense_man = PresenseManager::new(config_tx, config_rx.clone(), client.clone());
+    let mut presense_man =
+        PresenseManager::new(config_tx, config_rx.clone(), config_path, client.clone());
 
     let mut state = SensorState::default();
     state.alarm_left_dismissed = dismissed[0];
@@ -195,7 +199,7 @@ pub async fn run(
             Some(result) = reader.next() => match result {
                 Ok(packet) => {
                     if let SensorPacket::Capacitance(data) = &packet {
-                        presense_man.update(data);
+                        presense_man.update(data).await;
                     }
 
                     // Double tap on a side's piezo while its alarm vibrates =

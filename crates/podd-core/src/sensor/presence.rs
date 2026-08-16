@@ -2,6 +2,7 @@ use crate::config::{Config, PresenceConfig};
 use crate::mqtt::publish_state_retained;
 use pod_proto::sensor::packet::CapacitanceData;
 use rumqttc::AsyncClient;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
@@ -24,6 +25,7 @@ pub struct PresenceState {
 pub struct PresenseManager {
     config_tx: watch::Sender<Config>,
     config_rx: watch::Receiver<Config>,
+    config_path: Arc<str>,
     config: Option<PresenceConfig>,
     client: AsyncClient,
     calibration_end: Option<Instant>,
@@ -36,6 +38,7 @@ impl PresenseManager {
     pub fn new(
         config_tx: watch::Sender<Config>,
         config_rx: watch::Receiver<Config>,
+        config_path: Arc<str>,
         client: AsyncClient,
     ) -> Self {
         PresenseManager {
@@ -50,6 +53,7 @@ impl PresenseManager {
             },
             config_tx,
             config_rx,
+            config_path,
             client,
             calibration_end: None,
             calibration_samples: Vec::new(),
@@ -63,13 +67,13 @@ impl PresenseManager {
         self.last_state.clone().unwrap_or_default()
     }
 
-    pub fn update(&mut self, data: &CapacitanceData) {
+    pub async fn update(&mut self, data: &CapacitanceData) {
         if self.config.is_some() {
             self.update_presence(data);
         }
 
         if self.calibration_end.is_some() {
-            self.update_calibration(data);
+            self.update_calibration(data).await;
         }
     }
 
@@ -115,7 +119,7 @@ impl PresenseManager {
         self.calibration_samples = vec![];
     }
 
-    fn update_calibration(&mut self, data: &CapacitanceData) {
+    async fn update_calibration(&mut self, data: &CapacitanceData) {
         self.calibration_samples.push(data.values);
 
         if Instant::now() > self.calibration_end.unwrap() {
@@ -141,13 +145,18 @@ impl PresenseManager {
 
             self.config = Some(new_cfg.clone());
 
-            // update config file
             let mut config = self.config_rx.borrow_and_update().clone();
             config.presence = Some(new_cfg.clone());
-            if let Err(e) = self.config_tx.send(config) {
+            if let Err(e) = self.config_tx.send(config.clone()) {
                 log::error!("Failed to update config: {e}");
             } else {
                 log::info!("Config updated: {baselines:?}");
+            }
+            // Persist like the MQTT set-action path does — a calibration that
+            // only lives in the watch value is lost on the next restart (#27).
+            match config.save(&self.config_path).await {
+                Ok(()) => log::info!("Calibration saved to {}", self.config_path),
+                Err(e) => log::error!("Failed to save calibration to config file: {e}"),
             }
         }
     }
