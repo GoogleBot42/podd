@@ -78,8 +78,12 @@ The reference hardware is the NXP i.MX8M Mini / Variscite "SD" **hub** (what the
 Eight Sleep app labels varies — it reports the mattress *cover*, not the hub; see
 [docs/FLASHING.md](docs/FLASHING.md#step-1--identify-your-pod) for identifying
 yours). The i.MX "no-SD" (Pod 4) hub and the MediaTek no-SD hub differ below the
-userland — see [`docs/REPLACEMENT_PLAN.md`](docs/REPLACEMENT_PLAN.md). Runs on the
-stock Yocto base (L1); a full OS-image replacement (L2) is optional and per-SoC.
+userland — see [`docs/REPLACEMENT_PLAN.md`](docs/REPLACEMENT_PLAN.md). The
+primary, validated install is the from-source clean-room OS image (L2) on a
+swappable microSD ([docs/CLEANROOM-OS.md](docs/CLEANROOM-OS.md)); podd also
+still runs as a userland-only install on the stock Yocto base (L1), which is
+what the one-command install above does on an already-rooted unit and what the
+legacy stock-clone image ([docs/SD-BOOT.md](docs/SD-BOOT.md)) shipped.
 **No secure boot is enforced on these units**, so custom code runs.
 
 ## Workspace
@@ -91,7 +95,7 @@ stock Yocto base (L1); a full OS-image replacement (L2) is optional and per-SoC.
 | `crates/pod-proto` | LSP UART protocol (framing/CRC, Frozen + Sensor packet/command tables, thermostat `profile.rs`), extracted from opensleep | ✅ implemented + tested; validated vs live Pod 4 |
 | `crates/podd-core` | opensleep control core: Frozen/Sensor subsystems, LED, reset, config, MQTT, state bus | ✅ implemented |
 | `crates/api` | free-sleep-compatible REST + SSE HTTP API and embedded-SPA server (biometrics endpoints deferred) | ✅ implemented |
-| `crates/pod-updater` | On-device OTA agent: Tier-2 app swaps are live; Tier-1 OS + Tier-3 MCU apply are gated behind dry-run | ✅ implemented |
+| `crates/pod-updater` | On-device OTA agent: Tier-2 app swaps are live; Tier-3 MCU apply is gated behind dry-run. Tier-1 OS A/B belongs to **RAUC** on the clean-room image (`docs/CLEANROOM-OS.md`) — pod-updater only fetches/verifies the OS bundle; that wiring is still in progress | ✅ implemented |
 | `crates/pod-probe` | Read-only serial probe for validating `pod-proto` against live MCUs | ✅ implemented |
 | `crates/podd` | The control daemon: wires `podd-core` + `api` + `pod-updater` together; MCU writes gated behind `PODD_DRY_RUN` | ✅ implemented (live hardware cutover pending) |
 

@@ -74,6 +74,28 @@
         )
     ),
 
+    // ---- Presence detection (optional, capacitance-based) ----
+    //
+    // Leave this section out and presence detection stays off (podd logs a
+    // "please calibrate" warning at startup; everything else still works).
+    //
+    // The numbers are *calibrated*, not hand-authored: with the bed empty,
+    // publish an empty message to the MQTT topic `opensleep/actions/calibrate`.
+    // podd averages ~10 s of capacitance samples and logs the result as
+    // `Config updated: [...]`; copy those six numbers into `baselines` below
+    // (calibration is not persisted automatically yet — issue #27).
+    //
+    // presence: (
+    //     // Empty-bed capacitance per channel: 0-2 = left side, 3-5 = right.
+    //     baselines: [0, 0, 0, 0, 0, 0],
+    //     // How far above its baseline a channel must read to count as
+    //     // occupied. Default 50; raise it if presence flaps.
+    //     threshold: 50,
+    //     // Consecutive over-threshold samples (~2 Hz) before a side flips
+    //     // to occupied. Default 5.
+    //     debounce_count: 5,
+    // ),
+
     // ---- Hardware wiring (Pod 4) ----
     //
     // Every field here is optional and falls back to a default. `cover: pod4`

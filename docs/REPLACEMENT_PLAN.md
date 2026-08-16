@@ -67,9 +67,15 @@ This is the decision that sets the project's scale, and I need your call on it.
 | Audio codec | WM8904 @ i2c `0x1a` (used for the chime/alarm speaker) |
 | LED | **IS31FL3194** RGB LED ring (I²C) — the *only* user feedback surface |
 | GPIO expander | **PCAL6416A** @ i2c `0x20` — MCU enable/reset lines + factory button |
-| **Frozen MCU** | STM32F030CCT6 on **`/dev/ttymxc0`** (serial@30860000) — TECs, pumps, solenoid, water level |
-| **Sensor MCU** | STM32F030CCT6 on **`/dev/ttymxc2`** (serial@30880000) — bed temp, presence, piezo |
+| **Frozen MCU** | STM32F030CCT6 on **`/dev/ttymxc2`** (serial@30880000) — TECs, pumps, solenoid, water level |
+| **Sensor MCU** | STM32F030CCT6 on **`/dev/ttymxc0`** (serial@30860000) — bed temp, presence, piezo |
 | Console | `/dev/ttymxc3` @ 115200 (serial@30a60000) |
+
+> **Errata (corrected):** this table originally had the two MCU UARTs swapped
+> (Frozen on `ttymxc0`, Sensor on `ttymxc2`). The assignment above — Frozen on
+> `ttymxc2`, Sensor on `ttymxc0` — is what runs and what was confirmed on Pod 4
+> hardware; `crates/podd-core/src/config/device.rs` and
+> [`ARCHITECTURE.md`](ARCHITECTURE.md) own this fact.
 
 The two "subsystems":
 - **Frozen** (thermal/fluid): 2× thermoelectric (Peltier) modules with PID temp control,
@@ -380,7 +386,7 @@ an opt-in deeper layer. The rest of this plan is written for L1, with L2 called 
         │                                             │ layer     │  │
         │                                             └──┬─────┬──┘  │
         └────────────────────────────────────────────────┼─────┼────┘
-                       UART ttymxc0 (LSP) ────────────────┘     └──── UART ttymxc2 (LSP)
+                       UART ttymxc2 (LSP) ────────────────┘     └──── UART ttymxc0 (LSP)
                               │                                        │
                         ┌─────┴─────┐                            ┌─────┴─────┐
                         │ Frozen MCU│  (STM32 runs Eight's       │ Sensor MCU│

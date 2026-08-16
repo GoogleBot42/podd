@@ -113,7 +113,7 @@ own device or fork.
 | 2 | **App**: `podd` + web UI + config schema/migrations | yes (packs to squashfs) | `pod-updater` (symlink swap, no reboot) | ship a new scheduler / UI |
 | 3 | **MCU Frozen fw** (`.bbin`) | yes (records blob) | `pod-updater` Tier-3 (quiesce UART, flash, verify; dry-run-gated) | restore/replace STM32 fw |
 | 3 | **MCU Sensor fw** (`.bbin`) | yes | `pod-updater` Tier-3 (dry-run-gated) | " |
-| 1 | **OS image** (kernel+DTB+rootfs) — L2 | yes (records OS bundle) | `pod-updater` Tier-1: inactive A/B slot + U-Boot `fw_setenv` flip + reboot (dry-run-gated) | kernel/lib bump |
+| 1 | **OS image** (kernel+DTB+rootfs) — L2 | yes (records the `os.raucb` bundle) | **RAUC** on the clean-room image: install to the inactive slot, U-Boot `BOOT_ORDER`/bootcount flip, auto-rollback (see [CLEANROOM-OS.md](CLEANROOM-OS.md)). `pod-updater` Tier-1 only fetches/verifies and logs the slot plan today — the live apply is unimplemented and the RAUC wiring is still open (#46–#48) | kernel/lib bump |
 | 0 | **Bootloader** | version recorded only | manual (never auto) | — |
 
 **Not in scope for `podup`:** personal runtime state (schedules/temps/history —
