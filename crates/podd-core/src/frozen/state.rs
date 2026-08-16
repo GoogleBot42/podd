@@ -1,6 +1,6 @@
 use rumqttc::AsyncClient;
 
-use crate::mqtt::{publish_guaranteed_wait, publish_high_freq};
+use crate::mqtt::{publish_guaranteed_wait, publish_high_freq, publish_state_retained};
 use pod_proto::frozen::packet::{FrozenPacket, FrozenTarget, TemperatureUpdate};
 use pod_proto::packet::{BedSide, HardwareInfo};
 use pod_proto::serial::DeviceMode;
@@ -92,7 +92,7 @@ impl FrozenState {
                         TOPIC_RIGHT_TARGET_TEMP
                     }
                 };
-                publish_high_freq(client, topic, payload);
+                publish_state_retained(client, topic, payload);
             }
             FrozenPacket::HardwareInfo(info) => {
                 log::info!("Hardware info: {info}");
