@@ -357,8 +357,17 @@ async fn poddcontrol_maps_calls_to_commands() {
         })
     );
 
-    control.reboot().await.unwrap();
-    assert_eq!(rx.recv().await.unwrap(), Command::Reboot);
+    // Reboot / execute / settings are not wired to the hardware yet; they must
+    // fail with NotImplemented instead of queueing into the void (#32).
+    let err = control.reboot().await.unwrap_err();
+    assert!(err.downcast_ref::<api::NotImplemented>().is_some());
+    let err = control.execute("reboot", None).await.unwrap_err();
+    assert!(err.downcast_ref::<api::NotImplemented>().is_some());
+    let err = control
+        .apply_device_settings(json!({"ledBrightness": 50}))
+        .await
+        .unwrap_err();
+    assert!(err.downcast_ref::<api::NotImplemented>().is_some());
 }
 
 #[tokio::test]
@@ -386,6 +395,40 @@ async fn post_device_status_through_poddcontrol_reaches_channel() {
             f: 68
         }
     );
+}
+
+#[tokio::test]
+async fn jobs_reboot_through_poddcontrol_is_501() {
+    let (tx, _rx) = tokio::sync::mpsc::channel(8);
+    let control = Arc::new(api::PoddControl::new(tx)) as Arc<dyn PodControl>;
+    let store = Arc::new(StateStore::in_memory());
+    let app = router(store, control, None);
+
+    let resp = app
+        .oneshot(post_json("/api/jobs", &json!(["reboot"])))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+}
+
+#[tokio::test]
+async fn post_device_status_with_dead_control_core_is_500() {
+    // The command mpsc closing means the control core died (#33): the handler
+    // must not answer 204 as if the change was applied.
+    let (tx, rx) = tokio::sync::mpsc::channel(8);
+    drop(rx);
+    let control = Arc::new(api::PoddControl::new(tx)) as Arc<dyn PodControl>;
+    let store = Arc::new(StateStore::in_memory());
+    let app = router(store, control, None);
+
+    let resp = app
+        .oneshot(post_json(
+            "/api/deviceStatus",
+            &json!({ "left": { "isOn": true } }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
 
 #[tokio::test]
