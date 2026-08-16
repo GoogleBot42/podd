@@ -34,7 +34,7 @@ use std::sync::Arc;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
-/// True for localhost / LAN origins (`192.168.*`, `172.16.*`, `10.0.*`).
+/// True for localhost / RFC1918 LAN origins (10/8, 172.16/12, 192.168/16).
 fn origin_allowed(origin: &HeaderValue) -> bool {
     let Ok(s) = origin.to_str() else {
         return false;
@@ -44,15 +44,23 @@ fn origin_allowed(origin: &HeaderValue) -> bool {
         .strip_prefix("http://")
         .or_else(|| s.strip_prefix("https://"))
         .unwrap_or(s);
-    let host = hostport.split('/').next().unwrap_or(hostport);
-    let host = host.rsplit_once(':').map(|(h, _)| h).unwrap_or(host);
+    let hostport = hostport.split('/').next().unwrap_or(hostport);
+    let host = if let Some(rest) = hostport.strip_prefix('[') {
+        // Bracketed IPv6 (`[::1]:3000`) — the port split below would cut at
+        // the wrong colon.
+        rest.split(']').next().unwrap_or(rest)
+    } else {
+        hostport.rsplit_once(':').map(|(h, _)| h).unwrap_or(hostport)
+    };
 
-    host == "localhost"
-        || host == "127.0.0.1"
-        || host == "::1"
-        || host.starts_with("192.168.")
-        || host.starts_with("172.16.")
-        || host.starts_with("10.0.")
+    if host == "localhost" {
+        return true;
+    }
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
+        Ok(std::net::IpAddr::V6(ip)) => ip.is_loopback(),
+        Err(_) => false,
+    }
 }
 
 fn cors_layer() -> CorsLayer {
@@ -147,4 +155,45 @@ pub async fn serve(
     log::info!("api listening on {addr}");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod cors_tests {
+    use super::origin_allowed;
+    use axum::http::HeaderValue;
+
+    fn allowed(origin: &str) -> bool {
+        origin_allowed(&HeaderValue::from_str(origin).unwrap())
+    }
+
+    #[test]
+    fn localhost_and_loopback() {
+        assert!(allowed("http://localhost"));
+        assert!(allowed("http://localhost:3000"));
+        assert!(allowed("http://127.0.0.1:8080"));
+        assert!(allowed("http://127.1.2.3"));
+        assert!(allowed("http://[::1]:3000"));
+        assert!(allowed("http://[::1]"));
+    }
+
+    #[test]
+    fn full_rfc1918_ranges() {
+        // issue #30: only 10.0.x and 172.16.x used to pass
+        assert!(allowed("http://10.1.2.3"));
+        assert!(allowed("http://10.42.0.7:8080"));
+        assert!(allowed("http://172.20.1.2"));
+        assert!(allowed("http://172.31.255.1"));
+        assert!(allowed("http://192.168.0.109:5173"));
+        assert!(allowed("http://169.254.10.20"));
+    }
+
+    #[test]
+    fn public_origins_rejected() {
+        assert!(!allowed("http://172.32.0.1"));
+        assert!(!allowed("http://11.0.0.1"));
+        assert!(!allowed("http://192.169.0.1"));
+        assert!(!allowed("https://example.com"));
+        assert!(!allowed("https://8.8.8.8"));
+        assert!(!allowed("http://[2001:db8::1]:80"));
+    }
 }
