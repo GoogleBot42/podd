@@ -34,7 +34,7 @@ export default function TemperatureFormatSelector({
       <ToggleButtonGroup
         disabled={ isUpdating }
         color='primary'
-        value={ settings?.temperatureFormat || 'farenheit' }
+        value={ settings?.temperatureFormat || 'fahrenheit' }
         exclusive
         onChange={ handleChange }
       >
