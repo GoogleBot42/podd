@@ -9,7 +9,7 @@ use crate::{
 use rumqttc::{
     AsyncClient, ConnectionError, Event, EventLoop, LastWill, MqttOptions, Packet, Publish, QoS,
 };
-use std::{fmt::Display, time::Duration};
+use std::{fmt::Display, sync::Arc, time::Duration};
 use tokio::{
     sync::{mpsc, watch},
     time::{sleep, timeout},
@@ -37,6 +37,9 @@ pub struct MqttManager {
     pub client: AsyncClient,
     eventloop: EventLoop,
     device_label: String,
+    /// Where set_ actions persist the config: the same path podd loaded it
+    /// from, NOT the process CWD.
+    config_path: Arc<str>,
     reconnect_attempts: u32,
 }
 
@@ -46,6 +49,7 @@ impl MqttManager {
         config_rx: watch::Receiver<Config>,
         calibrate_tx: mpsc::Sender<()>,
         device_label: String,
+        config_path: Arc<str>,
     ) -> Self {
         log::info!("Initializing MQTT...");
 
@@ -77,6 +81,7 @@ impl MqttManager {
             client,
             eventloop,
             device_label,
+            config_path,
             reconnect_attempts: 0,
         }
     }
@@ -240,6 +245,7 @@ impl MqttManager {
         let mut client = self.client.clone();
         let cfg = self.config_rx.borrow().clone();
         let mut config_tx = self.config_tx.clone();
+        let config_path = self.config_path.clone();
 
         tokio::spawn(async move {
             let action = publ.topic.strip_prefix("opensleep/actions/").unwrap();
@@ -252,6 +258,7 @@ impl MqttManager {
                 payload.clone(),
                 &mut config_tx,
                 cfg,
+                &config_path,
             )
             .await
             {

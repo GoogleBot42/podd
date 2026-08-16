@@ -189,6 +189,7 @@ async fn run_inner(
         config_rx.clone(),
         calibrate_tx,
         device_label,
+        Arc::from(config_path_str),
     );
 
     // MQTT must NEVER gate the hardware. Give the broker a brief chance to
