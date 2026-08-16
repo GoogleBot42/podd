@@ -78,8 +78,12 @@ The reference hardware is the NXP i.MX8M Mini / Variscite "SD" **hub** (what the
 Eight Sleep app labels varies — it reports the mattress *cover*, not the hub; see
 [docs/FLASHING.md](docs/FLASHING.md#step-1--identify-your-pod) for identifying
 yours). The i.MX "no-SD" (Pod 4) hub and the MediaTek no-SD hub differ below the
-userland — see [`docs/REPLACEMENT_PLAN.md`](docs/REPLACEMENT_PLAN.md). Runs on the
-stock Yocto base (L1); a full OS-image replacement (L2) is optional and per-SoC.
+userland — see [`docs/REPLACEMENT_PLAN.md`](docs/REPLACEMENT_PLAN.md). The
+primary, validated install is the from-source clean-room OS image (L2) on a
+swappable microSD ([docs/CLEANROOM-OS.md](docs/CLEANROOM-OS.md)); podd also
+still runs as a userland-only install on the stock Yocto base (L1), which is
+what the one-command install above does on an already-rooted unit and what the
+legacy stock-clone image ([docs/SD-BOOT.md](docs/SD-BOOT.md)) shipped.
 **No secure boot is enforced on these units**, so custom code runs.
 
 ## Workspace
