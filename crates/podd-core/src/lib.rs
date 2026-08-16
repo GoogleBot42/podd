@@ -13,6 +13,7 @@
 pub mod bus;
 pub mod config;
 pub mod frozen;
+pub mod ha_discovery;
 pub mod led;
 pub mod mqtt;
 pub mod reset;

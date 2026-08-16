@@ -15,7 +15,7 @@ use tokio::{
     time::{sleep, timeout},
 };
 
-const TOPIC_AVAILABILITY: &str = "opensleep/availability";
+pub(crate) const TOPIC_AVAILABILITY: &str = "opensleep/availability";
 const ONLINE: &str = "online";
 const OFFLINE: &str = "offline";
 
@@ -199,6 +199,8 @@ impl MqttManager {
             subscribe(&mut client, TOPIC_SET_PRESENCE).await;
 
             config.publish(&mut client).await;
+
+            crate::ha_discovery::publish_discovery(&mut client, &device_label).await;
 
             publish_guaranteed_wait(&mut client, TOPIC_AVAILABILITY, true, ONLINE).await;
             publish_guaranteed_wait(&mut client, TOPIC_DEVICE_NAME, true, NAME).await;

@@ -1382,6 +1382,7 @@ dependencies = [
  "ron",
  "rumqttc",
  "serde",
+ "serde_json",
  "strum",
  "strum_macros",
  "thiserror 2.0.18",

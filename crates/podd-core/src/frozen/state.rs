@@ -20,11 +20,11 @@ pub struct FrozenState {
 
 const TOPIC_MODE: &str = "opensleep/state/frozen/mode";
 const TOPIC_HWINFO: &str = "opensleep/state/frozen/hwinfo";
-const TOPIC_LEFT_TEMP: &str = "opensleep/state/frozen/left_temp";
-const TOPIC_RIGHT_TEMP: &str = "opensleep/state/frozen/right_temp";
-const TOPIC_HEATSINK_TEMP: &str = "opensleep/state/frozen/heatsink_temp";
-const TOPIC_LEFT_TARGET_TEMP: &str = "opensleep/state/frozen/left_target_temp";
-const TOPIC_RIGHT_TARGET_TEMP: &str = "opensleep/state/frozen/right_target_temp";
+pub(crate) const TOPIC_LEFT_TEMP: &str = "opensleep/state/frozen/left_temp";
+pub(crate) const TOPIC_RIGHT_TEMP: &str = "opensleep/state/frozen/right_temp";
+pub(crate) const TOPIC_HEATSINK_TEMP: &str = "opensleep/state/frozen/heatsink_temp";
+pub(crate) const TOPIC_LEFT_TARGET_TEMP: &str = "opensleep/state/frozen/left_target_temp";
+pub(crate) const TOPIC_RIGHT_TARGET_TEMP: &str = "opensleep/state/frozen/right_target_temp";
 
 impl FrozenState {
     pub fn is_awake(&self) -> bool {
