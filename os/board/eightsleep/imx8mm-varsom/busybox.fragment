@@ -7,3 +7,8 @@ CONFIG_HTTPD=y
 CONFIG_FEATURE_HTTPD_CGI=y
 CONFIG_FEATURE_HTTPD_ERROR_PAGES=y
 CONFIG_FEATURE_HTTPD_PORT_DEFAULT=80
+# Works around a busybox 1.37 bug: the directory-URL -> index.html mapping is
+# truncated under "#if BASIC_AUTH || CGI" but only restored under
+# "#if BASIC_AUTH", so a CGI-only httpd 404s every "GET /". Compiling auth in
+# (unused — no auth entries in our httpd.conf) makes the restore branch exist.
+CONFIG_FEATURE_HTTPD_BASIC_AUTH=y
