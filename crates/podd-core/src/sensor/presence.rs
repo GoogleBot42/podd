@@ -1,5 +1,5 @@
 use crate::config::{Config, PresenceConfig};
-use crate::mqtt::publish_high_freq;
+use crate::mqtt::publish_state_retained;
 use pod_proto::sensor::packet::CapacitanceData;
 use rumqttc::AsyncClient;
 use std::time::{Duration, Instant};
@@ -104,9 +104,9 @@ impl PresenseManager {
     }
 
     fn update_mqtt(&mut self, state: &PresenceState) {
-        publish_high_freq(&mut self.client, TOPIC_ANY, state.any.to_string());
-        publish_high_freq(&mut self.client, TOPIC_LEFT, state.left.to_string());
-        publish_high_freq(&mut self.client, TOPIC_RIGHT, state.right.to_string());
+        publish_state_retained(&mut self.client, TOPIC_ANY, state.any.to_string());
+        publish_state_retained(&mut self.client, TOPIC_LEFT, state.left.to_string());
+        publish_state_retained(&mut self.client, TOPIC_RIGHT, state.right.to_string());
     }
 
     pub fn start_calibration(&mut self) {

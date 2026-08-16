@@ -326,3 +326,16 @@ where
         log::error!("Error publishing to {topic}: {e}",);
     }
 }
+
+/// Like [`publish_high_freq`] but retained — for state that changes rarely
+/// (presence, target temps): a late subscriber (e.g. Home Assistant after a
+/// restart) gets the current value instead of "unknown" until the next change.
+pub fn publish_state_retained<S, V>(client: &mut AsyncClient, topic: S, payload: V)
+where
+    S: Into<String> + Display + Clone,
+    V: Into<Vec<u8>>,
+{
+    if let Err(e) = client.try_publish(topic.clone(), QoS::AtMostOnce, true, payload) {
+        log::error!("Error publishing to {topic}: {e}",);
+    }
+}
