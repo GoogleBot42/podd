@@ -15,14 +15,26 @@ use serde_json::{Value, json};
 /// One discovery message: (discovery config topic, retained JSON payload).
 type DiscoveryMsg = (String, Value);
 
+/// The MCUs publish temperatures/humidity as raw integer hundredths
+/// (e.g. `3287` = 32.87 °C); scale on the HA side so the state topics stay
+/// byte-compatible for other consumers.
+const SCALE_CENTI: &str = "{{ (value | float / 100) | round(2) }}";
+/// Target-temp topics publish a number or the literal string "disabled".
+const SCALE_CENTI_OR_DISABLED: &str =
+    "{{ none if value == 'disabled' else (value | float / 100) | round(2) }}";
+/// bed_temp is a CSV of six zone readings (hundredths); average them.
+const BED_TEMP_AVG: &str =
+    "{{ ((value.split(',') | map('float') | sum) / (value.split(',') | length) / 100) | round(2) }}";
+
 /// °C measurement sensor entity.
-fn temp_sensor(node: &str, device: &Value, object: &str, name: &str, state_topic: &str) -> DiscoveryMsg {
+fn temp_sensor(node: &str, device: &Value, object: &str, name: &str, state_topic: &str, value_template: &str) -> DiscoveryMsg {
     (
         format!("homeassistant/sensor/{node}/{object}/config"),
         json!({
             "name": name,
             "unique_id": format!("{node}_{object}"),
             "state_topic": state_topic,
+            "value_template": value_template,
             "unit_of_measurement": "°C",
             "device_class": "temperature",
             "state_class": "measurement",
@@ -62,14 +74,14 @@ fn discovery_messages(device_label: &str) -> Vec<DiscoveryMsg> {
     });
 
     let mut msgs = vec![
-        temp_sensor(&node, &device, "left_temp", "Left bed temperature", frozen::state::TOPIC_LEFT_TEMP),
-        temp_sensor(&node, &device, "right_temp", "Right bed temperature", frozen::state::TOPIC_RIGHT_TEMP),
-        temp_sensor(&node, &device, "left_target_temp", "Left target temperature", frozen::state::TOPIC_LEFT_TARGET_TEMP),
-        temp_sensor(&node, &device, "right_target_temp", "Right target temperature", frozen::state::TOPIC_RIGHT_TARGET_TEMP),
-        temp_sensor(&node, &device, "heatsink_temp", "Heatsink temperature", frozen::state::TOPIC_HEATSINK_TEMP),
-        temp_sensor(&node, &device, "bed_temp", "Bed temperature", sensor::state::TOPIC_BED_TEMP),
-        temp_sensor(&node, &device, "ambient_temp", "Ambient temperature", sensor::state::TOPIC_AMBIENT_TEMP),
-        temp_sensor(&node, &device, "mcu_temp", "Sensor MCU temperature", sensor::state::TOPIC_MCU_TEMP),
+        temp_sensor(&node, &device, "left_temp", "Left bed temperature", frozen::state::TOPIC_LEFT_TEMP, SCALE_CENTI),
+        temp_sensor(&node, &device, "right_temp", "Right bed temperature", frozen::state::TOPIC_RIGHT_TEMP, SCALE_CENTI),
+        temp_sensor(&node, &device, "left_target_temp", "Left target temperature", frozen::state::TOPIC_LEFT_TARGET_TEMP, SCALE_CENTI_OR_DISABLED),
+        temp_sensor(&node, &device, "right_target_temp", "Right target temperature", frozen::state::TOPIC_RIGHT_TARGET_TEMP, SCALE_CENTI_OR_DISABLED),
+        temp_sensor(&node, &device, "heatsink_temp", "Heatsink temperature", frozen::state::TOPIC_HEATSINK_TEMP, SCALE_CENTI),
+        temp_sensor(&node, &device, "bed_temp", "Bed temperature", sensor::state::TOPIC_BED_TEMP, BED_TEMP_AVG),
+        temp_sensor(&node, &device, "ambient_temp", "Ambient temperature", sensor::state::TOPIC_AMBIENT_TEMP, SCALE_CENTI),
+        temp_sensor(&node, &device, "mcu_temp", "Sensor MCU temperature", sensor::state::TOPIC_MCU_TEMP, SCALE_CENTI),
         presence_sensor(&node, &device, "presence_left", "Left presence", sensor::presence::TOPIC_LEFT),
         presence_sensor(&node, &device, "presence_right", "Right presence", sensor::presence::TOPIC_RIGHT),
         presence_sensor(&node, &device, "presence_any", "Bed presence", sensor::presence::TOPIC_ANY),
@@ -82,6 +94,7 @@ fn discovery_messages(device_label: &str) -> Vec<DiscoveryMsg> {
             "name": "Humidity",
             "unique_id": format!("{node}_humidity"),
             "state_topic": sensor::state::TOPIC_HUMIDITY,
+            "value_template": "{{ (value | float / 100) | round(1) }}",
             "unit_of_measurement": "%",
             "device_class": "humidity",
             "state_class": "measurement",
@@ -146,6 +159,11 @@ mod tests {
             }
             assert_eq!(obj["availability_topic"], "opensleep/availability");
             assert!(obj["state_topic"].as_str().unwrap().starts_with("opensleep/"));
+            // every numeric sensor must scale the raw centi-unit payloads
+            if topic.starts_with("homeassistant/sensor/") {
+                let tpl = obj["value_template"].as_str().unwrap();
+                assert!(tpl.contains("/ 100"), "{topic} missing centi scaling");
+            }
         }
         // unique_ids must be unique
         let mut ids: Vec<_> = msgs.iter().map(|(_, p)| p["unique_id"].as_str().unwrap().to_string()).collect();
