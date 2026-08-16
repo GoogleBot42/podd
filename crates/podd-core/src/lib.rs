@@ -185,12 +185,13 @@ async fn run_inner(
 
     let (calibrate_tx, calibrate_rx) = mpsc::channel(32);
 
+    let config_path_arc: Arc<str> = Arc::from(config_path_str);
     let mut mqtt_man = MqttManager::new(
         config_tx.clone(),
         config_rx.clone(),
         calibrate_tx,
         device_label,
-        Arc::from(config_path_str),
+        config_path_arc.clone(),
     );
 
     // MQTT must NEVER gate the hardware. Give the broker a brief chance to
@@ -234,6 +235,7 @@ async fn run_inner(
             device.sensor_firmware_baud,
             config_tx,
             config_rx,
+            config_path_arc,
             calibrate_rx,
             mqtt_man.client.clone(),
             status_tx.clone(),
