@@ -16,8 +16,11 @@ export default function Navbar() {
   const { pathname } = useLocation();
   const { isUpdating } = useAppStore();
   const theme = useTheme(); // Access the Material-UI theme
-  const [mobileNavValue, setMobileNavValue] = React.useState(
-    PAGES.findIndex((page) => page.route === pathname)
+  // Derive the highlighted tab from the route, like the desktop nav does, so
+  // it stays right for deep links, the back button and the index route.
+  const currentRoute = pathname === '/' ? '/temperature' : pathname;
+  const mobileNavValue = PAGES.findIndex(
+    ({ route }) => currentRoute === route || currentRoute.startsWith(`${route}/`)
   );
 
   // Handle navigation for both desktop and mobile
@@ -29,7 +32,6 @@ export default function Navbar() {
     _event: React.SyntheticEvent,
     newValue: number
   ) => {
-    setMobileNavValue(newValue);
     handleNavigation(PAGES[newValue].route);
   };
 
