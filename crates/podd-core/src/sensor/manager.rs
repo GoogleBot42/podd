@@ -654,7 +654,14 @@ fn in_alarm_window(cfg: &SideConfig, now: &Time) -> bool {
     };
     let alarm_start = cfg.wake - Span::new().seconds(alarm_cfg.offset);
     let alarm_end = alarm_start + Span::new().seconds(alarm_cfg.duration);
-    *now > alarm_start && *now < alarm_end
+    if alarm_start <= alarm_end {
+        *now > alarm_start && *now < alarm_end
+    } else {
+        // Civil-time arithmetic wraps at midnight (e.g. wake 00:10 with a
+        // 20-min offset -> start 23:50, end 00:10), leaving start > end; the
+        // window is then the union of both sides of 00:00.
+        *now > alarm_start || *now < alarm_end
+    }
 }
 
 fn get_alarm_cmd(
@@ -797,4 +804,78 @@ async fn wait_for_mode(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AlarmConfig;
+    use jiff::civil::time;
+
+    /// wake / offset / duration -> a SideConfig whose only relevant fields are
+    /// the alarm window ones.
+    fn side(wake: Time, offset: u32, duration: u32) -> SideConfig {
+        SideConfig {
+            temperatures: vec![27.0],
+            sleep: time(21, 0, 0, 0),
+            wake,
+            alarm: Some(AlarmConfig {
+                pattern: AlarmPattern::Double,
+                intensity: 50,
+                duration,
+                offset,
+            }),
+        }
+    }
+
+    #[test]
+    fn no_alarm_config_is_never_in_window() {
+        let mut cfg = side(time(7, 0, 0, 0), 0, 600);
+        cfg.alarm = None;
+        assert!(!in_alarm_window(&cfg, &time(7, 5, 0, 0)));
+    }
+
+    #[test]
+    fn plain_window() {
+        // wake 07:00, offset 10 min -> 06:50..07:10
+        let cfg = side(time(7, 0, 0, 0), 600, 1200);
+        assert!(!in_alarm_window(&cfg, &time(6, 49, 59, 0)));
+        assert!(in_alarm_window(&cfg, &time(6, 50, 1, 0)));
+        assert!(in_alarm_window(&cfg, &time(7, 0, 0, 0)));
+        assert!(in_alarm_window(&cfg, &time(7, 9, 59, 0)));
+        assert!(!in_alarm_window(&cfg, &time(7, 10, 1, 0)));
+        // bounds are exclusive
+        assert!(!in_alarm_window(&cfg, &time(6, 50, 0, 0)));
+        assert!(!in_alarm_window(&cfg, &time(7, 10, 0, 0)));
+    }
+
+    #[test]
+    fn window_crossing_midnight_start_side() {
+        // wake 00:10, offset 20 min -> 23:50..00:10 (issue #29: this never
+        // fired with the single-interval AND comparison)
+        let cfg = side(time(0, 10, 0, 0), 1200, 1200);
+        assert!(in_alarm_window(&cfg, &time(23, 55, 0, 0)));
+        assert!(in_alarm_window(&cfg, &time(0, 0, 0, 0)));
+        assert!(in_alarm_window(&cfg, &time(0, 5, 0, 0)));
+        assert!(!in_alarm_window(&cfg, &time(0, 15, 0, 0)));
+        assert!(!in_alarm_window(&cfg, &time(23, 45, 0, 0)));
+        assert!(!in_alarm_window(&cfg, &time(12, 0, 0, 0)));
+    }
+
+    #[test]
+    fn window_crossing_midnight_end_side() {
+        // wake 23:55, offset 0, duration 20 min -> 23:55..00:15
+        let cfg = side(time(23, 55, 0, 0), 0, 1200);
+        assert!(in_alarm_window(&cfg, &time(23, 59, 0, 0)));
+        assert!(in_alarm_window(&cfg, &time(0, 10, 0, 0)));
+        assert!(!in_alarm_window(&cfg, &time(0, 20, 0, 0)));
+        assert!(!in_alarm_window(&cfg, &time(23, 50, 0, 0)));
+    }
+
+    #[test]
+    fn zero_duration_never_fires() {
+        let cfg = side(time(7, 0, 0, 0), 0, 0);
+        assert!(!in_alarm_window(&cfg, &time(7, 0, 0, 0)));
+        assert!(!in_alarm_window(&cfg, &time(6, 59, 59, 0)));
+    }
 }
