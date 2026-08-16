@@ -104,11 +104,33 @@ impl MqttManager {
     }
 
     pub async fn run(&mut self) {
+        // Availability heartbeat: a restart's LWT "offline" can reach the
+        // broker AFTER the new session's "online" (observed live 2026-08-16 —
+        // HA latched every entity unavailable while the pod was fine, until a
+        // manual republish). Re-asserting retained "online" once a minute
+        // makes any such race self-heal. try_publish just queues; errors
+        // (e.g. channel full while disconnected) are safe to ignore — the
+        // post-connect task republishes on every reconnect anyway.
+        let mut heartbeat_client = self.client.clone();
+        let heartbeat = tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                tick.tick().await;
+                let _ = heartbeat_client.try_publish(
+                    TOPIC_AVAILABILITY,
+                    QoS::AtMostOnce,
+                    true,
+                    ONLINE,
+                );
+            }
+        });
+
         loop {
             let evt = self.eventloop.poll().await;
             if self.handle_event(evt).await.is_err() {
                 // only errors on fatal errors, so `run` should
                 // quit, shutting down all of opensleep
+                heartbeat.abort();
                 return;
             }
         }
