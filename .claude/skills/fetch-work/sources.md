@@ -4,7 +4,8 @@ Single owner of "where candidate work comes from" for this repo. `fetch-work`
 and `unblock` both read this file rather than each re-deriving the list —
 update it here, not in either skill.
 
-1. **Gitea open issues.** `tea issues list --repo zuckerberg/podd --output simple`
+1. **Gitea open issues.** `tea issues list --repo zuckerberg/podd --output simple --limit 100`
+   (the default limit silently truncates at ~30 issues — always pass --limit)
    (see the `git-forges` skill for `tea` setup/auth). Read a specific issue
    with `tea issues <n> --repo zuckerberg/podd`. Authorship gotcha: `tea`
    shows every issue's author as "agent" because the migration re-created
