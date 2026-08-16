@@ -424,8 +424,8 @@ impl CommandScheduler {
                     interval: Duration::from_secs(5),
                     last_run: now,
                     can_run: |state, now, away, sides_cfg| {
-                        if state.vibration_enabled && !away {
-                            get_alarm_cmd(state, now, sides_cfg, &BedSide::Left)
+                        if state.vibration_enabled {
+                            get_alarm_cmd(state, now, *away, sides_cfg, &BedSide::Left)
                         } else {
                             None
                         }
@@ -438,8 +438,8 @@ impl CommandScheduler {
                     interval: Duration::from_secs(5),
                     last_run: now,
                     can_run: |state, now, away, sides_cfg| {
-                        if state.vibration_enabled && !away {
-                            get_alarm_cmd(state, now, sides_cfg, &BedSide::Right)
+                        if state.vibration_enabled {
+                            get_alarm_cmd(state, now, *away, sides_cfg, &BedSide::Right)
                         } else {
                             None
                         }
@@ -667,15 +667,20 @@ fn in_alarm_window(cfg: &SideConfig, now: &Time) -> bool {
 fn get_alarm_cmd(
     state: &SensorState,
     now: &Time,
+    away: bool,
     sides_config: &SidesConfig,
     side: &BedSide,
 ) -> Option<SensorCommand> {
     let cfg = sides_config.get_side(side);
-    let alarm_cfg = cfg.alarm.as_ref()?;
     let alarm_running = state.get_alarm_for_side(side);
-    let should_run = in_alarm_window(cfg, now) && !state.get_dismissed(side);
+    // Away mode and a missing alarm config must only suppress *starting* an
+    // alarm. The cancel branch below has to stay reachable, or toggling away
+    // on (or deleting the alarm block) mid-alarm leaves the bed vibrating
+    // until the firmware's max-duration timeout (issue #28).
+    let should_run = !away && in_alarm_window(cfg, now) && !state.get_dismissed(side);
 
     if should_run {
+        let alarm_cfg = cfg.alarm.as_ref()?;
         if !alarm_running {
             if !state.clock_synced {
                 log::warn!(
@@ -877,5 +882,101 @@ mod tests {
         let cfg = side(time(7, 0, 0, 0), 0, 0);
         assert!(!in_alarm_window(&cfg, &time(7, 0, 0, 0)));
         assert!(!in_alarm_window(&cfg, &time(6, 59, 59, 0)));
+    }
+
+    /// SidesConfig with the same alarm window (07:00 wake, 06:50..07:10) on
+    /// both sides.
+    fn sides() -> SidesConfig {
+        SidesConfig::Couples {
+            left: side(time(7, 0, 0, 0), 600, 1200),
+            right: side(time(7, 0, 0, 0), 600, 1200),
+        }
+    }
+
+    fn synced_state() -> SensorState {
+        SensorState {
+            clock_synced: true,
+            vibration_enabled: true,
+            ..Default::default()
+        }
+    }
+
+    fn is_cancel(cmd: Option<SensorCommand>) -> bool {
+        matches!(
+            cmd,
+            Some(SensorCommand::SetAlarm(AlarmCommand { intensity: 0, .. }))
+        )
+    }
+
+    #[test]
+    fn away_suppresses_alarm_start() {
+        let state = synced_state();
+        let in_window = time(7, 0, 0, 0);
+        assert!(matches!(
+            get_alarm_cmd(&state, &in_window, false, &sides(), &BedSide::Left),
+            Some(SensorCommand::SetAlarm(AlarmCommand { intensity: 50, .. }))
+        ));
+        assert_eq!(
+            get_alarm_cmd(&state, &in_window, true, &sides(), &BedSide::Left),
+            None
+        );
+    }
+
+    #[test]
+    fn away_still_cancels_running_alarm() {
+        // Issue #28: alarm started (away off), then away toggled on
+        // mid-window — the cancel must still be issued.
+        let mut state = synced_state();
+        state.alarm_left_running = true;
+        let in_window = time(7, 0, 0, 0);
+        assert!(is_cancel(get_alarm_cmd(
+            &state,
+            &in_window,
+            true,
+            &sides(),
+            &BedSide::Left
+        )));
+    }
+
+    #[test]
+    fn missing_alarm_config_still_cancels_running_alarm() {
+        let mut state = synced_state();
+        state.alarm_right_running = true;
+        let mut no_alarm = side(time(7, 0, 0, 0), 600, 1200);
+        no_alarm.alarm = None;
+        let cfg = SidesConfig::Couples {
+            left: side(time(7, 0, 0, 0), 600, 1200),
+            right: no_alarm,
+        };
+        assert!(is_cancel(get_alarm_cmd(
+            &state,
+            &time(7, 0, 0, 0),
+            false,
+            &cfg,
+            &BedSide::Right
+        )));
+    }
+
+    #[test]
+    fn away_cancel_exempts_manual_alarms() {
+        let mut state = synced_state();
+        state.alarm_left_running = true;
+        state.set_manual_alarm(
+            &BedSide::Left,
+            Some(std::time::Instant::now() + Duration::from_secs(60)),
+        );
+        assert_eq!(
+            get_alarm_cmd(&state, &time(7, 0, 0, 0), true, &sides(), &BedSide::Left),
+            None
+        );
+    }
+
+    #[test]
+    fn out_of_window_cancels_regardless_of_away() {
+        let mut state = synced_state();
+        state.alarm_left_running = true;
+        let out = time(12, 0, 0, 0);
+        assert!(is_cancel(get_alarm_cmd(&state, &out, false, &sides(), &BedSide::Left)));
+        assert!(is_cancel(get_alarm_cmd(&state, &out, true, &sides(), &BedSide::Left)));
     }
 }
