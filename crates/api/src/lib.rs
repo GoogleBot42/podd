@@ -24,7 +24,10 @@ pub mod wire;
 pub use control::{Call, MockControl, NotImplemented, PoddControl, PodControl};
 pub use state::{StateStore, StoreConfig};
 
-use axum::http::{HeaderValue, Method};
+use axum::extract::Request;
+use axum::http::{header, HeaderValue, Method, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::Router;
 use handlers::AppState;
@@ -32,7 +35,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
-use tower_http::services::{ServeDir, ServeFile};
+use tower_http::services::ServeDir;
 
 /// True for localhost / RFC1918 LAN origins (10/8, 172.16/12, 192.168/16).
 fn origin_allowed(origin: &HeaderValue) -> bool {
@@ -134,13 +137,76 @@ pub fn router(
     app = match spa_dir {
         Some(dir) => {
             let index = dir.join("index.html");
-            let serve_dir = ServeDir::new(&dir).fallback(ServeFile::new(index));
+            let serve_dir = ServeDir::new(&dir)
+                .append_index_html_on_directories(false)
+                .fallback(get(move |req: Request| spa_fallback(index.clone(), req)));
             app.fallback_service(serve_dir)
+                .layer(middleware::from_fn(static_cache_policy))
         }
         None => app.fallback(|| async { error::not_found() }),
     };
 
     app.layer(cors_layer())
+}
+
+/// History-fallback for the SPA: any non-file path gets a *fresh* `index.html`.
+///
+/// The UI ships from a Nix build where every file mtime is the Unix epoch, so
+/// a `ServeFile` fallback here answers `If-Modified-Since` with 304 forever —
+/// after a deploy changes the hashed asset names, browsers that cached the old
+/// index.html can never recover (white page; hit live 2026-08-17). Reading the
+/// file per-request and ignoring conditional headers means one ordinary reload
+/// un-sticks a stale client.
+async fn spa_fallback(index: PathBuf, req: Request) -> Response {
+    if req.uri().path().starts_with("/assets/") {
+        // A missing hashed asset means the client is holding a stale
+        // index.html. The old history-fallback served index.html *as* the
+        // asset, which fails the browser's module-script MIME check and
+        // white-screens the app — a 404 at least fails loudly.
+        return error::not_found().into_response();
+    }
+    match tokio::fs::read(&index).await {
+        Ok(body) => (
+            [
+                (
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("text/html; charset=utf-8"),
+                ),
+                (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
+            ],
+            body,
+        )
+            .into_response(),
+        Err(err) => {
+            log::error!("SPA index.html unreadable: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// `Cache-Control` for files served straight from the SPA dir by `ServeDir`.
+///
+/// Hashed `/assets/*` files are immutable by construction. Everything else
+/// (icons, manifest.json) gets `no-store`: the epoch mtimes make
+/// `Last-Modified` revalidation useless (permanent 304 even after content
+/// changes), and the files are small enough to refetch on a LAN.
+async fn static_cache_policy(req: Request, next: Next) -> Response {
+    let path = req.uri().path();
+    let is_api = path == "/api" || path.starts_with("/api/");
+    let is_asset = path.starts_with("/assets/");
+    let mut res = next.run(req).await;
+    if !is_api && !res.headers().contains_key(header::CACHE_CONTROL) {
+        let policy = if is_asset
+            && (res.status().is_success() || res.status() == StatusCode::NOT_MODIFIED)
+        {
+            "public, max-age=31536000, immutable"
+        } else {
+            "no-store"
+        };
+        res.headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static(policy));
+    }
+    res
 }
 
 /// Bind `addr` and serve the API (and SPA, if `spa_dir` is set) until shutdown.
