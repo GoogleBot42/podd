@@ -80,6 +80,26 @@ still holds.
    `--since` around when you restarted) and read for the actual symptom, not
    just the absence of a crash.
 
+## Procedure — deploying UI only (no restart needed)
+
+A UI-only change does **not** require stopping or restarting podd: the SPA is
+served from disk per request (`PODD_SPA_DIR`, live value in `systemctl cat
+podd` — `/usr/share/podd/ui` as of 2026-08-22), so an atomic dir swap is
+picked up immediately and there is no zombie window and no bed disruption.
+Since PR #97 clients revalidate `index.html`, so no stale-client worries.
+
+1. Build from a clean checkout of origin/main: `nix build .#ui -o
+   result-ui-<label>`, then verify the change is in the bundle
+   (`grep -rl "<string only the new code contains>" result-ui-<label>/assets`).
+2. Tar it up, scp it over, extract to a staging dir (busybox tar:
+   `gunzip -c x.tgz | tar -C <staging> -xf -`), sanity-check
+   `<staging>/index.html` exists.
+3. Swap: `mv ui ui.pre-<change> && mv ui.new ui` (keep the `ui.pre-<change>`
+   backup for instant revert).
+4. Verify the served page references the new hashed bundle:
+   `curl -s http://<pod>:3000/ | grep -o "index-[A-Za-z0-9]*\.js"` and that
+   the asset returns 200.
+
 ## Procedure — deploying an edited config
 
 1. `scp` the live `config.ron` down to your workstation.
