@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import Button from '@mui/material/Button';
-import { Box, CircularProgress } from '@mui/material';
+import { Alert, Box, CircularProgress, Snackbar } from '@mui/material';
 
 import AlarmDismissal from './AlarmDismissal.tsx';
 import AlarmNotification from './AlarmNotification.tsx';
@@ -22,6 +22,9 @@ import { useTheme } from '@mui/material/styles';
 export default function ControlTempPage() {
   const { isError, refetch, data: deviceStatus } = useDeviceStatus();
   const setDeviceStatus = useControlTempStore(state => state.setDeviceStatus);
+  const pendingEdits = useControlTempStore(state => state.pendingEdits);
+  const updateError = useControlTempStore(state => state.updateError);
+  const setUpdateError = useControlTempStore(state => state.setUpdateError);
   const { data: settings } = useSettings();
   const { isUpdating, side } = useAppStore();
   const theme = useTheme();
@@ -35,8 +38,12 @@ export default function ControlTempPage() {
 
   useEffect(() => {
     if (!deviceStatus) return;
+    // Don't clobber optimistic edits still on their way to the server (a poll
+    // or confirm-refetch can land mid-debounce); once pendingEdits drops back
+    // to zero this re-runs and syncs the confirmed server state.
+    if (pendingEdits > 0) return;
     setDeviceStatus(deviceStatus);
-  }, [deviceStatus]);
+  }, [deviceStatus, pendingEdits]);
 
   return (
     <PageContainer
@@ -81,6 +88,15 @@ export default function ControlTempPage() {
       </Box>
       <AlarmDismissal refetch={ refetch }/>
       { isUpdating && <CircularProgress/> }
+      <Snackbar
+        open={ updateError }
+        autoHideDuration={ 6000 }
+        onClose={ () => setUpdateError(false) }
+      >
+        <Alert severity="error" onClose={ () => setUpdateError(false) }>
+          Temperature change didn&apos;t reach the Pod
+        </Alert>
+      </Snackbar>
       <SideControl showTemp={ true }/>
     </PageContainer>
   );

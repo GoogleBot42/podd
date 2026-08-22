@@ -27,7 +27,7 @@ type SliderProps = {
 
 export default function Slider({ isOn, currentTargetTemp, refetch, currentTemperatureF, displayCelsius }: SliderProps) {
   const { deviceStatus, setDeviceStatus } = useControlTempStore();
-  const { isUpdating, setIsUpdating, side } = useAppStore();
+  const { isUpdating, side } = useAppStore();
   const { data: settings } = useSettings();
   const isInAwayMode = settings?.[side].awayMode;
   const disabled = isUpdating || isInAwayMode || !isOn;
@@ -35,12 +35,16 @@ export default function Slider({ isOn, currentTargetTemp, refetch, currentTemper
   const theme = useTheme();
   const sliderColor = getTemperatureColor(deviceStatus?.[side]?.targetTemperatureF);
   const handleControlFinished = async () => {
-    if (!deviceStatus) return;
+    // Send-time read (see TemperatureButtons.postUpdate): this closure can be
+    // one render behind the last onChange when the drag ends quickly.
+    const current = useControlTempStore.getState().deviceStatus;
+    const targetTemperatureF = current?.[side]?.targetTemperatureF;
+    if (targetTemperatureF === undefined) return;
 
-    setIsUpdating(true);
+    useControlTempStore.getState().beginEdit();
     void postDeviceStatus({
       [side]: {
-        targetTemperatureF: deviceStatus[side].targetTemperatureF
+        targetTemperatureF
       }
     })
       .then(() => {
@@ -49,10 +53,14 @@ export default function Slider({ isOn, currentTargetTemp, refetch, currentTemper
       })
       .then(() => refetch())
       .catch(error => {
+        // Happy path is silent; on failure surface the snackbar and refetch
+        // so the display falls back to the server's actual state.
         console.error(error);
+        useControlTempStore.getState().setUpdateError(true);
+        void refetch();
       })
       .finally(() => {
-        setIsUpdating(false);
+        useControlTempStore.getState().endEdit();
       });
   };
 

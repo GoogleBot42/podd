@@ -15,33 +15,47 @@ type TemperatureButtonsProps = {
 
 const DEBOUNCE_MS = 2000;
 export default function TemperatureButtons({ refetch, currentTargetTemp }: TemperatureButtonsProps) {
-  const { side, setIsUpdating, isUpdating } = useAppStore();
-  const { deviceStatus, setDeviceStatus } = useControlTempStore();
+  const { side, isUpdating } = useAppStore();
+  const setDeviceStatus = useControlTempStore(state => state.setDeviceStatus);
+  const optimisticTemp = useControlTempStore(state => state.deviceStatus?.[side]?.targetTemperatureF);
   const { data: settings } = useSettings();
   const theme = useTheme();
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const postUpdate = useCallback(async () => {
-    setIsUpdating(true);
+    // Read the target at send time, not from this render's closure: the
+    // debounce timer outlives renders, and a closure snapshot posts the value
+    // as of the *previous* press (one step short).
+    const current = useControlTempStore.getState().deviceStatus;
     try {
       await postDeviceStatus({
-        [side]: { targetTemperatureF: deviceStatus?.[side]?.targetTemperatureF },
+        [side]: { targetTemperatureF: current?.[side]?.targetTemperatureF },
       });
       await new Promise(r => setTimeout(r, 1_500));
       await refetch?.();
     } catch (err) {
+      // Happy path is silent; on failure surface the snackbar and refetch so
+      // the display falls back to the server's actual state.
       console.error(err);
+      useControlTempStore.getState().setUpdateError(true);
+      await refetch?.();
     } finally {
-      setIsUpdating(false);
+      useControlTempStore.getState().endEdit();
     }
-  }, [deviceStatus, side, refetch, setIsUpdating]);
+  }, [side, refetch]);
 
   // The pending debounced post, so it can be flushed early instead of lost if
   // the page is closed/hidden or the component unmounts before the timer fires.
   const pendingUpdateRef = useRef<(() => void) | null>(null);
 
   const scheduleUpdate = useCallback(() => {
-    if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    if (debounceTimer.current) {
+      clearTimeout(debounceTimer.current);
+    } else {
+      // Start of a new debounce chain; the matching endEdit runs in
+      // postUpdate's finally once this chain's single post completes.
+      useControlTempStore.getState().beginEdit();
+    }
     const fire = () => {
       debounceTimer.current = null;
       pendingUpdateRef.current = null;
@@ -73,15 +87,21 @@ export default function TemperatureButtons({ refetch, currentTargetTemp }: Tempe
   if (isInAwayMode) return null;
 
   const disabled = isUpdating || isInAwayMode;
+  // Bound the buttons on the displayed (optimistic) value, not the server's —
+  // presses stay enabled while a post is in flight, so the prop lags.
+  const displayTemp = optimisticTemp ?? currentTargetTemp;
   const borderColor = theme.palette.grey[800];
   const iconColor = theme.palette.grey[500];
 
   const handleClick = (change: number) => {
-    if (!deviceStatus) return;
-    if (deviceStatus === undefined) return;
+    // Same send-time read as postUpdate: two presses inside one render batch
+    // must stack, not both compute from the same snapshot.
+    const current = useControlTempStore.getState().deviceStatus;
+    const currentTemp = current?.[side]?.targetTemperatureF;
+    if (currentTemp === undefined) return;
     setDeviceStatus({
       [side]: {
-        targetTemperatureF: deviceStatus[side].targetTemperatureF + change,
+        targetTemperatureF: Math.min(MAX_TEMP_F, Math.max(MIN_TEMP_F, currentTemp + change)),
       }
     });
 
@@ -117,7 +137,7 @@ export default function TemperatureButtons({ refetch, currentTargetTemp }: Tempe
         color="primary"
         sx={ buttonStyle }
         onClick={ () => handleClick(-1) }
-        disabled={ disabled || currentTargetTemp <= MIN_TEMP_F }
+        disabled={ disabled || displayTemp <= MIN_TEMP_F }
       >
         <Remove sx={ { color: iconColor } }/>
       </Button>
@@ -126,7 +146,7 @@ export default function TemperatureButtons({ refetch, currentTargetTemp }: Tempe
         sx={ buttonStyle }
 
         onClick={ () => handleClick(1) }
-        disabled={ disabled || currentTargetTemp >= MAX_TEMP_F }
+        disabled={ disabled || displayTemp >= MAX_TEMP_F }
       >
         <Add sx={ { color: iconColor } }/>
       </Button>
