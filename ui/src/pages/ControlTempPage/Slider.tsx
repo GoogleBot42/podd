@@ -35,12 +35,17 @@ export default function Slider({ isOn, currentTargetTemp, refetch, currentTemper
   const theme = useTheme();
   const sliderColor = getTemperatureColor(deviceStatus?.[side]?.targetTemperatureF);
   const handleControlFinished = async () => {
-    if (!deviceStatus) return;
+    // Send-time read (see TemperatureButtons.postUpdate): this closure can be
+    // one render behind the last onChange when the drag ends quickly.
+    const current = useControlTempStore.getState().deviceStatus;
+    const targetTemperatureF = current?.[side]?.targetTemperatureF;
+    if (targetTemperatureF === undefined) return;
 
+    useControlTempStore.getState().beginEdit();
     setIsUpdating(true);
     void postDeviceStatus({
       [side]: {
-        targetTemperatureF: deviceStatus[side].targetTemperatureF
+        targetTemperatureF
       }
     })
       .then(() => {
@@ -53,6 +58,7 @@ export default function Slider({ isOn, currentTargetTemp, refetch, currentTemper
       })
       .finally(() => {
         setIsUpdating(false);
+        useControlTempStore.getState().endEdit();
       });
   };
 

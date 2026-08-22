@@ -16,16 +16,20 @@ type TemperatureButtonsProps = {
 const DEBOUNCE_MS = 2000;
 export default function TemperatureButtons({ refetch, currentTargetTemp }: TemperatureButtonsProps) {
   const { side, setIsUpdating, isUpdating } = useAppStore();
-  const { deviceStatus, setDeviceStatus } = useControlTempStore();
+  const setDeviceStatus = useControlTempStore(state => state.setDeviceStatus);
   const { data: settings } = useSettings();
   const theme = useTheme();
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const postUpdate = useCallback(async () => {
+    // Read the target at send time, not from this render's closure: the
+    // debounce timer outlives renders, and a closure snapshot posts the value
+    // as of the *previous* press (one step short).
+    const current = useControlTempStore.getState().deviceStatus;
     setIsUpdating(true);
     try {
       await postDeviceStatus({
-        [side]: { targetTemperatureF: deviceStatus?.[side]?.targetTemperatureF },
+        [side]: { targetTemperatureF: current?.[side]?.targetTemperatureF },
       });
       await new Promise(r => setTimeout(r, 1_500));
       await refetch?.();
@@ -33,15 +37,22 @@ export default function TemperatureButtons({ refetch, currentTargetTemp }: Tempe
       console.error(err);
     } finally {
       setIsUpdating(false);
+      useControlTempStore.getState().endEdit();
     }
-  }, [deviceStatus, side, refetch, setIsUpdating]);
+  }, [side, refetch, setIsUpdating]);
 
   // The pending debounced post, so it can be flushed early instead of lost if
   // the page is closed/hidden or the component unmounts before the timer fires.
   const pendingUpdateRef = useRef<(() => void) | null>(null);
 
   const scheduleUpdate = useCallback(() => {
-    if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    if (debounceTimer.current) {
+      clearTimeout(debounceTimer.current);
+    } else {
+      // Start of a new debounce chain; the matching endEdit runs in
+      // postUpdate's finally once this chain's single post completes.
+      useControlTempStore.getState().beginEdit();
+    }
     const fire = () => {
       debounceTimer.current = null;
       pendingUpdateRef.current = null;
@@ -77,11 +88,14 @@ export default function TemperatureButtons({ refetch, currentTargetTemp }: Tempe
   const iconColor = theme.palette.grey[500];
 
   const handleClick = (change: number) => {
-    if (!deviceStatus) return;
-    if (deviceStatus === undefined) return;
+    // Same send-time read as postUpdate: two presses inside one render batch
+    // must stack, not both compute from the same snapshot.
+    const current = useControlTempStore.getState().deviceStatus;
+    const currentTemp = current?.[side]?.targetTemperatureF;
+    if (currentTemp === undefined) return;
     setDeviceStatus({
       [side]: {
-        targetTemperatureF: deviceStatus[side].targetTemperatureF + change,
+        targetTemperatureF: Math.min(MAX_TEMP_F, Math.max(MIN_TEMP_F, currentTemp + change)),
       }
     });
 

@@ -22,6 +22,7 @@ import { useTheme } from '@mui/material/styles';
 export default function ControlTempPage() {
   const { isError, refetch, data: deviceStatus } = useDeviceStatus();
   const setDeviceStatus = useControlTempStore(state => state.setDeviceStatus);
+  const pendingEdits = useControlTempStore(state => state.pendingEdits);
   const { data: settings } = useSettings();
   const { isUpdating, side } = useAppStore();
   const theme = useTheme();
@@ -35,8 +36,12 @@ export default function ControlTempPage() {
 
   useEffect(() => {
     if (!deviceStatus) return;
+    // Don't clobber optimistic edits still on their way to the server (a poll
+    // or confirm-refetch can land mid-debounce); once pendingEdits drops back
+    // to zero this re-runs and syncs the confirmed server state.
+    if (pendingEdits > 0) return;
     setDeviceStatus(deviceStatus);
-  }, [deviceStatus]);
+  }, [deviceStatus, pendingEdits]);
 
   return (
     <PageContainer
