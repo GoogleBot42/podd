@@ -14,6 +14,10 @@ type ControlTempStore = {
   pendingEdits: number;
   beginEdit: () => void;
   endEdit: () => void;
+  // Set when a temperature POST fails; the page surfaces it as a snackbar.
+  // Happy-path updates are silent — no spinner, no disabling.
+  updateError: boolean;
+  setUpdateError: (updateError: boolean) => void;
 };
 
 export const useControlTempStore = create<ControlTempStore>((set, get) => ({
@@ -28,4 +32,6 @@ export const useControlTempStore = create<ControlTempStore>((set, get) => ({
   pendingEdits: 0,
   beginEdit: () => set({ pendingEdits: get().pendingEdits + 1 }),
   endEdit: () => set({ pendingEdits: Math.max(0, get().pendingEdits - 1) }),
+  updateError: false,
+  setUpdateError: (updateError) => set({ updateError }),
 }));

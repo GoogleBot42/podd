@@ -15,8 +15,9 @@ type TemperatureButtonsProps = {
 
 const DEBOUNCE_MS = 2000;
 export default function TemperatureButtons({ refetch, currentTargetTemp }: TemperatureButtonsProps) {
-  const { side, setIsUpdating, isUpdating } = useAppStore();
+  const { side, isUpdating } = useAppStore();
   const setDeviceStatus = useControlTempStore(state => state.setDeviceStatus);
+  const optimisticTemp = useControlTempStore(state => state.deviceStatus?.[side]?.targetTemperatureF);
   const { data: settings } = useSettings();
   const theme = useTheme();
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -26,7 +27,6 @@ export default function TemperatureButtons({ refetch, currentTargetTemp }: Tempe
     // debounce timer outlives renders, and a closure snapshot posts the value
     // as of the *previous* press (one step short).
     const current = useControlTempStore.getState().deviceStatus;
-    setIsUpdating(true);
     try {
       await postDeviceStatus({
         [side]: { targetTemperatureF: current?.[side]?.targetTemperatureF },
@@ -34,12 +34,15 @@ export default function TemperatureButtons({ refetch, currentTargetTemp }: Tempe
       await new Promise(r => setTimeout(r, 1_500));
       await refetch?.();
     } catch (err) {
+      // Happy path is silent; on failure surface the snackbar and refetch so
+      // the display falls back to the server's actual state.
       console.error(err);
+      useControlTempStore.getState().setUpdateError(true);
+      await refetch?.();
     } finally {
-      setIsUpdating(false);
       useControlTempStore.getState().endEdit();
     }
-  }, [side, refetch, setIsUpdating]);
+  }, [side, refetch]);
 
   // The pending debounced post, so it can be flushed early instead of lost if
   // the page is closed/hidden or the component unmounts before the timer fires.
@@ -84,6 +87,9 @@ export default function TemperatureButtons({ refetch, currentTargetTemp }: Tempe
   if (isInAwayMode) return null;
 
   const disabled = isUpdating || isInAwayMode;
+  // Bound the buttons on the displayed (optimistic) value, not the server's —
+  // presses stay enabled while a post is in flight, so the prop lags.
+  const displayTemp = optimisticTemp ?? currentTargetTemp;
   const borderColor = theme.palette.grey[800];
   const iconColor = theme.palette.grey[500];
 
@@ -131,7 +137,7 @@ export default function TemperatureButtons({ refetch, currentTargetTemp }: Tempe
         color="primary"
         sx={ buttonStyle }
         onClick={ () => handleClick(-1) }
-        disabled={ disabled || currentTargetTemp <= MIN_TEMP_F }
+        disabled={ disabled || displayTemp <= MIN_TEMP_F }
       >
         <Remove sx={ { color: iconColor } }/>
       </Button>
@@ -140,7 +146,7 @@ export default function TemperatureButtons({ refetch, currentTargetTemp }: Tempe
         sx={ buttonStyle }
 
         onClick={ () => handleClick(1) }
-        disabled={ disabled || currentTargetTemp >= MAX_TEMP_F }
+        disabled={ disabled || displayTemp >= MAX_TEMP_F }
       >
         <Add sx={ { color: iconColor } }/>
       </Button>
