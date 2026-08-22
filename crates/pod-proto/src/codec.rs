@@ -5,6 +5,11 @@ use tokio_util::codec::{Decoder, Encoder};
 
 pub const START: u8 = 0x7E;
 
+/// The LSP frame length field is a single byte, so a payload can never exceed
+/// this. Anything longer (e.g. a future firmware-flash chunk) must be split
+/// before framing.
+pub const MAX_PAYLOAD_LEN: usize = 255;
+
 pub struct PacketCodec<P: Packet> {
     _phantom: PhantomData<P>,
 }
@@ -98,6 +103,16 @@ impl<P: Packet> Decoder for PacketCodec<P> {
 }
 
 pub fn command(mut payload: Vec<u8>) -> Vec<u8> {
+    // A hard assert, not debug_assert: `payload.len() as u8` would wrap mod
+    // 256, emitting a LEN that disagrees with the checksum — a corrupt frame
+    // the MCU silently drops. Failing loudly beats sending that mid-flash,
+    // and release builds are exactly where a flash path would run.
+    assert!(
+        payload.len() <= MAX_PAYLOAD_LEN,
+        "LSP payload of {} bytes exceeds the one-byte length field (max {MAX_PAYLOAD_LEN}); \
+         split it before framing",
+        payload.len(),
+    );
     let mut res = Vec::with_capacity(payload.len() + 4);
     let checksum = checksum::compute(&payload);
     res.push(START);
@@ -167,6 +182,21 @@ mod tests {
         let mut dst = BytesMut::new();
         codec.encode(cmd.clone(), &mut dst).unwrap();
         assert_eq!(&dst[..], &cmd.to_bytes()[..]);
+    }
+
+    #[test]
+    fn test_max_payload_frames_fine() {
+        // exactly MAX_PAYLOAD_LEN must still frame with a correct LEN byte
+        let framed = command(vec![0u8; MAX_PAYLOAD_LEN]);
+        assert_eq!(framed[1] as usize, MAX_PAYLOAD_LEN);
+        assert_eq!(framed.len(), MAX_PAYLOAD_LEN + 4);
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds the one-byte length field")]
+    fn test_oversize_payload_panics() {
+        // 256 bytes would wrap the LEN byte to 0 -> corrupt frame; must panic
+        command(vec![0u8; MAX_PAYLOAD_LEN + 1]);
     }
 
     #[test]
