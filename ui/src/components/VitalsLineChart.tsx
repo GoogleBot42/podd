@@ -9,6 +9,7 @@ import { Card, Typography } from '@mui/material';
 import moment from 'moment-timezone';
 import { useTheme } from '@mui/material/styles';
 import { VitalsRecord } from '@api/vitals.ts';
+import { epochSecondsToDate } from '@lib/metricsTime.ts';
 import { useResizeDetector } from 'react-resize-detector';
 
 type Metric = 'heart_rate' | 'hrv' | 'breathing_rate';
@@ -76,16 +77,16 @@ export default function VitalsLineChart({ vitalsRecords, metric }: VitalsLineCha
     return downsampleData(vitalsRecords, downsampleTo)
       .filter(
         (record) =>
-          record.timestamp &&
-          !isNaN(new Date(record.timestamp).getTime()) &&
+          Number.isFinite(record.timestamp) &&
           !isNaN(record[metric])
       )
       .map((record) => ({
         ...record,
-        timestamp: new Date(record.timestamp),
+        // `timestamp` is epoch seconds on the wire; Date wants milliseconds.
+        timestamp: epochSecondsToDate(record.timestamp),
         [metric]: Number(record[metric]),
       }));
-  }, [vitalsRecords]);
+  }, [vitalsRecords, metric, width]);
 
   if (!vitalsRecords) return;
 

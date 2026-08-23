@@ -87,15 +87,15 @@ const createMovementRecords = (): MovementRecord[] => {
   const records: MovementRecord[] = [];
   for (let i = 0; i < H; i++) {
     const frac = i / (H - 1); // 0 → 1 across 8 points
-    const ts = start.clone().add(i, 'hours').format(); // "YYYY-MM-DDTHH:mm:ssZ"
+    // Epoch seconds, matching MovementRecord (and what the API emits).
+    const timestamp = start.clone().add(i, 'hours').unix();
     const value = Math.round(clamp(interp(frac), 1, 1400));
     const side: Side = i % 2 === 0 ? 'left' : 'right';
 
     records.push({
       id: i + 1,
       side,
-      // @ts-expect-error
-      timestamp: ts, // e.g. "2025-11-06T23:50:00-08:00"
+      timestamp,
       total_movement: value, // 1 → 1400 following the 50→300→1400→50 curve
     });
   }
@@ -494,7 +494,8 @@ export const appendLogEntry = (file: string, message: string) => {
   }
 };
 
-export const filterByQuery = <T extends { side?: Side }>(records: T[], filters: QueryFilters, getTimestamp: (record: T) => number) => {
+// `side` is widened to `string` because sleep records type theirs that way.
+export const filterByQuery = <T extends { side?: string }>(records: T[], filters: QueryFilters, getTimestamp: (record: T) => number) => {
   const start = filters.startTime ? Date.parse(filters.startTime) : undefined;
   const end = filters.endTime ? Date.parse(filters.endTime) : undefined;
   const side = filters.side;
