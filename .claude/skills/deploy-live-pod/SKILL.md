@@ -112,11 +112,13 @@ Since PR #97 clients revalidate `index.html`, so no stale-client worries.
 
 ## Procedure — deploying an edited config
 
-**podd rewrites `config.ron` itself** on any prime/settings save (the
-`POST /settings` primePodDaily bridge, MQTT `set_prime`/`set_away_mode`,
-presence calibration): it serde-round-trips the whole file, which **strips
-every hand-written comment** and normalizes formatting (observed 2026-08-23;
-verified it does NOT inject alarm blocks). Don't be surprised by a
+**podd rewrites `config.ron` itself** on any bridged settings save (the
+`POST /settings` primePodDaily / awayMode / timeZone bridges, MQTT
+`set_prime`/`set_away_mode`, presence calibration): it serde-round-trips the
+whole file, which **strips every hand-written comment** and normalizes
+formatting (observed 2026-08-23; verified it does NOT inject alarm blocks).
+Since PR #113 the rewrite also migrates `away_mode` from the legacy bool to
+the per-side `(left: …, right: …)` form — expected, not corruption. Don't be surprised by a
 comment-free config, don't treat the rewrite as corruption, and keep the
 commented original as a `config.ron.pre-<change>` backup before triggering
 any such save. Hand-edits that matter long-term belong in a backup or the
