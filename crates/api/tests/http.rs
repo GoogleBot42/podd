@@ -256,6 +256,29 @@ async fn device_status_reflects_watch_snapshot() {
 }
 
 #[tokio::test]
+async fn off_side_target_stays_in_the_ui_range() {
+    use podd_core::bus::DeviceSnapshot;
+
+    // An off side publishes no target (podd-core never surfaces the firmware's
+    // `temp: 0` off sentinel). The wire value must stay inside the UI's
+    // 55–110 contract instead of collapsing to 32 °F.
+    let (tx, rx) = tokio::sync::watch::channel(DeviceSnapshot::default());
+    let store = StateStore::from_watch(rx, StoreConfig::default());
+    let control = Arc::new(MockControl::new());
+    let app = router(store.clone(), control as Arc<dyn PodControl>, None);
+
+    let resp = app.oneshot(get("/api/deviceStatus")).await.unwrap();
+    let v = body_json(resp).await;
+    for side in ["left", "right"] {
+        let t = v[side]["targetTemperatureF"].as_f64().unwrap();
+        assert!((55.0..=110.0).contains(&t), "{side} target out of range: {t}");
+        assert_eq!(v[side]["isOn"], false);
+    }
+
+    drop(tx);
+}
+
+#[tokio::test]
 async fn device_status_updates_on_watch_change() {
     use podd_core::bus::DeviceSnapshot;
     use std::time::Duration;

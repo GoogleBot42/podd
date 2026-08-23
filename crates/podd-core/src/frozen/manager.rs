@@ -1,4 +1,4 @@
-use crate::bus::{Command, DeviceSnapshot, StatusTx};
+use crate::bus::{Command, DeviceSnapshot, SideSnapshot, StatusTx};
 use crate::config::{Config, SidesConfig};
 use crate::frozen::state::FrozenState;
 use crate::led::{IS31FL3194Config, IS31FL3194Controller, LedPattern};
@@ -254,16 +254,28 @@ fn publish_frozen(status: &StatusTx, state: &FrozenState) {
             s.right.current_temp_c = Some(t.right_temp as f64 / 100.0);
         }
         if let Some(tar) = &state.left_target {
-            s.left.target_temp_c = Some(tar.temp as f64 / 100.0);
-            s.left.is_on = tar.enabled;
+            apply_target(&mut s.left, tar);
         }
         if let Some(tar) = &state.right_target {
-            s.right.target_temp_c = Some(tar.temp as f64 / 100.0);
-            s.right.is_on = tar.enabled;
+            apply_target(&mut s.right, tar);
         }
         s.is_priming = state.is_priming;
         s.water_level = state.water_full;
     });
+}
+
+/// Fold one side's echoed [`FrozenTarget`] into its snapshot.
+///
+/// A *disabled* target is the firmware's off sentinel (`temp: 0`), not a
+/// setpoint: publishing it reached the UI as `targetTemperatureF: 32`, outside
+/// the 55–110 the wire contract allows, and garbled the temperature dial. An
+/// off side therefore keeps its last real setpoint (or stays unknown until it
+/// has one).
+fn apply_target(side: &mut SideSnapshot, tar: &FrozenTarget) {
+    if tar.enabled {
+        side.target_temp_c = Some(tar.temp as f64 / 100.0);
+    }
+    side.is_on = tar.enabled;
 }
 
 /// °F -> centidegrees Celsius, for building Frozen setpoint frames.
@@ -644,6 +656,27 @@ mod tests {
         );
         assert_eq!(wanted, target(false, 0));
         assert!(slot.is_none());
+    }
+
+    #[test]
+    fn apply_target_publishes_only_real_setpoints() {
+        let mut side = SideSnapshot::default();
+
+        // nothing known yet + an off side => still unknown (never 0 °C, which
+        // the api layer would publish as targetTemperatureF: 32)
+        apply_target(&mut side, &target(false, 0));
+        assert_eq!(side.target_temp_c, None);
+        assert!(!side.is_on);
+
+        // a real setpoint is published
+        apply_target(&mut side, &target(true, 2722));
+        assert_eq!(side.target_temp_c, Some(27.22));
+        assert!(side.is_on);
+
+        // turning the side off keeps the last real setpoint for the UI dial
+        apply_target(&mut side, &target(false, 0));
+        assert_eq!(side.target_temp_c, Some(27.22));
+        assert!(!side.is_on);
     }
 
     #[test]
