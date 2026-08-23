@@ -102,6 +102,63 @@ async fn settings_get_then_merge_persists() {
     assert_eq!(s.left.name, "Bedroom");
 }
 
+// ---------------------------------------------------------------------------
+// settings -> live config bridge: primePodDaily
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn settings_prime_pod_daily_reaches_the_config() {
+    let (app, control, _s) = build();
+
+    // a partial patch (time inherited from the stored settings) still applies
+    let patch = json!({ "primePodDaily": { "enabled": true } });
+    let resp = app.clone().oneshot(post_json("/api/settings", &patch)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    match control.calls().as_slice() {
+        [Call::SetPrimeDaily(true, t)] => {
+            assert_eq!(t.to_string(), "14:00:00"); // the default settings time
+        }
+        other => panic!("expected one SetPrimeDaily, got {other:?}"),
+    }
+
+    // turning it off, with a new time, propagates both fields
+    let patch = json!({ "primePodDaily": { "enabled": false, "time": "03:30" } });
+    let resp = app.clone().oneshot(post_json("/api/settings", &patch)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    match control.calls().as_slice() {
+        [_, Call::SetPrimeDaily(false, t)] => assert_eq!(t.to_string(), "03:30:00"),
+        other => panic!("expected a second SetPrimeDaily, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn settings_without_prime_pod_daily_touch_nothing() {
+    let (app, control, _s) = build();
+    let patch = json!({ "timeZone": "America/Denver", "rebootDaily": false });
+    let resp = app.oneshot(post_json("/api/settings", &patch)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(
+        control.calls().is_empty(),
+        "unrelated settings must not touch the config: {:?}",
+        control.calls()
+    );
+}
+
+#[tokio::test]
+async fn settings_reject_a_bad_prime_time_without_applying_anything() {
+    let (app, control, store) = build();
+    let patch = json!({ "primePodDaily": { "enabled": true, "time": "25:99" } });
+    let resp = app.oneshot(post_json("/api/settings", &patch)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let v = body_json(resp).await;
+    assert_eq!(v["error"], "Invalid request data");
+    // nothing applied: neither the stored settings nor the config
+    let s = store.settings();
+    assert!(!s.prime_pod_daily.enabled);
+    assert_eq!(s.prime_pod_daily.time, "14:00");
+    assert!(control.calls().is_empty());
+}
+
 #[tokio::test]
 async fn schedules_partial_merge() {
     let (app, _c, _s) = build();
@@ -256,6 +313,29 @@ async fn device_status_reflects_watch_snapshot() {
 }
 
 #[tokio::test]
+async fn off_side_target_stays_in_the_ui_range() {
+    use podd_core::bus::DeviceSnapshot;
+
+    // An off side publishes no target (podd-core never surfaces the firmware's
+    // `temp: 0` off sentinel). The wire value must stay inside the UI's
+    // 55–110 contract instead of collapsing to 32 °F.
+    let (tx, rx) = tokio::sync::watch::channel(DeviceSnapshot::default());
+    let store = StateStore::from_watch(rx, StoreConfig::default());
+    let control = Arc::new(MockControl::new());
+    let app = router(store.clone(), control as Arc<dyn PodControl>, None);
+
+    let resp = app.oneshot(get("/api/deviceStatus")).await.unwrap();
+    let v = body_json(resp).await;
+    for side in ["left", "right"] {
+        let t = v[side]["targetTemperatureF"].as_f64().unwrap();
+        assert!((55.0..=110.0).contains(&t), "{side} target out of range: {t}");
+        assert_eq!(v[side]["isOn"], false);
+    }
+
+    drop(tx);
+}
+
+#[tokio::test]
 async fn device_status_updates_on_watch_change() {
     use podd_core::bus::DeviceSnapshot;
     use std::time::Duration;
@@ -328,6 +408,18 @@ async fn poddcontrol_maps_calls_to_commands() {
 
     control.prime().await.unwrap();
     assert_eq!(rx.recv().await.unwrap(), Command::Prime);
+
+    control
+        .set_prime_daily(false, jiff::civil::time(3, 30, 0, 0))
+        .await
+        .unwrap();
+    assert_eq!(
+        rx.recv().await.unwrap(),
+        Command::SetPrimeDaily {
+            enabled: false,
+            time: jiff::civil::time(3, 30, 0, 0),
+        }
+    );
 
     control.clear_alarm(Side::Left).await.unwrap();
     assert_eq!(

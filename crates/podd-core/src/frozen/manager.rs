@@ -1,4 +1,4 @@
-use crate::bus::{Command, DeviceSnapshot, StatusTx};
+use crate::bus::{Command, DeviceSnapshot, SideSnapshot, StatusTx};
 use crate::config::{Config, SidesConfig};
 use crate::frozen::state::FrozenState;
 use crate::led::{IS31FL3194Config, IS31FL3194Controller, LedPattern};
@@ -20,6 +20,10 @@ use tokio_util::codec::Framed;
 const HWINFO_INT: Duration = Duration::from_secs(1);
 const TEMP_INT: Duration = Duration::from_secs(10);
 const MAX_WAKE_ATTEMPTS: u32 = 5;
+
+/// Safe setpoint (centi-°C, 27.5 °C) for a "turn this side on" with no real
+/// setpoint to carry forward.
+const DEFAULT_TEMP_CENTI_C: u16 = 2750;
 
 struct CommandTimers {
     last_wake: Instant,
@@ -101,6 +105,7 @@ pub async fn run(
     let timezone = cfg.timezone.clone();
     let mut away_mode = cfg.away_mode;
     let mut prime = cfg.prime;
+    let mut prime_enabled = cfg.prime_enabled;
     let mut side_config = cfg.profile.clone();
     drop(cfg);
 
@@ -173,6 +178,7 @@ pub async fn run(
                 &timezone,
                 &away_mode,
                 &prime,
+                prime_enabled,
                 &side_config,
                 &mut overrides,
             ) {
@@ -207,6 +213,7 @@ pub async fn run(
                 let cfg = config_rx.borrow();
                 away_mode = cfg.away_mode;
                 prime = cfg.prime;
+                prime_enabled = cfg.prime_enabled;
                 side_config = cfg.profile.clone();
                 // New config = new intent; manual overrides don't outlive it.
                 overrides = ManualOverrides::default();
@@ -250,16 +257,28 @@ fn publish_frozen(status: &StatusTx, state: &FrozenState) {
             s.right.current_temp_c = Some(t.right_temp as f64 / 100.0);
         }
         if let Some(tar) = &state.left_target {
-            s.left.target_temp_c = Some(tar.temp as f64 / 100.0);
-            s.left.is_on = tar.enabled;
+            apply_target(&mut s.left, tar);
         }
         if let Some(tar) = &state.right_target {
-            s.right.target_temp_c = Some(tar.temp as f64 / 100.0);
-            s.right.is_on = tar.enabled;
+            apply_target(&mut s.right, tar);
         }
         s.is_priming = state.is_priming;
         s.water_level = state.water_full;
     });
+}
+
+/// Fold one side's echoed [`FrozenTarget`] into its snapshot.
+///
+/// A *disabled* target is the firmware's off sentinel (`temp: 0`), not a
+/// setpoint: publishing it reached the UI as `targetTemperatureF: 32`, outside
+/// the 55–110 the wire contract allows, and garbled the temperature dial. An
+/// off side therefore keeps its last real setpoint (or stays unknown until it
+/// has one).
+fn apply_target(side: &mut SideSnapshot, tar: &FrozenTarget) {
+    if tar.enabled {
+        side.target_temp_c = Some(tar.temp as f64 / 100.0);
+    }
+    side.is_on = tar.enabled;
 }
 
 /// °F -> centidegrees Celsius, for building Frozen setpoint frames.
@@ -293,21 +312,21 @@ async fn handle_command(
             .delimiter_safe(side),
         }),
         Command::SetPower { side, on, duration_s } => {
-            // Preserve the last known target temp for the side; the firmware
-            // ignores temp when disabling. The firmware has no session timer,
-            // so duration_s becomes the override's expiry (#31).
+            // Carry the last *real* setpoint forward (see [`power_on_temp`]);
+            // the firmware ignores temp when disabling. The firmware has no
+            // session timer, so duration_s becomes the override's expiry (#31).
             if on && duration_s > 0 {
                 expires_at = Some(Instant::now() + Duration::from_secs(duration_s as u64));
             }
             let last = match side {
-                BedSide::Left => state.left_target.clone(),
-                BedSide::Right => state.right_target.clone(),
+                BedSide::Left => state.left_target.as_ref(),
+                BedSide::Right => state.right_target.as_ref(),
             };
             Some(FrozenCommand::SetTargetTemperature {
                 side,
                 tar: FrozenTarget {
                     enabled: on,
-                    temp: last.map(|t| t.temp).unwrap_or(2750),
+                    temp: power_on_temp(last),
                 }
                 .delimiter_safe(side),
             })
@@ -340,6 +359,21 @@ async fn handle_command(
     }
 }
 
+/// Setpoint to use when powering a side on, given the side's last known
+/// target.
+///
+/// SAFETY: a *disabled* stored target is the firmware's off sentinel
+/// (`{enabled: false, temp: 0}`) — its temp is not a setpoint. Carrying it
+/// into a `SetPower { on: true }` frame drove the bed to 0 °C and a 12 h
+/// manual override then held it there. Only an enabled target has a real
+/// setpoint to preserve; anything else falls back to
+/// [`DEFAULT_TEMP_CENTI_C`].
+fn power_on_temp(last: Option<&FrozenTarget>) -> u16 {
+    last.filter(|t| t.enabled)
+        .map(|t| t.temp)
+        .unwrap_or(DEFAULT_TEMP_CENTI_C)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn get_next_command(
     timers: &mut CommandTimers,
@@ -347,6 +381,7 @@ fn get_next_command(
     timezone: &TimeZone,
     away_mode: &bool,
     prime_time: &Time,
+    prime_enabled: bool,
     side_config: &SidesConfig,
     overrides: &mut ManualOverrides,
 ) -> Option<FrozenCommand> {
@@ -397,16 +432,37 @@ fn get_next_command(
     let now_local = Timestamp::now().to_zoned(timezone.clone()).time();
 
     // TODO verify it actually started priming
-    if !away_mode
-        // prime if we are within 30 seconds of prime time AND we havn't tried to prime in the last minute
-        && now.duration_since(timers.last_prime) > Duration::from_secs(60)
-        && in_prime_window(now_local, *prime_time)
-    {
+    if should_prime(
+        *away_mode,
+        prime_enabled,
+        now.duration_since(timers.last_prime),
+        now_local,
+        *prime_time,
+    ) {
         timers.last_prime = now;
         return Some(FrozenCommand::Prime);
     }
 
     None
+}
+
+/// Whether the *scheduled daily* prime should fire now.
+///
+/// `prime_enabled` is the UI's "Prime daily?" toggle: with it off the bed
+/// never primes on a schedule. It does not gate an explicit
+/// [`Command::Prime`] (UI "Prime Now" / MQTT), which always runs.
+fn should_prime(
+    away_mode: bool,
+    prime_enabled: bool,
+    since_last_prime: Duration,
+    now_local: Time,
+    prime_time: Time,
+) -> bool {
+    prime_enabled
+        && !away_mode
+        // prime if we are within 30 seconds of prime time AND we havn't tried to prime in the last minute
+        && since_last_prime > Duration::from_secs(60)
+        && in_prime_window(now_local, prime_time)
 }
 
 /// True when `now` is within 30 s (either side) of `prime_time` on the
@@ -552,6 +608,61 @@ mod tests {
         assert!(!in_prime_window(time(0, 0, 30, 0), prime));
     }
 
+    #[test]
+    fn daily_prime_fires_when_everything_lines_up() {
+        let prime = time(15, 0, 0, 0);
+        assert!(should_prime(
+            false,
+            true,
+            Duration::from_secs(3600),
+            time(15, 0, 0, 0),
+            prime
+        ));
+    }
+
+    #[test]
+    fn daily_prime_blocked_by_the_prime_enabled_flag() {
+        // "Prime daily?" off in the UI => never primes on a schedule, even at
+        // the configured time with everything else satisfied
+        let prime = time(15, 0, 0, 0);
+        assert!(!should_prime(
+            false,
+            false,
+            Duration::from_secs(3600),
+            time(15, 0, 0, 0),
+            prime
+        ));
+    }
+
+    #[test]
+    fn daily_prime_still_blocked_by_away_mode_and_the_rate_limit() {
+        let prime = time(15, 0, 0, 0);
+        // away mode
+        assert!(!should_prime(
+            true,
+            true,
+            Duration::from_secs(3600),
+            time(15, 0, 0, 0),
+            prime
+        ));
+        // primed less than a minute ago
+        assert!(!should_prime(
+            false,
+            true,
+            Duration::from_secs(30),
+            time(15, 0, 0, 0),
+            prime
+        ));
+        // outside the window
+        assert!(!should_prime(
+            false,
+            true,
+            Duration::from_secs(3600),
+            time(3, 0, 0, 0),
+            prime
+        ));
+    }
+
     fn target(enabled: bool, temp: u16) -> FrozenTarget {
         FrozenTarget { enabled, temp }
     }
@@ -625,6 +736,45 @@ mod tests {
         );
         assert_eq!(wanted, target(false, 0));
         assert!(slot.is_none());
+    }
+
+    #[test]
+    fn apply_target_publishes_only_real_setpoints() {
+        let mut side = SideSnapshot::default();
+
+        // nothing known yet + an off side => still unknown (never 0 °C, which
+        // the api layer would publish as targetTemperatureF: 32)
+        apply_target(&mut side, &target(false, 0));
+        assert_eq!(side.target_temp_c, None);
+        assert!(!side.is_on);
+
+        // a real setpoint is published
+        apply_target(&mut side, &target(true, 2722));
+        assert_eq!(side.target_temp_c, Some(27.22));
+        assert!(side.is_on);
+
+        // turning the side off keeps the last real setpoint for the UI dial
+        apply_target(&mut side, &target(false, 0));
+        assert_eq!(side.target_temp_c, Some(27.22));
+        assert!(!side.is_on);
+    }
+
+    #[test]
+    fn power_on_temp_ignores_the_disabled_sentinel() {
+        // A side that is off stores `{enabled: false, temp: 0}` — 0 centi-°C
+        // is NOT a setpoint. "Turn on" must not drive the bed to 0 °C.
+        assert_eq!(power_on_temp(Some(&target(false, 0))), 2750);
+        // even a disabled target that happens to carry a stale temp is not a
+        // setpoint the user asked for
+        assert_eq!(power_on_temp(Some(&target(false, 1500))), 2750);
+        // nothing known yet -> the safe default
+        assert_eq!(power_on_temp(None), 2750);
+    }
+
+    #[test]
+    fn power_on_temp_preserves_a_real_setpoint() {
+        assert_eq!(power_on_temp(Some(&target(true, 3111))), 3111);
+        assert_eq!(power_on_temp(Some(&target(true, 2200))), 2200);
     }
 
     fn temps(left: u16, right: u16) -> Option<TemperatureUpdate> {

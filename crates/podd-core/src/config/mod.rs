@@ -65,6 +65,10 @@ pub struct PresenceConfig {
     pub debounce_count: u8,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 fn time_de<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Time, D::Error> {
     let s = String::deserialize(deserializer)?;
     Time::strptime("%H:%M", &s).map_err(serde::de::Error::custom)
@@ -108,6 +112,12 @@ pub struct Config {
     pub away_mode: bool,
     #[serde(deserialize_with = "time_de", serialize_with = "time_ser")]
     pub prime: Time,
+    /// Whether the *daily* prime at [`Config::prime`] runs at all (the UI's
+    /// "Prime daily?" toggle). Defaults to true so configs written before this
+    /// field existed keep priming exactly as they did. An explicit prime
+    /// request (UI "Prime Now", MQTT) is unaffected.
+    #[serde(default = "default_true")]
+    pub prime_enabled: bool,
     pub led: LEDConfig,
     pub mqtt: MqttConfig,
     pub profile: SidesConfig,

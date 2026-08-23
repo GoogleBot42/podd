@@ -22,6 +22,7 @@
 
 use std::sync::Arc;
 
+use jiff::civil::Time;
 use tokio::sync::{mpsc, watch};
 
 use crate::config::Cover;
@@ -109,8 +110,13 @@ pub enum Command {
     SetPower { side: BedSide, on: bool, duration_s: u32 },
     /// Clear (dismiss) a vibrating alarm on a side.
     ClearAlarm { side: BedSide },
-    /// Prime the water circuit.
+    /// Prime the water circuit now (always runs; not gated by the daily
+    /// "Prime daily?" flag).
     Prime,
+    /// Update the *daily* prime schedule in the live config: the UI's
+    /// "Prime daily?" toggle + its time. Applied to the config watch and
+    /// persisted to `config.ron`, exactly like the MQTT `set_prime` action.
+    SetPrimeDaily { enabled: bool, time: Time },
     /// Fire an alarm immediately.
     FireAlarm(AlarmSpec),
     /// Apply an opaque CBOR device-settings block (gains / LED brightness).

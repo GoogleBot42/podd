@@ -159,16 +159,48 @@ pub async fn post_settings(
     if let Some(obj) = patch.as_object_mut() {
         obj.remove("id");
     }
+    // `primePodDaily` is the one settings field the daemon acts on, so a patch
+    // that touches it has to reach the live config too (settings.json alone is
+    // read by nobody: the bed primed daily whatever the toggle said).
+    let prime_touched = patch.get("primePodDaily").is_some();
     let mut base = serde_json::to_value(app.store.settings()).unwrap();
     deep_merge(&mut base, patch);
     let merged: Settings = match serde_json::from_value(base) {
         Ok(s) => s,
         Err(e) => return invalid_request_data(vec![e.to_string()]),
     };
+    // Validate before anything is written: a bad time must not half-apply.
+    let prime_time = if prime_touched {
+        match parse_hh_mm(&merged.prime_pod_daily.time) {
+            Some(t) => Some(t),
+            None => {
+                return invalid_request_data(vec![format!(
+                    "primePodDaily.time must be HH:MM, got {:?}",
+                    merged.prime_pod_daily.time
+                )])
+            }
+        }
+    } else {
+        None
+    };
     if let Err(e) = app.store.set_settings(merged.clone()) {
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
+    if let Some(time) = prime_time {
+        if let Err(e) = app
+            .control
+            .set_prime_daily(merged.prime_pod_daily.enabled, time)
+            .await
+        {
+            return control_error(e);
+        }
+    }
     Json(merged).into_response()
+}
+
+/// Strict `HH:MM` (the format `config.ron` stores prime times in).
+fn parse_hh_mm(s: &str) -> Option<jiff::civil::Time> {
+    jiff::civil::Time::strptime("%H:%M", s).ok()
 }
 
 // ---------------------------------------------------------------------------

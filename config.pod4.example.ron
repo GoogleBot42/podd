@@ -12,6 +12,11 @@
     // What time to prime the bed. Make sure this does not interfere with the sleep profile.
     prime: "15:00",
 
+    // Whether the daily prime above runs at all (the UI's "Prime daily?"
+    // toggle writes this). Omit it and it defaults to true. Priming on demand
+    // ("Prime Now") always works regardless.
+    prime_enabled: true,
+
     led: (
         // SlowBreath(r, g, b)
         // FastBreath(r, g, b)
