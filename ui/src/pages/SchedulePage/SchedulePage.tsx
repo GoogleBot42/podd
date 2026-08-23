@@ -1,5 +1,5 @@
 import _ from 'lodash';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Alert, Box, Snackbar } from '@mui/material';
 import { DeepPartial } from 'ts-essentials';
 import moment from 'moment-timezone';
@@ -55,16 +55,18 @@ export default function SchedulePage() {
   const displayCelsius = settings?.temperatureFormat === 'celsius';
   // TODO: Add changes lost notification using changesPresent when user tries to switch tab before saving
 
-  useEffect(() => {
-    const day = getAdjustedDayOfWeek();
-    selectDay(LOWERCASE_DAYS.indexOf(day));
-  }, []);
+  // Jumping to today is an initialisation step, not something to redo on every
+  // refetch — re-running it on the post-save refetch threw the user back to
+  // today's tab the moment they saved another day.
+  const dayInitialized = useRef(false);
 
   useEffect(() => {
     if (!schedules) return;
     setOriginalSchedules(schedules);
-    const day = getAdjustedDayOfWeek();
-    selectDay(LOWERCASE_DAYS.indexOf(day));
+    if (!dayInitialized.current) {
+      dayInitialized.current = true;
+      selectDay(LOWERCASE_DAYS.indexOf(getAdjustedDayOfWeek()));
+    }
     reloadScheduleData();
   }, [schedules]);
 

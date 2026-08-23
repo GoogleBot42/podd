@@ -13,42 +13,26 @@ import { AccordionExpanded } from './SchedulePage.types.ts';
 import { DayOfWeek } from '@api/schedulesSchema.ts';
 import { useAppStore } from '@state/appStore.tsx';
 import { useScheduleStore } from './scheduleStore';
+import { LOWERCASE_DAYS } from './days.ts';
 import EventRepeatIcon from '@mui/icons-material/EventRepeat';
 
 export const daysOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+const WEEKDAYS: DayOfWeek[] = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'];
+const WEEKENDS: DayOfWeek[] = ['saturday', 'sunday'];
 
 const ACCORDION_NAME: AccordionExpanded = 'applyToDays';
 
 export default function ApplyToOtherDaysAccordion() {
   const {
     selectedDays,
+    selectDays,
     toggleSelectedDay,
     accordionExpanded,
     setAccordionExpanded,
     selectedSchedule,
   } = useScheduleStore();
   const { isUpdating } = useAppStore();
-
-  const setWeekdays = () => {
-    daysOfWeek.slice(0, 5).map(day => {
-      // @ts-expect-error
-      toggleSelectedDay(day.toLowerCase());
-    });
-  };
-
-  const setEveryday = () => {
-    daysOfWeek.map(day => {
-      // @ts-expect-error
-      toggleSelectedDay(day.toLowerCase());
-    });
-  };
-
-  const setWeekends= () => {
-    // @ts-expect-error
-    toggleSelectedDay(daysOfWeek[5].toLowerCase());
-    // @ts-expect-error
-    toggleSelectedDay(daysOfWeek[6].toLowerCase());
-  };
 
   return (
     <Accordion
@@ -65,9 +49,9 @@ export default function ApplyToOtherDaysAccordion() {
       </AccordionSummary>
       <Box sx={ { mt: -2, p: 2 } }>
         <Box sx={ { display: 'flex', gap: 1 } }>
-          <Button variant="contained" sx={ { mb: 1 } } onClick={ setWeekdays } >Weekdays</Button>
-          <Button variant="contained" sx={ { mb: 1 } } onClick={ setWeekends }>Weekends</Button>
-          <Button variant="contained" sx={ { mb: 1 } } onClick={ setEveryday }>Everyday</Button>
+          <Button variant="contained" sx={ { mb: 1 } } onClick={ () => selectDays(WEEKDAYS) } >Weekdays</Button>
+          <Button variant="contained" sx={ { mb: 1 } } onClick={ () => selectDays(WEEKENDS) }>Weekends</Button>
+          <Button variant="contained" sx={ { mb: 1 } } onClick={ () => selectDays(LOWERCASE_DAYS) }>Everyday</Button>
         </Box>
         <FormGroup>
           {
