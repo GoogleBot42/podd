@@ -83,7 +83,10 @@ anything on the actuation path as safety-critical.
 - Use subagents for large parallelizable subtasks. Run them on Opus or Sonnet
   (`model: "opus"` / `model: "sonnet"`) wherever those suffice — searches,
   routine edits, mechanical sweeps; reserve the top-tier model for work that
-  actually needs it. Keep designs simple unless asked to extend.
+  actually needs it. Keep designs simple unless asked to extend. Agents
+  editing the same worktree in parallel must be told "never `git stash`" and
+  given disjoint paths — a stash/pop by one agent grabs the other's in-flight
+  edits (near-miss 2026-08-23).
 - When Jeremy dumps logs or bootlogs unprompted, that is a request to
   re-diagnose, not to acknowledge.
 
