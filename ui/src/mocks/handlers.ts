@@ -1,6 +1,7 @@
 import { http, HttpResponse, delay } from 'msw';
 import type { SleepRecord } from '@api/sleepSchema.ts';
 import type { Jobs } from '@api/jobs.ts';
+import { epochSecondsToMs } from '@lib/metricsTime.ts';
 import {
   getServices,
   updateServices,
@@ -90,7 +91,6 @@ export const handlers = [
   http.get('/api/metrics/sleep', async ({ request }) => {
     const filters = toFilters(request);
     const records = listSleepRecords();
-    // @ts-expect-error
     const filtered = filterByQuery(records, filters, (record: SleepRecord) => Date.parse(record.entered_bed_at));
     await delay(150);
     return HttpResponse.json(deepClone(filtered));
@@ -120,19 +120,19 @@ export const handlers = [
     await delay(80);
     return HttpResponse.json(updatedRecord);
   }),
-  http.get('/api/metrics/movement', async () => {
-    // const filters = toFilters(request);
+  http.get('/api/metrics/movement', async ({ request }) => {
+    const filters = toFilters(request);
     const records = listMovementRecords();
-    // const filtered = filterByQuery(records, filters, (record: MovementRecord) => record.timestamp * 1000);
+    const filtered = filterByQuery(records, filters, (record) => epochSecondsToMs(record.timestamp));
     await delay(120);
-    return HttpResponse.json(records);
+    return HttpResponse.json(deepClone(filtered));
   }),
-  http.get('/api/metrics/vitals', async () => {
-    // const filters = toFilters(request);
+  http.get('/api/metrics/vitals', async ({ request }) => {
+    const filters = toFilters(request);
     const records = listVitalsRecords();
-    // const filtered = filterByQuery(records, filters, (record: VitalsRecord) => record.timestamp * 1000);
+    const filtered = filterByQuery(records, filters, (record) => epochSecondsToMs(record.timestamp));
     await delay(120);
-    return HttpResponse.json(records);
+    return HttpResponse.json(deepClone(filtered));
   }),
   http.get('/api/metrics/vitals/summary', async () => {
     await delay(120);

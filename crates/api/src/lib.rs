@@ -18,6 +18,7 @@
 pub mod control;
 pub mod error;
 pub mod handlers;
+pub mod metrics;
 pub mod state;
 pub mod wire;
 
@@ -117,18 +118,16 @@ pub fn router(
             "/metrics/presence",
             get(handlers::get_presence).post(handlers::post_presence),
         )
-        // biometrics — deferred, UI-friendly empties
-        .route(
-            "/metrics/sleep",
-            get(handlers::empty_array),
-        )
+        // biometrics — deferred, UI-friendly empties (still honour ?startTime/
+        // ?endTime/?side so the filtering contract is real, #108)
+        .route("/metrics/sleep", get(handlers::get_sleep_records))
         .route(
             "/metrics/sleep/{id}",
             put(handlers::sleep_put).delete(handlers::sleep_delete),
         )
-        .route("/metrics/vitals", get(handlers::empty_array))
+        .route("/metrics/vitals", get(handlers::get_vitals_records))
         .route("/metrics/vitals/summary", get(handlers::vitals_summary))
-        .route("/metrics/movement", get(handlers::empty_array))
+        .route("/metrics/movement", get(handlers::get_movement_records))
         .fallback(|| async { error::not_found() })
         .with_state(app_state);
 

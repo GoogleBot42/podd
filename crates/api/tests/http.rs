@@ -460,6 +460,71 @@ async fn execute_invalid_command() {
     assert_eq!(&bytes[..], b"Invalid command");
 }
 
+// ---------------------------------------------------------------------------
+// metrics query params (#108)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn metrics_endpoints_accept_the_ui_query_params() {
+    let (app, _c, _s) = build();
+    // Exactly the shape ui/src/api/{sleep,vitals,movement}.ts builds.
+    let query =
+        "startTime=2026-08-15T00%3A00%3A00.000Z&endTime=2026-08-22T00%3A00%3A00.000Z&side=left";
+    for path in [
+        "/api/metrics/sleep",
+        "/api/metrics/vitals",
+        "/api/metrics/movement",
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(get(&format!("{path}?{query}")))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{path}");
+        // Biometrics pipeline is deferred (#12): filtered result of no records.
+        assert_eq!(body_json(resp).await, json!([]), "{path}");
+    }
+
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/metrics/vitals/summary?{query}")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_json(resp).await["avgHeartRate"], 0);
+}
+
+#[tokio::test]
+async fn metrics_endpoints_reject_bad_query_params() {
+    let (app, _c, _s) = build();
+
+    let resp = app
+        .clone()
+        .oneshot(get("/api/metrics/vitals?side=middle"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let v = body_json(resp).await;
+    assert_eq!(v["error"], "Invalid request data");
+    assert!(v["details"][0].as_str().unwrap().contains("side"));
+
+    let resp = app
+        .oneshot(get("/api/metrics/sleep?startTime=yesterday"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let v = body_json(resp).await;
+    assert!(v["details"][0].as_str().unwrap().contains("startTime"));
+}
+
+#[tokio::test]
+async fn metrics_endpoints_work_without_query_params() {
+    let (app, _c, _s) = build();
+    let resp = app.oneshot(get("/api/metrics/movement")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_json(resp).await, json!([]));
+}
+
 #[tokio::test]
 async fn unknown_api_route_404() {
     let (app, _c, _s) = build();

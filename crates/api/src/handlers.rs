@@ -2,9 +2,12 @@
 
 use crate::control::{NotImplemented, PodControl};
 use crate::error::{invalid_request_data, ApiJson};
+use crate::metrics::{
+    filter_records, MetricsFilter, MetricsQuery, MovementRecord, SleepRecord, VitalsRecord,
+};
 use crate::state::StateStore;
 use crate::wire::*;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -482,13 +485,50 @@ pub async fn post_presence(
 
 // ---------------------------------------------------------------------------
 // biometrics (deferred): UI-friendly empties
+//
+// The biometrics pipeline doesn't exist yet (#12), so the record sources below
+// are empty. The `?startTime=&endTime=&side=` filtering the UI relies on runs
+// anyway: it is validated on every request, and once real records land they
+// only have to be handed to `filter_records` (#108).
 // ---------------------------------------------------------------------------
 
-pub async fn empty_array() -> Json<Value> {
-    Json(json!([]))
+/// Validate the shared metrics query, or answer 400 with the failure details.
+fn metrics_filter(query: &MetricsQuery) -> Result<MetricsFilter, Response> {
+    query.parse().map_err(invalid_request_data)
 }
 
-pub async fn vitals_summary() -> Json<Value> {
+pub async fn get_sleep_records(Query(query): Query<MetricsQuery>) -> Response {
+    let filter = match metrics_filter(&query) {
+        Ok(f) => f,
+        Err(resp) => return resp,
+    };
+    let records: Vec<SleepRecord> = Vec::new();
+    Json(filter_records(records, &filter)).into_response()
+}
+
+pub async fn get_vitals_records(Query(query): Query<MetricsQuery>) -> Response {
+    let filter = match metrics_filter(&query) {
+        Ok(f) => f,
+        Err(resp) => return resp,
+    };
+    let records: Vec<VitalsRecord> = Vec::new();
+    Json(filter_records(records, &filter)).into_response()
+}
+
+pub async fn get_movement_records(Query(query): Query<MetricsQuery>) -> Response {
+    let filter = match metrics_filter(&query) {
+        Ok(f) => f,
+        Err(resp) => return resp,
+    };
+    let records: Vec<MovementRecord> = Vec::new();
+    Json(filter_records(records, &filter)).into_response()
+}
+
+pub async fn vitals_summary(Query(query): Query<MetricsQuery>) -> Response {
+    let _filter = match metrics_filter(&query) {
+        Ok(f) => f,
+        Err(resp) => return resp,
+    };
     Json(json!({
         "avgHeartRate": 0,
         "minHeartRate": 0,
@@ -496,6 +536,7 @@ pub async fn vitals_summary() -> Json<Value> {
         "avgHRV": 0,
         "avgBreathingRate": 0,
     }))
+    .into_response()
 }
 
 pub async fn sleep_put() -> Response {

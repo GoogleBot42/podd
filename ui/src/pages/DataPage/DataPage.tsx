@@ -9,7 +9,6 @@ import ArrowForwardIosIcon from '@mui/icons-material/ArrowForwardIos';
 import BedIcon from '@mui/icons-material/Bed';
 import ListItemIcon from '@mui/material/ListItemIcon';
 import ListItemText from '@mui/material/ListItemText';
-// import FavoriteIcon from '@mui/icons-material/Favorite';
 import Typography from '@mui/material/Typography';
 import { List, ListItem } from '@mui/material';
 import TextSnippetIcon from '@mui/icons-material/TextSnippet';
@@ -41,13 +40,11 @@ const SettingsList = () => {
         <ListItemText primary="Logs"/>
         <ArrowForwardIosIcon fontSize="small" sx={ { color: 'gray' } }/>
       </ListItem>
-      { /*<ListItem onClick={ () => navigate('/data/vitals') }>*/ }
-      { /*  <ListItemIcon>*/ }
-      { /*    <FavoriteIcon/>*/ }
-      { /*  </ListItemIcon>*/ }
-      { /*  <ListItemText primary="Vitals"/>*/ }
-      { /*  <ArrowForwardIosIcon fontSize="small" sx={ { color: 'gray' } }/>*/ }
-      { /*</ListItem>*/ }
+      { /*
+        No Vitals entry: the biometrics pipeline that would fill it doesn't
+        exist yet (#12), and the vitals charts live on the sleep page. The
+        /data/vitals route still resolves — see VitalsPage.
+      */ }
     </List>
   );
 };

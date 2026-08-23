@@ -5,6 +5,7 @@ import { LineChart, lineElementClasses, areaElementClasses } from '@mui/x-charts
 import { useResizeDetector } from 'react-resize-detector';
 import moment from 'moment-timezone';
 import type { MovementRecord } from '@api/movement.ts';
+import { epochSecondsToMs } from '@lib/metricsTime.ts';
 
 type MovementChartProps = {
   movementRecords: MovementRecord[];
@@ -97,9 +98,11 @@ export default function MovementAreaChart({
   const points = useMemo<Pt[]>(() => {
     if (!movementRecords?.length) return [];
 
-    // Sort & normalize input
+    // Sort & normalize input. `timestamp` is epoch seconds on the wire (what
+    // MovementRecord declares); the bucketing below is all in milliseconds.
     const raw = [...movementRecords]
-      .map(r => ({ t: new Date(r.timestamp).getTime(), v: Number(r.total_movement) }))
+      .filter(r => Number.isFinite(r.timestamp))
+      .map(r => ({ t: epochSecondsToMs(r.timestamp), v: Number(r.total_movement) }))
       .sort((a, b) => a.t - b.t);
 
     // Time-based max pooling
