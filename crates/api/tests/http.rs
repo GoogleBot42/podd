@@ -52,6 +52,18 @@ async fn get_device_status_ok() {
     assert!(v["wifiStrength"].is_number());
 }
 
+/// Issue #109: the build chips used to report the never-bumped workspace version
+/// and a hardcoded `"main"`. Both fields must now be the real build stamp.
+#[tokio::test]
+async fn device_status_reports_the_build_stamp() {
+    let (app, _c, _s) = build();
+    let resp = app.oneshot(get("/api/deviceStatus")).await.unwrap();
+    let v = body_json(resp).await;
+    assert_eq!(v["freeSleep"]["version"], json!(podd_core::VERSION));
+    assert_eq!(v["freeSleep"]["branch"], json!(podd_core::GIT_REV));
+    assert_ne!(v["freeSleep"]["branch"], json!("main"));
+}
+
 #[tokio::test]
 async fn post_device_status_power() {
     let (app, control, _s) = build();

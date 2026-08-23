@@ -70,6 +70,13 @@ pub struct DevSettingsBlock {
     pub led_brightness: i64,
 }
 
+/// Build identity of the running daemon, under free-sleep's `freeSleep` key.
+///
+/// The field *names* are free-sleep's and stay as-is (the UI's zod schema is
+/// `.strict()`), but the values are podd's build stamp: `version` is
+/// `git describe`, and `branch` carries the short commit hash — branch names
+/// don't survive a reproducible Nix build, and a hardcoded `"main"` was worse
+/// than useless during deploy verification (issue #109).
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct FreeSleepInfo {
@@ -128,8 +135,8 @@ impl Default for DeviceStatus {
             // real values come from the host-info task in the podd binary.
             hub_version: "Version not found".to_string(),
             free_sleep: FreeSleepInfo {
-                version: env!("CARGO_PKG_VERSION").to_string(),
-                branch: "main".to_string(),
+                version: podd_core::VERSION.to_string(),
+                branch: podd_core::GIT_REV.to_string(),
             },
             wifi_strength: 0,
         }
