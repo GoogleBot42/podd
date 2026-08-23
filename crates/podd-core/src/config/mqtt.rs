@@ -6,7 +6,6 @@ use crate::{
 };
 
 use super::{AlarmConfig, AwayMode, Config, SidesConfig};
-use jiff::civil::Time;
 use rumqttc::AsyncClient;
 use tokio::sync::watch;
 
@@ -38,6 +37,59 @@ pub const TOPIC_SET_AWAY_MODE: &str = "opensleep/actions/set_away_mode";
 pub const TOPIC_SET_PRIME: &str = "opensleep/actions/set_prime";
 pub const TOPIC_SET_PROFILE: &str = "opensleep/actions/set_profile";
 pub const TOPIC_SET_PRESENCE: &str = "opensleep/actions/set_presence_config";
+
+/// A retained `state/config/...` topic that a config change can invalidate.
+///
+/// The MQTT action path republishes inline in [`handle_action`], but config
+/// changes also arrive over the API command bus (the UI settings page →
+/// `Command::SetPrimeDaily` / `SetAwayMode` / `SetTimezone`), and that path had
+/// no republish hook: the retained topic stayed stale until the next broker
+/// reconnect (#106). [`republish_config_state`] is that hook; rendering the
+/// payload here — one owner per topic — keeps the two paths from drifting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfigStateTopic {
+    Prime,
+    AwayMode,
+    Timezone,
+}
+
+impl ConfigStateTopic {
+    pub fn topic(self) -> &'static str {
+        match self {
+            ConfigStateTopic::Prime => TOPIC_PRIME,
+            ConfigStateTopic::AwayMode => TOPIC_AWAY_MODE,
+            ConfigStateTopic::Timezone => TOPIC_TIMEZONE,
+        }
+    }
+
+    /// The retained payload for this topic, rendered from `cfg`.
+    pub fn payload(self, cfg: &Config) -> String {
+        match self {
+            ConfigStateTopic::Prime => cfg.prime.to_string(),
+            // Historical whole-bed bool semantics: "true" only when both
+            // sides are away.
+            ConfigStateTopic::AwayMode => cfg.away_mode.both().to_string(),
+            ConfigStateTopic::Timezone => {
+                cfg.timezone.iana_name().unwrap_or("ERROR").to_string()
+            }
+        }
+    }
+}
+
+/// Republish the retained state topics affected by a config change (#106).
+///
+/// Call this from any path that edits the live config *outside*
+/// [`handle_action`]. Retained + QoS2, like every other config publish, so a
+/// late subscriber (Home Assistant after a restart) sees the current value.
+pub async fn republish_config_state(
+    client: &mut AsyncClient,
+    topics: &[ConfigStateTopic],
+    cfg: &Config,
+) {
+    for t in topics {
+        publish_guaranteed_wait(client, t.topic(), true, t.payload(cfg)).await;
+    }
+}
 
 impl PresenceConfig {
     async fn publish(&self, client: &mut AsyncClient) {
@@ -99,17 +151,16 @@ impl SidesConfig {
 impl Config {
     pub async fn publish(&self, client: &mut AsyncClient) {
         log::debug!("Publishing config..");
-        publish_guaranteed_wait(
+        republish_config_state(
             client,
-            TOPIC_TIMEZONE,
-            true,
-            self.timezone.iana_name().unwrap_or("ERROR"),
+            &[
+                ConfigStateTopic::Timezone,
+                ConfigStateTopic::AwayMode,
+                ConfigStateTopic::Prime,
+            ],
+            self,
         )
         .await;
-
-        publish_away_mode(client, self.away_mode).await;
-
-        publish_prime(client, self.prime).await;
 
         // led
         publish_guaranteed_wait(client, TOPIC_LED_IDLE, true, format!("{:?}", self.led.idle)).await;
@@ -131,16 +182,6 @@ impl Config {
 
         log::debug!("Published config");
     }
-}
-
-async fn publish_prime(client: &mut AsyncClient, value: Time) {
-    publish_guaranteed_wait(client, TOPIC_PRIME, true, value.to_string()).await;
-}
-
-/// The retained topic keeps its historical whole-bed bool semantics: "true"
-/// only when both sides are away.
-async fn publish_away_mode(client: &mut AsyncClient, mode: AwayMode) {
-    publish_guaranteed_wait(client, TOPIC_AWAY_MODE, true, mode.both().to_string()).await;
 }
 
 async fn publish_left_profile(client: &mut AsyncClient, side: &SideConfig) {
@@ -194,13 +235,13 @@ pub async fn handle_action(
                 right: mode,
             };
             log::info!("Set away_mode to {:?}", cfg.away_mode);
-            publish_away_mode(client, cfg.away_mode).await;
+            republish_config_state(client, &[ConfigStateTopic::AwayMode], &cfg).await;
         }
 
         TOPIC_SET_PRIME => {
             cfg.prime = payload.trim().parse()?;
             log::info!("Set prime time to {}", cfg.prime);
-            publish_prime(client, cfg.prime).await;
+            republish_config_state(client, &[ConfigStateTopic::Prime], &cfg).await;
         }
 
         TOPIC_SET_PROFILE => {

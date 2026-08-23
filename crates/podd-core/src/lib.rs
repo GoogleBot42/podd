@@ -104,15 +104,18 @@ fn detect_device_label<'a>(candidates: impl IntoIterator<Item = &'a str>) -> Str
 /// pick it up, then persist `config.ron` so it survives a restart. A no-op
 /// change is dropped — sending on the watch resets the frozen manager's manual
 /// overrides, which a settings save must not do gratuitously.
+///
+/// Returns whether the live config actually changed, so the caller knows
+/// whether the retained MQTT state topic needs republishing (#106).
 async fn apply_prime_daily(
     config_tx: &watch::Sender<Config>,
     config_path: &str,
     enabled: bool,
     time: jiff::civil::Time,
-) {
+) -> bool {
     let mut cfg = config_tx.borrow().clone();
     if cfg.prime_enabled == enabled && cfg.prime == time {
-        return;
+        return false;
     }
     cfg.prime_enabled = enabled;
     cfg.prime = time;
@@ -122,11 +125,12 @@ async fn apply_prime_daily(
     );
     if let Err(e) = config_tx.send(cfg.clone()) {
         log::error!("Error sending to config watch channel: {e}");
-        return;
+        return false;
     }
     if let Err(e) = cfg.save(config_path).await {
         log::error!("Failed to save config: {e}");
     }
+    true
 }
 
 /// Apply a per-side away-mode change (UI settings page) to the live config.
@@ -136,10 +140,10 @@ async fn apply_away_mode(
     config_tx: &watch::Sender<Config>,
     config_path: &str,
     away: config::AwayMode,
-) {
+) -> bool {
     let mut cfg = config_tx.borrow().clone();
     if cfg.away_mode == away {
-        return;
+        return false;
     }
     cfg.away_mode = away;
     log::info!(
@@ -149,47 +153,77 @@ async fn apply_away_mode(
     );
     if let Err(e) = config_tx.send(cfg.clone()) {
         log::error!("Error sending to config watch channel: {e}");
-        return;
+        return false;
     }
     if let Err(e) = cfg.save(config_path).await {
         log::error!("Failed to save config: {e}");
     }
+    true
 }
 
 /// Apply a timezone change (UI settings page) to the live config. The API
 /// layer already validated the IANA name; re-parse defensively anyway.
-async fn apply_timezone(config_tx: &watch::Sender<Config>, config_path: &str, iana: &str) {
+async fn apply_timezone(config_tx: &watch::Sender<Config>, config_path: &str, iana: &str) -> bool {
     let tz = match jiff::tz::TimeZone::get(iana) {
         Ok(tz) => tz,
         Err(e) => {
             log::error!("SetTimezone: unknown timezone {iana:?}: {e}");
-            return;
+            return false;
         }
     };
     let mut cfg = config_tx.borrow().clone();
     if cfg.timezone == tz {
-        return;
+        return false;
     }
     cfg.timezone = tz;
     log::info!("Set timezone to {iana}");
     if let Err(e) = config_tx.send(cfg.clone()) {
         log::error!("Error sending to config watch channel: {e}");
-        return;
+        return false;
     }
     if let Err(e) = cfg.save(config_path).await {
         log::error!("Failed to save config: {e}");
     }
+    true
+}
+
+/// Republish the retained MQTT config-state topics a command just invalidated.
+///
+/// Config changes arriving over MQTT republish inline in
+/// [`config::mqtt::handle_action`]; the API command path had no such hook, so
+/// e.g. `opensleep/state/config/prime` stayed stale after a UI settings save
+/// until the next broker reconnect (#106). State publishing only — nothing
+/// here actuates.
+///
+/// Spawned, never awaited: [`publish_guaranteed_wait`](crate::mqtt::publish_guaranteed_wait)
+/// can block for seconds while the broker is down, and the dispatcher must
+/// stay responsive for the commands behind this one (alarm dismissal included).
+fn republish_config_state(
+    client: &rumqttc::AsyncClient,
+    topics: &'static [config::mqtt::ConfigStateTopic],
+    config_tx: &watch::Sender<Config>,
+) {
+    let mut client = client.clone();
+    let cfg = config_tx.borrow().clone();
+    tokio::spawn(async move {
+        config::mqtt::republish_config_state(&mut client, topics, &cfg).await;
+    });
 }
 
 /// Route a command to the manager that owns it. System-level commands and
 /// not-yet-mapped ones are logged (dry-run) here.
+///
+/// `mqtt` is used only to republish retained config-state topics after a
+/// config-editing command (#106) — see [`republish_config_state`].
 async fn dispatch_commands(
     mut cmd_rx: mpsc::Receiver<Command>,
     frozen_tx: mpsc::Sender<Command>,
     sensor_tx: mpsc::Sender<Command>,
     config_tx: watch::Sender<Config>,
     config_path: Arc<str>,
+    mqtt: rumqttc::AsyncClient,
 ) {
+    use config::mqtt::ConfigStateTopic;
     while let Some(cmd) = cmd_rx.recv().await {
         match &cmd {
             Command::SetTargetTempF { .. } | Command::SetPower { .. } | Command::Prime => {
@@ -199,10 +233,12 @@ async fn dispatch_commands(
             }
             // Config edits, not manager ops: settings-page bridges.
             Command::SetPrimeDaily { enabled, time } => {
-                apply_prime_daily(&config_tx, &config_path, *enabled, *time).await;
+                if apply_prime_daily(&config_tx, &config_path, *enabled, *time).await {
+                    republish_config_state(&mqtt, &[ConfigStateTopic::Prime], &config_tx);
+                }
             }
             Command::SetAwayMode { left, right } => {
-                apply_away_mode(
+                let changed = apply_away_mode(
                     &config_tx,
                     &config_path,
                     config::AwayMode {
@@ -211,9 +247,14 @@ async fn dispatch_commands(
                     },
                 )
                 .await;
+                if changed {
+                    republish_config_state(&mqtt, &[ConfigStateTopic::AwayMode], &config_tx);
+                }
             }
             Command::SetTimezone { iana } => {
-                apply_timezone(&config_tx, &config_path, iana).await;
+                if apply_timezone(&config_tx, &config_path, iana).await {
+                    republish_config_state(&mqtt, &[ConfigStateTopic::Timezone], &config_tx);
+                }
             }
             Command::ClearAlarm { .. } | Command::FireAlarm(_) => {
                 if sensor_tx.send(cmd).await.is_err() {
@@ -293,16 +334,12 @@ async fn run_inner(
         s.cover_version = cover_version.to_string();
     });
 
-    // Fan the single public command channel out to per-manager channels.
+    // Fan the single public command channel out to per-manager channels. The
+    // dispatcher is spawned further down, once the MQTT client exists (it
+    // republishes retained config-state topics after a config edit, #106);
+    // commands arriving before then simply queue on `cmd_rx`.
     let (frozen_cmd_tx, frozen_cmd_rx) = mpsc::channel(COMMAND_QUEUE);
     let (sensor_cmd_tx, sensor_cmd_rx) = mpsc::channel(COMMAND_QUEUE);
-    tokio::spawn(dispatch_commands(
-        cmd_rx,
-        frozen_cmd_tx,
-        sensor_cmd_tx,
-        config_tx.clone(),
-        config_path_arc.clone(),
-    ));
 
     // reset the STM32s via the PCAL6416A I2C expander, then hand the bus to the LED
     let mut resetter = ResetController::new(&device.i2c_bus, device.pcal6416a_addr)
@@ -323,6 +360,15 @@ async fn run_inner(
         config_path_arc.clone(),
         health.clone(),
     );
+
+    tokio::spawn(dispatch_commands(
+        cmd_rx,
+        frozen_cmd_tx,
+        sensor_cmd_tx,
+        config_tx.clone(),
+        config_path_arc.clone(),
+        mqtt_man.client.clone(),
+    ));
 
     // MQTT must NEVER gate the hardware. Give the broker a brief chance to
     // connect, but do not block the frozen/sensor managers if it is unreachable
@@ -388,6 +434,92 @@ async fn run_inner(
     log::error!("{failure}");
     log::info!("Shutting down {NAME}...");
     Err(failure)
+}
+
+/// The "did the live config actually change?" signal that gates the retained
+/// MQTT republish (#106). A stale retained topic is only fixed if these report
+/// honestly — and a spurious `true` would republish (harmless) while a spurious
+/// `false` leaves Home Assistant showing the old value until a reconnect.
+#[cfg(test)]
+mod config_command_tests {
+    use super::*;
+    use crate::config::mqtt::ConfigStateTopic;
+
+    /// A scratch config path: `Config::save` writes for real, and the API
+    /// command path must not scribble on the repo's example configs.
+    fn scratch_path(name: &str) -> String {
+        let p = std::env::temp_dir().join(format!("podd-{}-{name}.ron", std::process::id()));
+        p.to_str().unwrap().to_string()
+    }
+
+    async fn example_config() -> Config {
+        // tests run with cwd = crates/podd-core
+        Config::load("example_solo.ron").await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn prime_daily_reports_change_then_no_op() {
+        let cfg = example_config().await;
+        let (tx, _rx) = watch::channel(cfg.clone());
+        let path = scratch_path("prime");
+        let new_time: jiff::civil::Time = "05:30".parse().unwrap();
+        assert_ne!(cfg.prime, new_time);
+
+        assert!(apply_prime_daily(&tx, &path, cfg.prime_enabled, new_time).await);
+        assert_eq!(tx.borrow().prime, new_time);
+        assert_eq!(
+            ConfigStateTopic::Prime.payload(&tx.borrow()),
+            new_time.to_string()
+        );
+
+        // re-applying the same values must not republish (or reset the frozen
+        // manager's manual overrides)
+        assert!(!apply_prime_daily(&tx, &path, cfg.prime_enabled, new_time).await);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn away_mode_reports_change_then_no_op() {
+        let cfg = example_config().await;
+        let (tx, _rx) = watch::channel(cfg.clone());
+        let path = scratch_path("away");
+        let both_away = config::AwayMode { left: true, right: true };
+
+        assert!(apply_away_mode(&tx, &path, both_away).await);
+        assert_eq!(tx.borrow().away_mode, both_away);
+        // the retained topic keeps its whole-bed bool semantics
+        assert_eq!(ConfigStateTopic::AwayMode.payload(&tx.borrow()), "true");
+
+        assert!(!apply_away_mode(&tx, &path, both_away).await);
+
+        // one side home => the whole-bed topic goes back to "false"
+        let left_only = config::AwayMode { left: true, right: false };
+        assert!(apply_away_mode(&tx, &path, left_only).await);
+        assert_eq!(ConfigStateTopic::AwayMode.payload(&tx.borrow()), "false");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn timezone_reports_change_then_no_op_and_rejects_garbage() {
+        let cfg = example_config().await;
+        let (tx, _rx) = watch::channel(cfg.clone());
+        let path = scratch_path("tz");
+
+        assert!(apply_timezone(&tx, &path, "America/Denver").await);
+        assert_eq!(
+            ConfigStateTopic::Timezone.payload(&tx.borrow()),
+            "America/Denver"
+        );
+
+        assert!(!apply_timezone(&tx, &path, "America/Denver").await);
+        // an unknown zone changes nothing, so nothing is republished
+        assert!(!apply_timezone(&tx, &path, "Mars/Olympus_Mons").await);
+        assert_eq!(
+            ConfigStateTopic::Timezone.payload(&tx.borrow()),
+            "America/Denver"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
 }
 
 #[cfg(test)]

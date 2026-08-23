@@ -99,6 +99,13 @@ biometrics), `POST /execute`, and `settings` inside `POST /deviceStatus`.
 `GET /services` still serves the free-sleep document shape, with every
 biometrics job reported as not-implemented rather than hardcoded healthy.
 
+`POST /settings`'s bridged fields (`primePodDaily`, per-side `awayMode`,
+`timeZone`) edit the live `config.ron` over the command bus. podd-core's
+dispatcher republishes the affected retained `opensleep/state/config/...`
+topic whenever such a command actually changes the config — the MQTT action
+path always did this inline, so without it a UI settings save left Home
+Assistant on a stale retained value until the next broker reconnect (#106).
+
 `GET /serverStatus` keeps free-sleep's `StatusInfo` wire shape but **not** its
 key set: it reports podd's own subsystems (`sensor`, `coverControl`, `mqtt`,
 `clock`, `api`) from the `podd_core::health` registry, which the managers
