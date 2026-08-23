@@ -1,4 +1,4 @@
-import { Button } from '@mui/material';
+import { Alert, Button, Snackbar } from '@mui/material';
 import Dialog from '@mui/material/Dialog';
 import DialogActions from '@mui/material/DialogActions';
 import DialogTitle from '@mui/material/DialogTitle';
@@ -21,6 +21,7 @@ const Transition = forwardRef(function Transition(
 // eslint-disable-next-line react/no-multi-comp
 export default function RebootButton() {
   const [open, setOpen] = useState(false);
+  const [failed, setFailed] = useState(false);
 
   const handleClickOpen = () => {
     setOpen(true);
@@ -31,9 +32,14 @@ export default function RebootButton() {
   };
 
   const reboot = () => {
+    // Confirming always closed nothing and said nothing; podd currently
+    // answers this job with 501 Not Implemented, so the failure has to be
+    // visible rather than logged to a console nobody has open.
+    setOpen(false);
     postJobs(['reboot'])
       .catch(error => {
         console.error(error);
+        setFailed(true);
       });
   };
 
@@ -56,6 +62,15 @@ export default function RebootButton() {
           <Button onClick={ reboot }>Confirm</Button>
         </DialogActions>
       </Dialog>
+      <Snackbar
+        open={ failed }
+        autoHideDuration={ 6000 }
+        onClose={ () => setFailed(false) }
+      >
+        <Alert severity="error" onClose={ () => setFailed(false) }>
+          Reboot isn&apos;t supported yet on podd
+        </Alert>
+      </Snackbar>
     </>
   );
 }
