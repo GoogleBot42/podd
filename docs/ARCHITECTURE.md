@@ -86,10 +86,25 @@ schedules today), and the L2 OS-image release artifact (`podd-rootfs.tar.gz`).
 
 All JSON under `/api`. Control endpoints (implemented):
 `GET/POST /deviceStatus`, `GET/POST /settings`, `GET/POST /schedules`,
-`POST /alarm`, `POST /execute`, `POST /jobs` (reboot/update),
-`GET/POST /services`, `GET /serverStatus`, `GET /logs` + `GET /logs/:file` (SSE),
+`POST /alarm`, `POST /execute`, `POST /jobs`, `GET /services`,
+`GET /serverStatus`, `GET /logs` + `GET /logs/:file` (SSE),
 `GET/POST /metrics/presence`. POST bodies are deep-merged; `deviceStatus`/`jobs`
 return 204, others return the merged doc.
+
+Endpoints whose backing subsystem doesn't exist yet answer **501**, never a
+no-op 204 (#32, #107): `POST /jobs` for the biometrics jobs (and, through
+`PoddControl`, for `reboot`/`update` until the updater is wired),
+`POST /services` (nothing to configure — the only service in the document is
+biometrics), `POST /execute`, and `settings` inside `POST /deviceStatus`.
+`GET /services` still serves the free-sleep document shape, with every
+biometrics job reported as not-implemented rather than hardcoded healthy.
+
+`POST /settings`'s bridged fields (`primePodDaily`, per-side `awayMode`,
+`timeZone`) edit the live `config.ron` over the command bus. podd-core's
+dispatcher republishes the affected retained `opensleep/state/config/...`
+topic whenever such a command actually changes the config — the MQTT action
+path always did this inline, so without it a UI settings save left Home
+Assistant on a stale retained value until the next broker reconnect (#106).
 
 `GET /serverStatus` keeps free-sleep's `StatusInfo` wire shape but **not** its
 key set: it reports podd's own subsystems (`sensor`, `coverControl`, `mqtt`,

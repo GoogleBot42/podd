@@ -461,6 +461,20 @@ impl StatusInfo {
         }
     }
 
+    /// A service podd does not implement. Same wire shape (the SPA's zod
+    /// schema is `.strict()`), honest contents: `not_started` + a message
+    /// saying so, instead of the hardcoded "healthy/OK" a nonexistent stack
+    /// used to report (#107).
+    pub fn not_implemented(name: &str, description: &str) -> Self {
+        StatusInfo {
+            name: name.to_string(),
+            status: Status::NotStarted,
+            description: description.to_string(),
+            message: "not implemented in podd".to_string(),
+            timestamp: None,
+        }
+    }
+
     /// A subsystem that hasn't reported yet (podd-core not running, or the
     /// manager hasn't reached its first transition).
     pub fn not_started(name: &str, description: &str) -> Self {
@@ -533,17 +547,35 @@ pub struct Services {
 }
 
 impl Default for Services {
+    /// The only `Services` value podd has: there is no biometrics stack here,
+    /// so every job reports "not implemented" rather than the hardcoded
+    /// healthy/OK free-sleep's Python layer used to justify (#107).
     fn default() -> Self {
         Services {
             biometrics: Biometrics {
                 enabled: false,
                 jobs: BiometricsJobs {
-                    analyze_sleep_left: StatusInfo::healthy("analyzeSleepLeft", "Sleep analysis (left)"),
-                    analyze_sleep_right: StatusInfo::healthy("analyzeSleepRight", "Sleep analysis (right)"),
-                    installation: StatusInfo::healthy("installation", "Biometrics installation"),
-                    stream: StatusInfo::healthy("stream", "Biometrics stream"),
-                    calibrate_left: StatusInfo::healthy("calibrateLeft", "Calibration (left)"),
-                    calibrate_right: StatusInfo::healthy("calibrateRight", "Calibration (right)"),
+                    analyze_sleep_left: StatusInfo::not_implemented(
+                        "analyzeSleepLeft",
+                        "Sleep analysis (left)",
+                    ),
+                    analyze_sleep_right: StatusInfo::not_implemented(
+                        "analyzeSleepRight",
+                        "Sleep analysis (right)",
+                    ),
+                    installation: StatusInfo::not_implemented(
+                        "installation",
+                        "Biometrics installation",
+                    ),
+                    stream: StatusInfo::not_implemented("stream", "Biometrics stream"),
+                    calibrate_left: StatusInfo::not_implemented(
+                        "calibrateLeft",
+                        "Calibration (left)",
+                    ),
+                    calibrate_right: StatusInfo::not_implemented(
+                        "calibrateRight",
+                        "Calibration (right)",
+                    ),
                 },
             },
         }

@@ -128,7 +128,7 @@ impl MqttManager {
         // makes any such race self-heal. try_publish just queues; errors
         // (e.g. channel full while disconnected) are safe to ignore — the
         // post-connect task republishes on every reconnect anyway.
-        let mut heartbeat_client = self.client.clone();
+        let heartbeat_client = self.client.clone();
         let heartbeat = tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_secs(60));
             loop {

@@ -139,6 +139,29 @@ fn test_device_partial_override() {
 }
 
 #[tokio::test]
+async fn test_config_state_topics_and_payloads() {
+    use crate::config::mqtt::ConfigStateTopic as T;
+
+    // Home Assistant subscribes to these exact retained topics — renaming one
+    // silently orphans an entity, so pin the strings.
+    assert_eq!(T::Prime.topic(), "opensleep/state/config/prime");
+    assert_eq!(T::AwayMode.topic(), "opensleep/state/config/away_mode");
+    assert_eq!(T::Timezone.topic(), "opensleep/state/config/timezone");
+
+    // Payload rendering is shared by the MQTT action path and the API command
+    // path (#106) so the two can't drift.
+    let mut config = Config::load("example_solo.ron").await.unwrap();
+    assert_eq!(T::Timezone.payload(&config), "America/New_York");
+    assert_eq!(T::Prime.payload(&config), config.prime.to_string());
+    assert_eq!(T::AwayMode.payload(&config), "false");
+
+    config.away_mode = AwayMode { left: true, right: false };
+    assert_eq!(T::AwayMode.payload(&config), "false", "half away is not away");
+    config.away_mode = AwayMode { left: true, right: true };
+    assert_eq!(T::AwayMode.payload(&config), "true");
+}
+
+#[tokio::test]
 async fn test_load_couples_config() {
     let config = Config::load("example_couples.ron").await.unwrap();
     assert_eq!(config.timezone.iana_name().unwrap(), "America/New_York");
