@@ -1,6 +1,6 @@
 import _ from 'lodash';
 import { create } from 'zustand';
-import { DailySchedule, DayOfWeek, Schedules } from '@api/schedulesSchema.ts';
+import { DailySchedule, DailyScheduleSchema, DayOfWeek, Schedules } from '@api/schedulesSchema.ts';
 import { DeepPartial } from 'ts-essentials';
 import { AccordionExpanded } from './SchedulePage.types.ts';
 import { DaysSelected } from './SchedulePage.types.ts';
@@ -12,8 +12,14 @@ import { LOWERCASE_DAYS } from './days';
 type Validations = {
   powerOffTimeIsValid: boolean;
   alarmTimeIsValid: boolean;
-  // TODO: Validate temperature adjustments
-  // temperatureAdjustmentsValid: boolean,
+};
+
+// Temperature adjustments are validated against the wire schema (HH:mm keys,
+// integer 55-110 values) rather than a stored flag, so every mutation path is
+// covered without keeping state in sync.
+const temperatureAdjustmentsValid = (selectedSchedule: DailySchedule | undefined): boolean => {
+  if (!selectedSchedule) return true;
+  return DailyScheduleSchema.shape.temperatures.safeParse(selectedSchedule.temperatures).success;
 };
 
 export const DEFAULT_DAYS_SELECTED: DaysSelected = {
@@ -29,7 +35,6 @@ export const DEFAULT_DAYS_SELECTED: DaysSelected = {
 const DEFAULT_VALIDATIONS: Validations = {
   powerOffTimeIsValid: true,
   alarmTimeIsValid: true,
-  // temperatureAdjustmentsValid: true,
 };
 
 type ScheduleStore = {
@@ -103,8 +108,8 @@ export const useScheduleStore = create<ScheduleStore>((set, get) => ({
     set({ validations: _.merge(validations, newValidations) });
   },
   isValid: () => {
-    const { validations } = get();
-    return _.every(validations);
+    const { validations, selectedSchedule } = get();
+    return _.every(validations) && temperatureAdjustmentsValid(selectedSchedule);
   },
   changesPresent: false,
   checkForChanges: () => {
