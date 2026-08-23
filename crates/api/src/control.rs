@@ -310,8 +310,11 @@ impl PodControl for PoddControl {
         Err(NotImplemented("reboot").into())
     }
 
+    // Queued `Command::Update`s are only logged by podd-core's dispatcher —
+    // nothing drives `pod-updater` yet — so the 204 the caller used to get was
+    // a lie (#107, missed by #91). Fail honestly until the update path is wired.
     async fn update(&self) -> anyhow::Result<()> {
-        self.send(Command::Update).await
+        Err(NotImplemented("triggering an update").into())
     }
 
     async fn execute(&self, _command: &str, _arg: Option<&str>) -> anyhow::Result<String> {

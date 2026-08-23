@@ -294,16 +294,45 @@ pub async fn post_execute(
 // jobs
 // ---------------------------------------------------------------------------
 
+/// Wire name of a job podd has no implementation for at all, or `None` for the
+/// jobs that go through [`PodControl`].
+///
+/// Biometrics (sleep analysis, sensor calibration) is a whole subsystem podd
+/// doesn't have — the UI's Features toggle for it has been disabled since #103
+/// — so requesting one is `501`, not the old catch-all `Ok(())` that reported a
+/// no-op as done (#107).
+fn unimplemented_job(job: Job) -> Option<&'static str> {
+    match job {
+        Job::AnalyzeSleepLeft => Some("analyzeSleepLeft"),
+        Job::AnalyzeSleepRight => Some("analyzeSleepRight"),
+        Job::BiometricsCalibrationLeft => Some("biometricsCalibrationLeft"),
+        Job::BiometricsCalibrationRight => Some("biometricsCalibrationRight"),
+        // reboot/update are hardware-seam commands: whether they are
+        // implemented is `PodControl`'s answer, not this table's.
+        Job::Reboot | Job::Update => None,
+    }
+}
+
 pub async fn post_jobs(
     State(app): State<AppState>,
     ApiJson(jobs): ApiJson<Vec<Job>>,
 ) -> Response {
+    // Checked up front so a mixed batch never half-applies before the 501.
+    let unsupported: Vec<&str> = jobs.iter().copied().filter_map(unimplemented_job).collect();
+    if !unsupported.is_empty() {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            format!("not implemented yet: {}", unsupported.join(", ")),
+        )
+            .into_response();
+    }
     for job in jobs {
         let res = match job {
             Job::Reboot => app.control.reboot().await,
             Job::Update => app.control.update().await,
-            // biometrics jobs are accepted but no-op (deferred).
-            _ => Ok(()),
+            // Unreachable: `unimplemented_job` above rejected the whole
+            // request for anything else. Skip rather than report success.
+            _ => continue,
         };
         if let Err(e) = res {
             return control_error(e);
@@ -316,17 +345,23 @@ pub async fn post_jobs(
 // services / serverStatus
 // ---------------------------------------------------------------------------
 
+/// The static "no biometrics stack here" document (see [`Services::default`]).
+/// Kept as a real endpoint because the SPA's Features section reads it.
 pub async fn get_services() -> Json<Services> {
     Json(Services::default())
 }
 
-pub async fn post_services(ApiJson(patch): ApiJson<Value>) -> Response {
-    let mut base = serde_json::to_value(Services::default()).unwrap();
-    deep_merge(&mut base, patch);
-    match serde_json::from_value::<Services>(base) {
-        Ok(s) => Json(s).into_response(),
-        Err(e) => invalid_request_data(vec![e.to_string()]),
-    }
+/// `501`. There is nothing to configure: the only service in the document is
+/// biometrics, which podd does not implement, and this handler used to merge
+/// the patch into a fresh default and echo it back — persisting nothing, so the
+/// next `GET` silently reverted (#107; the UI toggle has been disabled since
+/// #103). Reinstate a real handler when a service exists to configure.
+pub async fn post_services(ApiJson(_patch): ApiJson<Value>) -> Response {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        "configuring services is not implemented yet",
+    )
+        .into_response()
 }
 
 /// podd's real subsystem health (see `podd_core::health`) — not free-sleep's

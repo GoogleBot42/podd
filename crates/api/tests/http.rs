@@ -264,6 +264,37 @@ async fn jobs_reboot_and_update() {
 }
 
 #[tokio::test]
+async fn biometrics_jobs_are_501() {
+    // #107: these used to hit a catch-all Ok(()) and answer 204.
+    for job in [
+        "analyzeSleepLeft",
+        "analyzeSleepRight",
+        "biometricsCalibrationLeft",
+        "biometricsCalibrationRight",
+    ] {
+        let (app, control, _s) = build();
+        let resp = app
+            .oneshot(post_json("/api/jobs", &json!([job])))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED, "job {job}");
+        assert!(control.calls().is_empty(), "job {job} reached control");
+    }
+}
+
+#[tokio::test]
+async fn mixed_job_batch_is_rejected_before_anything_runs() {
+    let (app, control, _s) = build();
+    let resp = app
+        .oneshot(post_json("/api/jobs", &json!(["reboot", "analyzeSleepLeft"])))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+    // the supported job in the batch must not have half-applied
+    assert!(control.calls().is_empty());
+}
+
+#[tokio::test]
 async fn services_and_server_status() {
     let (app, _c, _s) = build();
 
@@ -273,6 +304,23 @@ async fn services_and_server_status() {
     assert_eq!(v["biometrics"]["enabled"], false);
     assert!(v["biometrics"]["jobs"]["analyzeSleepLeft"]["status"].is_string());
     assert!(v.get("sentryLogging").is_none());
+
+    // #107: the biometrics stack does not exist, so no job may claim health.
+    // The wire shape stays intact (the SPA's zod schema is `.strict()`).
+    for job in [
+        "analyzeSleepLeft",
+        "analyzeSleepRight",
+        "installation",
+        "stream",
+        "calibrateLeft",
+        "calibrateRight",
+    ] {
+        let info = &v["biometrics"]["jobs"][job];
+        assert_eq!(info["status"], "not_started", "job {job}");
+        assert_eq!(info["message"], "not implemented in podd", "job {job}");
+        assert!(info["name"].is_string(), "job {job}");
+        assert!(info["description"].is_string(), "job {job}");
+    }
 
     let resp = app.oneshot(get("/api/serverStatus")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -296,6 +344,26 @@ async fn services_and_server_status() {
         assert_eq!(v[key]["status"], "not_started", "unreported {key} should be not_started");
         assert!(v[key]["timestamp"].is_null(), "unreported {key} should have no timestamp");
     }
+}
+
+#[tokio::test]
+async fn post_services_is_501_and_changes_nothing() {
+    // #107: this used to merge into a fresh default and echo the patch back
+    // while persisting nothing, so the next GET silently reverted.
+    let (app, _c, _s) = build();
+    let resp = app
+        .clone()
+        .oneshot(post_json(
+            "/api/services",
+            &json!({ "biometrics": { "enabled": true } }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+
+    let resp = app.oneshot(get("/api/services")).await.unwrap();
+    let v = body_json(resp).await;
+    assert_eq!(v["biometrics"]["enabled"], false);
 }
 
 #[tokio::test]
@@ -635,6 +703,23 @@ async fn jobs_reboot_through_poddcontrol_is_501() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+}
+
+#[tokio::test]
+async fn jobs_update_through_poddcontrol_is_501_and_queues_nothing() {
+    // #107: the update job used to queue a Command::Update that podd-core's
+    // dispatcher only logs, and answer 204.
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    let control = Arc::new(api::PoddControl::new(tx)) as Arc<dyn PodControl>;
+    let store = Arc::new(StateStore::in_memory());
+    let app = router(store, control, None);
+
+    let resp = app
+        .oneshot(post_json("/api/jobs", &json!(["update"])))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+    assert!(rx.try_recv().is_err(), "update must not queue a command");
 }
 
 #[tokio::test]
