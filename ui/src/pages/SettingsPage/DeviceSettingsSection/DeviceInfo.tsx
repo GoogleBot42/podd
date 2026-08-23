@@ -5,11 +5,14 @@ import WifiStrength from './WifiStrength.tsx';
 import RebootButton from './RebootButton.tsx';
 
 
+const isUnidentified = (version: string) =>
+  version === Version.NotFound || version === Version.Unknown;
+
 export default function DeviceInfo() {
   const { data: deviceStatus, isLoading } = useDeviceStatus();
   if (isLoading || !deviceStatus) return null;
-  const hideCover = deviceStatus.coverVersion === Version.NotFound;
-  const hideHub = deviceStatus.hubVersion === Version.NotFound;
+  const hideCover = isUnidentified(deviceStatus.coverVersion);
+  const hideHub = isUnidentified(deviceStatus.hubVersion);
 
   return (
     <>

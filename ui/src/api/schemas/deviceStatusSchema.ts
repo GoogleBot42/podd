@@ -44,6 +44,8 @@ export type DeviceStatus = z.infer<typeof DeviceStatusSchema>;
 
 export enum Version {
   NotFound = 'Version not found',
+  // What podd itself reports when it can't identify the hardware.
+  Unknown = 'unknown',
   Pod3 = 'Pod 3',
   Pod4 = 'Pod 4',
   Pod5 = 'Pod 5',
