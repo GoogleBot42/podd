@@ -1,6 +1,6 @@
 import _ from 'lodash';
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Box, Snackbar } from '@mui/material';
+import { Alert, Box, Snackbar, Typography } from '@mui/material';
 import { DeepPartial } from 'ts-essentials';
 import moment from 'moment-timezone';
 
@@ -121,6 +121,11 @@ export default function SchedulePage() {
         <EnabledSwitch/>
         <SaveButton onSave={ handleSave }/>
       </Box>
+      <Typography variant='body2' color='text.secondary' sx={ { width: '100%', mt: -1, mb: 2 } }>
+        Enable a day to have the weekly schedule run this side that day; days
+        left disabled stay off. If no day is enabled, the profile from
+        config.ron drives this side instead.
+      </Typography>
       <TemperatureAdjustmentsAccordion displayCelsius={ displayCelsius }/>
       <AlarmAccordion/>
       <ApplyToOtherDaysAccordion/>
