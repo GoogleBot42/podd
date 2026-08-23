@@ -43,8 +43,11 @@ fn deep_merge(base: &mut Value, patch: Value) {
     }
 }
 
-/// Schedules merge per spec: per side/day, `power` is deep-merged while
-/// `temperatures` and `alarm` are replaced wholesale.
+/// Schedules merge: per side/day, the `power` and `alarm` structs are
+/// deep-merged (individual fields may be sent alone — a partial alarm patch
+/// used to 400 on the missing required fields, #106), while `temperatures`
+/// is replaced wholesale: it's a time→temp map, so merging would make
+/// removing an entry impossible.
 fn merge_schedules(base: &mut Value, patch: Value) {
     let (Some(base_obj), Value::Object(patch_obj)) = (base.as_object_mut(), patch) else {
         return;
@@ -67,12 +70,11 @@ fn merge_schedules(base: &mut Value, patch: Value) {
             };
             for (key, val) in day_patch {
                 match key.as_str() {
-                    // deep-merge power (individual fields may be sent alone)
-                    "power" => {
-                        let slot = base_day.entry("power").or_insert(json!({}));
+                    "power" | "alarm" => {
+                        let slot = base_day.entry(key).or_insert(json!({}));
                         deep_merge(slot, val);
                     }
-                    // replace temperatures + alarm wholesale
+                    // replace temperatures (a map) wholesale
                     _ => {
                         base_day.insert(key, val);
                     }

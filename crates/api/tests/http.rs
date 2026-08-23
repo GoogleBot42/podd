@@ -230,6 +230,21 @@ async fn schedules_partial_merge() {
 }
 
 #[tokio::test]
+async fn schedules_partial_alarm_patch_merges() {
+    let (app, _c, _s) = build();
+    // A lone alarm field must merge into the stored alarm, not replace it
+    // wholesale (which 400'd on the missing required fields, #106).
+    let patch = json!({ "right": { "friday": { "alarm": { "enabled": true } } } });
+    let resp = app.clone().oneshot(post_json("/api/schedules", &patch)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = body_json(resp).await;
+    assert_eq!(v["right"]["friday"]["alarm"]["enabled"], true);
+    // the untouched alarm fields survive from the default
+    assert_eq!(v["right"]["friday"]["alarm"]["time"], "07:00");
+    assert_eq!(v["right"]["friday"]["alarm"]["vibrationIntensity"], 50);
+}
+
+#[tokio::test]
 async fn jobs_reboot_and_update() {
     let (app, control, _s) = build();
     let resp = app
