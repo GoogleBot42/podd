@@ -338,115 +338,42 @@ const createDeviceStatus = (): DeviceStatus => ({
   wifiStrength: 82,
 });
 
+// podd's real subsystems (see crates/podd-core/src/health.rs). Demo mode shows
+// a plausible mid-life mix rather than the all-green fiction free-sleep shipped.
 const createServerStatus = (): ServerStatus => ({
-  alarmSchedule: {
-    name: 'Alarm schedule',
+  api: {
+    name: 'api',
     status: 'healthy',
-    description: 'Alarm scheduling service',
-    message: 'Next alarm ready',
+    description: 'This HTTP API',
+    message: 'OK',
   },
-  database: {
-    name: 'Database',
+  clock: {
+    name: 'clock',
     status: 'healthy',
-    description: 'SQLite database connection',
-    message: '',
+    description: 'System clock / NTP sync (gates scheduled alarms)',
+    message: 'NTP-synced; scheduled alarms armed',
+    timestamp: new Date(now.getTime() - 42 * MINUTES_TO_MS).toISOString(),
   },
-  express: {
-    name: 'Express',
+  coverControl: {
+    name: 'coverControl',
     status: 'healthy',
-    description: 'HTTP server',
-    message: 'Running in demo mode',
+    description: 'Cover control MCU: TEC, pump, water level',
+    message: 'cover MCU awake; driving the TEC/pump',
+    timestamp: new Date(now.getTime() - 42 * MINUTES_TO_MS).toISOString(),
   },
-  franken: {
-    name: 'Franken sock',
-    status: 'healthy',
-    description: 'Hardware socket interface',
-    message: '',
-  },
-  frankenMonitor: {
-    name: 'Franken monitor',
-    status: 'not_started',
-    description: 'Handles gestures and monitoring the status',
-    message: '',
-  },
-  jobs: {
-    name: 'Job scheduler',
-    status: 'healthy',
-    description: 'Background job execution',
-    message: 'All jobs executed successfully overnight',
-  },
-  logger: {
-    name: 'Logger',
-    status: 'healthy',
-    description: 'Application logs',
-    message: '',
-  },
-  powerSchedule: {
-    name: 'Power schedule',
-    status: 'healthy',
-    description: 'Controls power on/off cycles',
-    message: 'Bed powered on for bedtime routine',
-  },
-  primeSchedule: {
-    name: 'Prime schedule',
-    status: 'healthy',
-    description: 'Daily prime job',
-    message: 'Next prime scheduled for 14:30',
-  },
-  rebootSchedule: {
-    name: 'Reboot schedule',
-    status: 'healthy',
-    description: 'Daily system reboot',
-    message: 'Reboot completed successfully last night',
-  },
-  systemDate: {
-    name: 'System date',
-    status: 'healthy',
-    description: 'System clock status',
-    message: '',
-  },
-  temperatureSchedule: {
-    name: 'Temperature schedule',
-    status: 'healthy',
-    description: 'Temperature automation',
-    message: '',
-  },
-  analyzeSleepLeft: {
-    name: 'Analyze sleep - left',
-    status: 'healthy',
-    description: 'Sleep analytics for left side',
-    message: 'Last analysis completed successfully',
-  },
-  analyzeSleepRight: {
-    name: 'Analyze sleep - right',
-    status: 'healthy',
-    description: 'Sleep analytics for right side',
-    message: 'Last analysis completed successfully',
-  },
-  biometricsInstallation: {
-    name: 'Biometrics installation',
-    status: 'healthy',
-    description: 'Installation status',
-    message: '',
-  },
-  biometricsStream: {
-    name: 'Biometrics stream',
-    status: 'healthy',
-    description: 'Biometrics data stream',
-    message: '',
+  mqtt: {
+    name: 'mqtt',
+    status: 'retrying',
+    description: 'MQTT broker link (Home Assistant)',
+    message: 'network timeout; reconnecting in 8s (attempt 3)',
     timestamp: new Date(now.getTime() - 2 * MINUTES_TO_MS).toISOString(),
   },
-  biometricsCalibrationLeft: {
-    name: 'Calibration job - Left',
-    status: 'healthy',
-    description: 'Left side calibration',
-    message: '',
-  },
-  biometricsCalibrationRight: {
-    name: 'Calibration job - Right',
-    status: 'healthy',
-    description: 'Right side calibration',
-    message: '',
+  sensor: {
+    name: 'sensor',
+    status: 'started',
+    description: 'Sensor MCU: presence, piezo/HR, taps, alarms',
+    message: 'connected; MCU may ignore actuation writes for ~60 s after a restart',
+    timestamp: new Date(now.getTime() - 30 * 1000).toISOString(),
   },
 });
 

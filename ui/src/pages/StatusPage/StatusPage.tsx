@@ -13,8 +13,11 @@ import { ServerStatusKey, StatusInfo } from '@api/serverStatusSchema.ts';
 
 export default function StatusPage() {
   const { data, isLoading, dataUpdatedAt } = useServerStatus(5_000);
-  const updatedAt = moment(dataUpdatedAt);
-  const formatted = updatedAt.format('YYYY-MM-DD HH:mm:ss z');
+  // 0 until the first fetch lands — formatting it gave "1970-01-01".
+  // (The trailing `z` is dropped: moment can't fill it without a zone.)
+  const formatted = dataUpdatedAt
+    ? moment(dataUpdatedAt).format('YYYY-MM-DD HH:mm:ss')
+    : '—';
   return (
     <PageContainer
       sx={ {
@@ -46,12 +49,10 @@ export default function StatusPage() {
         data && (
           <Grid container spacing={ 2.5 } sx={ { mt: 1 } }>
             {
-              // @ts-expect-error
-              Object.keys(data).map((job: ServerStatusKey) => (
+              (Object.keys(data) as ServerStatusKey[]).map((key) => (
                 <StatusCard
-                  key={ job }
-                  job={ job }
-                  statusInfo={ data[job] as StatusInfo }
+                  key={ key }
+                  statusInfo={ data[key] as StatusInfo }
                 />
               ))
             }

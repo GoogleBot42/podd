@@ -43,8 +43,17 @@ const statusMeta: Record<
     label: 'Healthy',
   },
 };
+// A status the backend grows that this build doesn't know about must not take
+// the app down: `statusMeta[unknown]` was undefined and the `meta.icon` deref
+// below white-screened everything (the only ErrorBoundary is at the root).
+const fallbackMeta = (status: string) => ({
+  color: 'default' as const,
+  icon: <InfoRoundedIcon fontSize="small" />,
+  label: status,
+});
+
 export default function StatusChip({ info }: { info: StatusInfo }) {
-  const meta = statusMeta[info.status];
+  const meta = statusMeta[info.status] ?? fallbackMeta(info.status);
   return (
     <Chip
       icon={ meta.icon as any }
