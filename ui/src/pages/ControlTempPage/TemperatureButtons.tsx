@@ -44,32 +44,35 @@ export default function TemperatureButtons({ refetch, currentTargetTemp }: Tempe
     }
   }, [side, refetch]);
 
-  // The pending debounced post, so it can be flushed early instead of lost if
-  // the page is closed/hidden or the component unmounts before the timer fires.
-  const pendingUpdateRef = useRef<(() => void) | null>(null);
-
   const scheduleUpdate = useCallback(() => {
     if (debounceTimer.current) {
       clearTimeout(debounceTimer.current);
     } else {
       // Start of a new debounce chain; the matching endEdit runs in
-      // postUpdate's finally once this chain's single post completes.
+      // postUpdate's finally once this chain's single post completes (or in
+      // cancel() if the chain is dropped).
       useControlTempStore.getState().beginEdit();
     }
-    const fire = () => {
+    // The pending post lives in the store (not a local ref) so PowerButton can
+    // cancel it before posting isOn:false — see pendingTempPost in the store.
+    const flush = () => {
+      if (debounceTimer.current) clearTimeout(debounceTimer.current);
       debounceTimer.current = null;
-      pendingUpdateRef.current = null;
+      useControlTempStore.getState().setPendingTempPost(null);
       void postUpdate();
     };
-    pendingUpdateRef.current = fire;
-    debounceTimer.current = setTimeout(fire, DEBOUNCE_MS);
+    const cancel = () => {
+      if (debounceTimer.current) clearTimeout(debounceTimer.current);
+      debounceTimer.current = null;
+      useControlTempStore.getState().setPendingTempPost(null);
+      useControlTempStore.getState().endEdit();
+    };
+    useControlTempStore.getState().setPendingTempPost({ flush, cancel });
+    debounceTimer.current = setTimeout(flush, DEBOUNCE_MS);
   }, [postUpdate]);
 
   useEffect(() => {
-    const flush = () => {
-      if (debounceTimer.current) clearTimeout(debounceTimer.current);
-      pendingUpdateRef.current?.();
-    };
+    const flush = () => useControlTempStore.getState().pendingTempPost?.flush();
     const onVisibilityChange = () => {
       if (document.visibilityState === 'hidden') flush();
     };
@@ -78,7 +81,15 @@ export default function TemperatureButtons({ refetch, currentTargetTemp }: Tempe
     return () => {
       window.removeEventListener('pagehide', flush);
       document.removeEventListener('visibilitychange', onVisibilityChange);
-      flush();
+      // Unmount usually means navigation — flush so the edit isn't lost. But
+      // when the side just went off (power button or schedule), this very
+      // unmount is caused by the power-off, and flushing would post a setpoint
+      // that re-enables the side (#105) — drop the edit instead.
+      const pending = useControlTempStore.getState().pendingTempPost;
+      if (!pending) return;
+      const stillOn = useControlTempStore.getState().deviceStatus?.[useAppStore.getState().side]?.isOn;
+      if (stillOn === false) pending.cancel();
+      else pending.flush();
     };
   }, []);
 
