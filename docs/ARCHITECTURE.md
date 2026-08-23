@@ -101,7 +101,12 @@ doesn't exist here and were hardcoded healthy.
 Biometrics endpoints (`/metrics/sleep|vitals|movement`) are **deferred** — they
 were free-sleep's Python/SQLite layer; we'll reimplement the piezo HR/HRV/breathing
 DSP in Rust later (opensleep parses piezo samples but discards them; `rustfft` is
-already a dependency).
+already a dependency). They answer empty arrays for now, but the
+`?startTime=&endTime=&side=` query the UI sends is parsed and applied by
+`api::metrics` (the UI does no client-side filtering, so ignoring it would plot
+every record for both sides once real data lands). Record timestamps follow the
+UI's zod schemas: sleep records carry ISO-8601 strings (`entered_bed_at`), vitals
+and movement samples carry **epoch seconds**.
 
 ## Update system
 
