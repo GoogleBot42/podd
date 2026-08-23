@@ -18,6 +18,7 @@ pub mod health;
 pub mod led;
 pub mod mqtt;
 pub mod reset;
+pub mod schedule;
 pub mod sensor;
 pub mod version;
 
