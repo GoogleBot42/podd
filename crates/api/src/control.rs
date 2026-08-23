@@ -5,7 +5,7 @@
 //! scheduler. [`MockControl`] records calls for tests and the example server so
 //! the whole API is exercisable without any hardware.
 
-use crate::wire::{AlarmJob, Side, VibrationPattern};
+use crate::wire::{AlarmJob, Schedules, Side, VibrationPattern};
 use async_trait::async_trait;
 use jiff::civil::Time;
 use podd_core::bus::{AlarmSpec, Command};
@@ -57,6 +57,11 @@ pub trait PodControl: Send + Sync {
     /// already validated by the caller.
     async fn set_timezone(&self, iana: &str) -> anyhow::Result<()>;
 
+    /// Hand the daemon the whole per-weekday schedule document (the UI's
+    /// Schedule page). Already validated *and* persisted by the caller — this
+    /// only refreshes what the control core resolves targets from.
+    async fn set_schedules(&self, schedules: Schedules) -> anyhow::Result<()>;
+
     /// Fire an alarm immediately (the `POST /api/alarm` "test alarm" path).
     async fn fire_alarm(&self, job: AlarmJob) -> anyhow::Result<()>;
 
@@ -85,6 +90,8 @@ pub enum Call {
     SetPrimeDaily(bool, Time),
     SetAwayMode(bool, bool),
     SetTimezone(String),
+    /// Boxed: the whole weekly document dwarfs every other variant.
+    SetSchedules(Box<Schedules>),
     FireAlarm(AlarmJob),
     ApplyDeviceSettings(serde_json::Value),
     Reboot,
@@ -168,6 +175,11 @@ impl PodControl for MockControl {
 
     async fn set_timezone(&self, iana: &str) -> anyhow::Result<()> {
         self.record(Call::SetTimezone(iana.to_string()));
+        Ok(())
+    }
+
+    async fn set_schedules(&self, schedules: Schedules) -> anyhow::Result<()> {
+        self.record(Call::SetSchedules(Box::new(schedules)));
         Ok(())
     }
 
@@ -287,6 +299,10 @@ impl PodControl for PoddControl {
             iana: iana.to_string(),
         })
         .await
+    }
+
+    async fn set_schedules(&self, schedules: Schedules) -> anyhow::Result<()> {
+        self.send(Command::SetSchedules(Box::new(schedules))).await
     }
 
     async fn fire_alarm(&self, job: AlarmJob) -> anyhow::Result<()> {

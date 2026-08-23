@@ -241,18 +241,142 @@ pub async fn get_schedules(State(app): State<AppState>) -> Json<Schedules> {
     Json(app.store.schedules())
 }
 
+/// Bounds a bed temperature must stay inside, °F. Same range the wire contract
+/// uses everywhere else; the control core turns these into setpoints.
+const TEMP_RANGE_F: std::ops::RangeInclusive<TempF> = 55..=110;
+
+/// Structural check on the PATCH body *before* merging: the merge walks the
+/// body key-by-key and used to silently drop anything it didn't recognise, so
+/// a typo'd day ("mondey") answered 200 and changed nothing (#106).
+fn validate_schedules_patch(patch: &Value) -> Vec<String> {
+    let mut errs = Vec::new();
+    let Some(obj) = patch.as_object() else {
+        return vec!["body must be an object of side patches".to_string()];
+    };
+    for (side, side_patch) in obj {
+        if !SIDE_KEYS.contains(&side.as_str()) {
+            errs.push(format!("unknown side key {side:?} (expected left or right)"));
+            continue;
+        }
+        let Some(side_patch) = side_patch.as_object() else {
+            errs.push(format!("{side} must be an object of day patches"));
+            continue;
+        };
+        for (day, day_patch) in side_patch {
+            if !DAY_KEYS.contains(&day.as_str()) {
+                errs.push(format!("{side}: unknown day key {day:?}"));
+            } else if !day_patch.is_object() {
+                errs.push(format!("{side}.{day} must be an object"));
+            }
+        }
+    }
+    errs
+}
+
+/// Validate the whole merged document — not just the patched fields. What
+/// lands in `schedules.json` is what drives the bed's heating windows, so it
+/// has to be resolvable by `podd_core::schedule` on every future boot, not
+/// merely well-typed today.
+fn validate_schedules(s: &Schedules) -> Vec<String> {
+    let mut errs = Vec::new();
+    for (side, side_sched) in s.sides() {
+        for (day, d) in side_sched.days() {
+            let at = format!("{side}.{day}");
+
+            for (k, v) in &d.temperatures {
+                if parse_hh_mm(k).is_none() {
+                    errs.push(format!("{at}.temperatures key {k:?} is not HH:mm"));
+                }
+                if !TEMP_RANGE_F.contains(v) {
+                    errs.push(format!(
+                        "{at}.temperatures[{k:?}] must be {}-{} °F, got {v}",
+                        TEMP_RANGE_F.start(),
+                        TEMP_RANGE_F.end()
+                    ));
+                }
+            }
+
+            match (parse_hh_mm(&d.power.on), parse_hh_mm(&d.power.off)) {
+                (Some(on), Some(off)) if on == off => errs.push(format!(
+                    "{at}.power.on and power.off must differ (both {:?})",
+                    d.power.on
+                )),
+                (on, off) => {
+                    if on.is_none() {
+                        errs.push(format!("{at}.power.on is not HH:mm: {:?}", d.power.on));
+                    }
+                    if off.is_none() {
+                        errs.push(format!("{at}.power.off is not HH:mm: {:?}", d.power.off));
+                    }
+                }
+            }
+            if !TEMP_RANGE_F.contains(&d.power.on_temperature) {
+                errs.push(format!(
+                    "{at}.power.onTemperature must be {}-{} °F, got {}",
+                    TEMP_RANGE_F.start(),
+                    TEMP_RANGE_F.end(),
+                    d.power.on_temperature
+                ));
+            }
+
+            // Alarm fields are inert (the alarm path still reads config.ron,
+            // #106) but are validated anyway so garbage never lands in the
+            // file and becomes live the day they are wired up.
+            if parse_hh_mm(&d.alarm.time).is_none() {
+                errs.push(format!("{at}.alarm.time is not HH:mm: {:?}", d.alarm.time));
+            }
+            if !TEMP_RANGE_F.contains(&d.alarm.alarm_temperature) {
+                errs.push(format!(
+                    "{at}.alarm.alarmTemperature must be {}-{} °F, got {}",
+                    TEMP_RANGE_F.start(),
+                    TEMP_RANGE_F.end(),
+                    d.alarm.alarm_temperature
+                ));
+            }
+            if !(1..=100).contains(&d.alarm.vibration_intensity) {
+                errs.push(format!(
+                    "{at}.alarm.vibrationIntensity must be 1-100, got {}",
+                    d.alarm.vibration_intensity
+                ));
+            }
+            if !(0..=600).contains(&d.alarm.duration) {
+                errs.push(format!(
+                    "{at}.alarm.duration must be 0-600 s, got {}",
+                    d.alarm.duration
+                ));
+            }
+        }
+    }
+    errs
+}
+
 pub async fn post_schedules(
     State(app): State<AppState>,
     ApiJson(patch): ApiJson<Value>,
 ) -> Response {
+    let errs = validate_schedules_patch(&patch);
+    if !errs.is_empty() {
+        return invalid_request_data(errs);
+    }
     let mut base = serde_json::to_value(app.store.schedules()).unwrap();
     merge_schedules(&mut base, patch);
     let merged: Schedules = match serde_json::from_value(base) {
         Ok(s) => s,
         Err(e) => return invalid_request_data(vec![e.to_string()]),
     };
+    // Validate before persisting: a rejected save must leave both the file and
+    // the running daemon exactly as they were.
+    let errs = validate_schedules(&merged);
+    if !errs.is_empty() {
+        return invalid_request_data(errs);
+    }
     if let Err(e) = app.store.set_schedules(merged.clone()) {
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+    // Persist first, then tell the daemon: schedules.json is the source of
+    // truth podd-core re-reads on its next start.
+    if let Err(e) = app.control.set_schedules(merged.clone()).await {
+        return control_error(e);
     }
     Json(merged).into_response()
 }

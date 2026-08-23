@@ -3,13 +3,14 @@ use crate::config::{AwayMode, Config, SidesConfig};
 use crate::frozen::state::FrozenState;
 use crate::health::{self, Health, HealthRegistry};
 use crate::led::{IS31FL3194Config, IS31FL3194Controller, LedPattern};
+use crate::schedule::{self, Schedules};
 use pod_proto::codec::{CommandTrait, PacketCodec};
 use pod_proto::frozen::packet::FrozenTarget;
 use pod_proto::frozen::{FrozenCommand, FrozenPacket};
 use pod_proto::packet::BedSide;
 use pod_proto::serial::{SerialError, create_framed_port};
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
-use jiff::{SignedDuration, Timestamp, civil::Time, tz::TimeZone};
+use jiff::{SignedDuration, Timestamp, Zoned, civil::Time, tz::TimeZone};
 use linux_embedded_hal::I2cdev;
 use rumqttc::AsyncClient;
 use thiserror::Error;
@@ -79,6 +80,7 @@ pub async fn run(
     port: &str,
     baud: u32,
     mut config_rx: watch::Receiver<Config>,
+    mut schedules_rx: watch::Receiver<Schedules>,
     mut led: IS31FL3194Controller<I2cdev>,
     mut client: AsyncClient,
     status: StatusTx,
@@ -115,6 +117,9 @@ pub async fn run(
     let mut prime_enabled = cfg.prime_enabled;
     let mut side_config = cfg.profile.clone();
     drop(cfg);
+    // The per-weekday schedule, refreshed by `Command::SetSchedules`. It only
+    // *replaces* the config profile for sides it owns (see [`wanted_target`]).
+    let mut schedules = schedules_rx.borrow_and_update().clone();
 
     let (mut writer, mut reader) = create_framed_port::<FrozenPacket>(port, baud)?.split();
 
@@ -187,6 +192,7 @@ pub async fn run(
                 &prime,
                 prime_enabled,
                 &side_config,
+                &schedules,
                 &mut overrides,
             ) {
                 let now = Instant::now();
@@ -249,16 +255,26 @@ pub async fn run(
                 overrides = ManualOverrides::default();
             }
 
+            // The UI's Schedule page saved: same deal as a config change — new
+            // intent, so manual overrides don't outlive it either.
+            Ok(_) = schedules_rx.changed() => {
+                schedules = schedules_rx.borrow().clone();
+                overrides = ManualOverrides::default();
+            }
+
             // api / scheduler commands routed to the Frozen subsystem.
             Some(cmd) = cmd_rx.recv() => {
                 if let Some((side, target, expires_at)) = handle_command(&mut writer, &state, dry_run, cmd).await {
-                    let cfg_side = side_config.get_side(&side);
-                    let config_enabled = FrozenTarget::calc_wanted(
-                        &timezone,
+                    // Must be the *same* wanted target `get_next_command`
+                    // computes, weekly path included: this flag is what the
+                    // override's schedule-boundary expiry compares against.
+                    let config_enabled = wanted_target(
+                        side,
+                        &side_config,
+                        &schedules,
                         away_mode.get(&side),
-                        &cfg_side.temperatures,
-                        cfg_side.sleep,
-                        cfg_side.wake,
+                        &timezone,
+                        &Timestamp::now().to_zoned(timezone.clone()),
                     )
                     .enabled;
                     match expires_at {
@@ -404,6 +420,56 @@ fn power_on_temp(last: Option<&FrozenTarget>) -> u16 {
         .unwrap_or(DEFAULT_TEMP_CENTI_C)
 }
 
+/// The wanted target for one side *before* manual-override arbitration.
+///
+/// Two schedules can drive a side; exactly one of them does:
+///
+/// * the per-weekday `schedules.json` schedule, iff any of that side's weekday
+///   rows is enabled ([`schedule::side_owned`]) — enabled days heat per their
+///   window (step temps), disabled days are off;
+/// * otherwise the legacy `config.ron` profile (lerped sleep→wake), unchanged.
+///
+/// A `Solo` profile has no per-side split, so both physical sides follow the
+/// `left` weekly schedule.
+///
+/// Away mode suppresses *both* paths, keeping the precedence
+/// [`FrozenTarget::calc_wanted`] already had. The result is
+/// `delimiter_safe`-nudged either way: a `0x7E` byte anywhere in the frame
+/// gets it silently dropped by the MCU.
+fn wanted_target(
+    side: BedSide,
+    side_config: &SidesConfig,
+    schedules: &Schedules,
+    away: bool,
+    timezone: &TimeZone,
+    now: &Zoned,
+) -> FrozenTarget {
+    let side_sched = match side_config {
+        SidesConfig::Solo(_) => &schedules.left,
+        SidesConfig::Couples { .. } => match side {
+            BedSide::Left => &schedules.left,
+            BedSide::Right => &schedules.right,
+        },
+    };
+
+    if schedule::side_owned(side_sched) {
+        // Away wins first, exactly as it does inside `calc_wanted`.
+        let wanted = match schedule::resolve_target(side_sched, now) {
+            Some(t) if !away => FrozenTarget {
+                enabled: true,
+                temp: f_to_centi_c(t.temp_f),
+            },
+            // away, or outside every window: off
+            _ => FrozenTarget::default(),
+        };
+        return wanted.delimiter_safe(side);
+    }
+
+    let cfg = side_config.get_side(&side);
+    FrozenTarget::calc_wanted(timezone, away, &cfg.temperatures, cfg.sleep, cfg.wake)
+        .delimiter_safe(side)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn get_next_command(
     timers: &mut CommandTimers,
@@ -413,6 +479,7 @@ fn get_next_command(
     prime_time: &Time,
     prime_enabled: bool,
     side_config: &SidesConfig,
+    schedules: &Schedules,
     overrides: &mut ManualOverrides,
 ) -> Option<FrozenCommand> {
     let now = Instant::now();
@@ -422,18 +489,21 @@ fn get_next_command(
         return Some(FrozenCommand::GetHardwareInfo);
     }
 
+    // One `now` for the whole tick: the weekly resolver and the prime window
+    // must not disagree about what time it is.
+    let now_zoned = Timestamp::now().to_zoned(timezone.clone());
+
     // Per side: the schedule's target, unless a live manual override holds.
     let mut wanted_for = |side: BedSide| -> FrozenTarget {
-        let cfg = side_config.get_side(&side);
-        let config_wanted = FrozenTarget::calc_wanted(
-            timezone,
+        let wanted = wanted_target(
+            side,
+            side_config,
+            schedules,
             away_mode.get(&side),
-            &cfg.temperatures,
-            cfg.sleep,
-            cfg.wake,
-        )
-        .delimiter_safe(side);
-        resolve_target(overrides.side_mut(&side), config_wanted, side, now)
+            timezone,
+            &now_zoned,
+        );
+        resolve_target(overrides.side_mut(&side), wanted, side, now)
     };
 
     if now.duration_since(timers.last_left_temp) > TEMP_INT {
@@ -459,7 +529,7 @@ fn get_next_command(
         }
     }
 
-    let now_local = Timestamp::now().to_zoned(timezone.clone()).time();
+    let now_local = now_zoned.time();
 
     // TODO verify it actually started priming
     if should_prime(
@@ -807,6 +877,200 @@ mod tests {
     fn power_on_temp_preserves_a_real_setpoint() {
         assert_eq!(power_on_temp(Some(&target(true, 3111))), 3111);
         assert_eq!(power_on_temp(Some(&target(true, 2200))), 2200);
+    }
+
+    // -----------------------------------------------------------------------
+    // weekly schedule vs. the config.ron profile (#6, #106)
+    // -----------------------------------------------------------------------
+
+    use crate::config::SideConfig;
+    use crate::schedule::{DailySchedule, PowerBlock, SideSchedule};
+    use std::collections::BTreeMap;
+
+    fn tz() -> TimeZone {
+        TimeZone::get("America/Denver").unwrap()
+    }
+
+    /// 2026-08-17 is a Monday.
+    fn monday_at(hh: i8, mm: i8) -> Zoned {
+        jiff::civil::date(2026, 8, 17)
+            .at(hh, mm, 0, 0)
+            .to_zoned(tz())
+            .unwrap()
+    }
+
+    /// An enabled weekday row, `on`→`off` starting at `on_temp` °F.
+    fn row(on: &str, off: &str, on_temp: i32, stops: &[(&str, i32)]) -> DailySchedule {
+        DailySchedule {
+            temperatures: stops
+                .iter()
+                .map(|&(k, v)| (k.to_string(), v))
+                .collect::<BTreeMap<_, _>>(),
+            power: PowerBlock {
+                on: on.to_string(),
+                off: off.to_string(),
+                on_temperature: on_temp,
+                enabled: true,
+            },
+            ..DailySchedule::default()
+        }
+    }
+
+    /// A constant-temperature profile that is always inside its window, so the
+    /// legacy path's answer doesn't depend on when the test runs.
+    fn profile() -> SidesConfig {
+        let side = SideConfig {
+            temperatures: vec![27.0],
+            sleep: time(0, 0, 0, 0),
+            wake: time(23, 59, 0, 0),
+            alarm: None,
+        };
+        SidesConfig::Couples {
+            left: side.clone(),
+            right: side,
+        }
+    }
+
+    fn legacy(side: BedSide, away: bool) -> FrozenTarget {
+        let cfg = profile();
+        let c = cfg.get_side(&side);
+        FrozenTarget::calc_wanted(&tz(), away, &c.temperatures, c.sleep, c.wake)
+            .delimiter_safe(side)
+    }
+
+    #[test]
+    fn weekly_owned_side_heats_per_its_window() {
+        let schedules = Schedules {
+            left: SideSchedule {
+                monday: row("21:00", "08:00", 82, &[("23:00", 75)]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let at = |hh, mm| {
+            wanted_target(
+                BedSide::Left,
+                &profile(),
+                &schedules,
+                false,
+                &tz(),
+                &monday_at(hh, mm),
+            )
+        };
+
+        // before the window: off (NOT the config profile — the side is owned)
+        assert_eq!(at(20, 0), FrozenTarget::default());
+        // inside: onTemperature, then the step stop, both delimiter-safe
+        assert_eq!(
+            at(22, 0),
+            FrozenTarget { enabled: true, temp: f_to_centi_c(82) }.delimiter_safe(BedSide::Left)
+        );
+        assert_eq!(
+            at(23, 30),
+            FrozenTarget { enabled: true, temp: f_to_centi_c(75) }.delimiter_safe(BedSide::Left)
+        );
+    }
+
+    #[test]
+    fn weekly_owned_side_is_off_on_a_disabled_day() {
+        // Only Tuesday is enabled, so Monday night is off even though the
+        // config profile would be heating.
+        let schedules = Schedules {
+            left: SideSchedule {
+                tuesday: row("21:00", "08:00", 82, &[]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let got = wanted_target(
+            BedSide::Left,
+            &profile(),
+            &schedules,
+            false,
+            &tz(),
+            &monday_at(22, 0),
+        );
+        assert_eq!(got, FrozenTarget::default());
+        assert!(legacy(BedSide::Left, false).enabled, "premise: profile is on");
+    }
+
+    #[test]
+    fn away_beats_the_weekly_schedule() {
+        let schedules = Schedules {
+            left: SideSchedule {
+                monday: row("21:00", "08:00", 82, &[]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let got = wanted_target(
+            BedSide::Left,
+            &profile(),
+            &schedules,
+            true,
+            &tz(),
+            &monday_at(22, 0),
+        );
+        assert_eq!(got, FrozenTarget::default());
+    }
+
+    #[test]
+    fn unowned_side_falls_back_to_the_config_profile() {
+        // Left is owned by the weekly schedule; right has no enabled day and so
+        // keeps the legacy behavior — zero change on existing installs.
+        let schedules = Schedules {
+            left: SideSchedule {
+                monday: row("21:00", "08:00", 82, &[]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let at = |side| {
+            wanted_target(
+                side,
+                &profile(),
+                &schedules,
+                false,
+                &tz(),
+                &monday_at(22, 0),
+            )
+        };
+        assert_eq!(at(BedSide::Right), legacy(BedSide::Right, false));
+        assert_ne!(at(BedSide::Left), at(BedSide::Right));
+
+        // an entirely default document leaves both sides on the profile
+        let none = Schedules::default();
+        for side in [BedSide::Left, BedSide::Right] {
+            let got = wanted_target(side, &profile(), &none, false, &tz(), &monday_at(22, 0));
+            assert_eq!(got, legacy(side, false));
+        }
+    }
+
+    #[test]
+    fn solo_profiles_follow_the_left_schedule() {
+        // Solo has no per-side split: both physical sides read `left`.
+        let schedules = Schedules {
+            left: SideSchedule {
+                monday: row("21:00", "08:00", 82, &[]),
+                ..Default::default()
+            },
+            // right is all-disabled, and must not make the right side off
+            ..Default::default()
+        };
+        let solo = SidesConfig::Solo(SideConfig {
+            temperatures: vec![27.0],
+            sleep: time(0, 0, 0, 0),
+            wake: time(23, 59, 0, 0),
+            alarm: None,
+        });
+        for side in [BedSide::Left, BedSide::Right] {
+            let got = wanted_target(side, &solo, &schedules, false, &tz(), &monday_at(22, 0));
+            assert_eq!(
+                got,
+                FrozenTarget { enabled: true, temp: f_to_centi_c(82) }.delimiter_safe(side)
+            );
+        }
     }
 
     fn temps(left: u16, right: u16) -> Option<TemperatureUpdate> {

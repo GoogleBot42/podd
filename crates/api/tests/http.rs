@@ -256,6 +256,153 @@ async fn schedules_partial_alarm_patch_merges() {
     assert_eq!(v["right"]["friday"]["alarm"]["vibrationIntensity"], 50);
 }
 
+// ---------------------------------------------------------------------------
+// schedules -> daemon bridge + validation (#6, #106)
+// ---------------------------------------------------------------------------
+
+/// A save has to reach the control core, not just the file: schedules.json is
+/// read by podd-core only at startup.
+#[tokio::test]
+async fn schedules_save_reaches_the_daemon_and_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let schedules_path = dir.path().join("schedules.json");
+    let store = Arc::new(StateStore::new(StoreConfig {
+        settings_path: None,
+        schedules_path: Some(schedules_path.clone()),
+    }));
+    let control = Arc::new(MockControl::new());
+    let app = router(store.clone(), control.clone() as Arc<dyn PodControl>, None);
+
+    let patch = json!({
+        "left": { "monday": { "power": { "enabled": true, "onTemperature": 77 } } }
+    });
+    let resp = app.oneshot(post_json("/api/schedules", &patch)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // the daemon gets the whole merged document, not the patch
+    match control.calls().as_slice() {
+        [Call::SetSchedules(s)] => {
+            assert!(s.left.monday.power.enabled);
+            assert_eq!(s.left.monday.power.on_temperature, 77);
+            // untouched days come along, still disabled
+            assert!(!s.left.tuesday.power.enabled);
+            assert!(!s.right.monday.power.enabled);
+        }
+        other => panic!("expected one SetSchedules, got {other:?}"),
+    }
+
+    // and it survives a reload from disk
+    let reloaded = StateStore::new(StoreConfig {
+        settings_path: None,
+        schedules_path: Some(schedules_path),
+    });
+    assert!(reloaded.schedules().left.monday.power.enabled);
+}
+
+/// Every rejection must leave the stored document *and* the daemon untouched.
+async fn assert_schedules_rejected(patch: Value, expect_detail: &str) {
+    let (app, control, store) = build();
+    let resp = app.oneshot(post_json("/api/schedules", &patch)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "patch: {patch}");
+    let v = body_json(resp).await;
+    assert_eq!(v["error"], "Invalid request data");
+    let details = v["details"].as_array().expect("details list").clone();
+    assert!(
+        details.iter().any(|d| d.as_str().unwrap().contains(expect_detail)),
+        "expected a detail mentioning {expect_detail:?}, got {details:?}"
+    );
+    assert_eq!(store.schedules(), api::wire::Schedules::default());
+    assert!(control.calls().is_empty(), "{:?}", control.calls());
+}
+
+#[tokio::test]
+async fn schedules_reject_a_bad_temperature_key() {
+    assert_schedules_rejected(
+        json!({ "left": { "monday": { "temperatures": { "99:99": 72 } } } }),
+        "temperatures key \"99:99\" is not HH:mm",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn schedules_reject_an_out_of_range_temperature() {
+    assert_schedules_rejected(
+        json!({ "left": { "monday": { "temperatures": { "07:00": 140 } } } }),
+        "must be 55-110 °F, got 140",
+    )
+    .await;
+    assert_schedules_rejected(
+        json!({ "right": { "friday": { "power": { "onTemperature": 40 } } } }),
+        "right.friday.power.onTemperature",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn schedules_reject_a_zero_length_window() {
+    // on == off is not "24 hours", it's an unresolvable window.
+    assert_schedules_rejected(
+        json!({ "left": { "monday": { "power": { "on": "21:00", "off": "21:00" } } } }),
+        "power.on and power.off must differ",
+    )
+    .await;
+    assert_schedules_rejected(
+        json!({ "left": { "monday": { "power": { "on": "9pm" } } } }),
+        "power.on is not HH:mm",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn schedules_reject_bad_alarm_fields_even_though_they_are_inert() {
+    assert_schedules_rejected(
+        json!({ "left": { "monday": { "alarm": { "vibrationIntensity": 0 } } } }),
+        "alarm.vibrationIntensity must be 1-100",
+    )
+    .await;
+    assert_schedules_rejected(
+        json!({ "left": { "monday": { "alarm": { "duration": 6000 } } } }),
+        "alarm.duration must be 0-600",
+    )
+    .await;
+    assert_schedules_rejected(
+        json!({ "left": { "monday": { "alarm": { "time": "25:00" } } } }),
+        "alarm.time is not HH:mm",
+    )
+    .await;
+}
+
+/// These three used to be silently dropped by the merge and answer 200 having
+/// changed nothing (#106).
+#[tokio::test]
+async fn schedules_reject_an_unknown_day_key() {
+    assert_schedules_rejected(
+        json!({ "left": { "mondey": { "power": { "enabled": true } } } }),
+        "unknown day key \"mondey\"",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn schedules_reject_an_unknown_side_key() {
+    assert_schedules_rejected(
+        json!({ "middle": { "monday": { "power": { "enabled": true } } } }),
+        "unknown side key \"middle\"",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn schedules_reject_a_non_object_day_value() {
+    assert_schedules_rejected(
+        json!({ "left": { "monday": true } }),
+        "left.monday must be an object",
+    )
+    .await;
+    assert_schedules_rejected(json!({ "left": [] }), "left must be an object").await;
+    assert_schedules_rejected(json!("nope"), "body must be an object").await;
+}
+
 #[tokio::test]
 async fn jobs_reboot_and_update() {
     let (app, control, _s) = build();

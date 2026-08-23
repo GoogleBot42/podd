@@ -18,6 +18,7 @@ pub mod health;
 pub mod led;
 pub mod mqtt;
 pub mod reset;
+pub mod schedule;
 pub mod sensor;
 pub mod version;
 
@@ -86,6 +87,48 @@ pub fn start(
 pub async fn run(config_path: &Path) -> anyhow::Result<()> {
     let (_shared, fut) = start(config_path.to_path_buf(), true);
     fut.await
+}
+
+/// Where `schedules.json` lives: next to `config.ron`.
+///
+/// Deliberately the same derivation the `podd` binary uses for the API layer's
+/// `StateStore` (`crates/podd/src/main.rs`) — the API owns writing that file,
+/// podd-core only ever reads it, and the two must agree on which file it is.
+fn schedules_path(config_path: &Path) -> PathBuf {
+    config_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("schedules.json")
+}
+
+/// Read `schedules.json`, or the all-disabled default if it is missing or
+/// unreadable/corrupt (matching `api::StateStore`'s load-or-default, so both
+/// halves of the daemon start from the same document).
+///
+/// The default leaves every weekday disabled, which means the legacy
+/// `config.ron` profile keeps driving the bed — the safe direction for a
+/// garbled file.
+async fn load_schedules(path: &Path) -> schedule::Schedules {
+    let bytes = match tokio::fs::read(path).await {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            log::info!(
+                "{} not present; the config.ron profile drives both sides",
+                path.display()
+            );
+            return schedule::Schedules::default();
+        }
+        Err(e) => {
+            log::warn!("failed to read {}: {e}; using default", path.display());
+            return schedule::Schedules::default();
+        }
+    };
+    serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+        log::warn!("failed to parse {}: {e}; using default", path.display());
+        schedule::Schedules::default()
+    })
 }
 
 /// First non-empty (trimmed) line among `candidates`, else `"unknown"`.
@@ -222,6 +265,7 @@ async fn dispatch_commands(
     sensor_tx: mpsc::Sender<Command>,
     config_tx: watch::Sender<Config>,
     config_path: Arc<str>,
+    schedules_tx: watch::Sender<schedule::Schedules>,
     mqtt: rumqttc::AsyncClient,
 ) {
     use config::mqtt::ConfigStateTopic;
@@ -255,6 +299,15 @@ async fn dispatch_commands(
             Command::SetTimezone { iana } => {
                 if apply_timezone(&config_tx, &config_path, iana).await {
                     republish_config_state(&mqtt, &[ConfigStateTopic::Timezone], &config_tx);
+                }
+            }
+            // Per-weekday schedule edits: in-memory only. `schedules.json` was
+            // already written by the api layer's StateStore (it owns that
+            // file), and schedules have no retained MQTT config topic, so
+            // there is nothing to persist or republish here.
+            Command::SetSchedules(schedules) => {
+                if schedules_tx.send((**schedules).clone()).is_err() {
+                    log::warn!("schedules watch closed; dropping SetSchedules");
                 }
             }
             Command::ClearAlarm { .. } | Command::FireAlarm(_) => {
@@ -319,6 +372,28 @@ async fn run_inner(
         device.i2c_bus,
     );
     let (config_tx, config_rx) = watch::channel(config.clone());
+
+    // The per-weekday schedule (`schedules.json`, written by the api layer).
+    // Read once here; later edits arrive as `Command::SetSchedules`.
+    let schedules_file = schedules_path(config_path);
+    let schedules = load_schedules(&schedules_file).await;
+    let owned: Vec<&str> = schedules
+        .sides()
+        .iter()
+        .filter(|(_, s)| schedule::side_owned(s))
+        .map(|&(k, _)| k)
+        .collect();
+    log::info!(
+        "Weekly schedule ({}): drives {}",
+        schedules_file.display(),
+        if owned.is_empty() {
+            "nothing (config.ron profile applies)".to_string()
+        } else {
+            owned.join(" + ")
+        }
+    );
+    let (schedules_tx, schedules_rx) = watch::channel(schedules);
+
     log::info!(
         "Using timezone: {}",
         config.timezone.iana_name().unwrap_or("ERROR")
@@ -368,6 +443,7 @@ async fn run_inner(
         sensor_cmd_tx,
         config_tx.clone(),
         config_path_arc.clone(),
+        schedules_tx,
         mqtt_man.client.clone(),
     ));
 
@@ -391,6 +467,7 @@ async fn run_inner(
             &device.frozen_port,
             device.frozen_baud,
             config_rx.clone(),
+            schedules_rx,
             led,
             mqtt_man.client.clone(),
             status_tx.clone(),
@@ -520,6 +597,73 @@ mod config_command_tests {
             "America/Denver"
         );
         let _ = std::fs::remove_file(&path);
+    }
+}
+
+/// `schedules.json` is read by podd-core but *written* only by the api layer's
+/// `StateStore`. If these two disagree about the path — or if a corrupt file
+/// were fatal — the daemon would silently drive the bed from a different
+/// document than the one the UI edits.
+#[cfg(test)]
+mod schedules_load_tests {
+    use super::*;
+
+    #[test]
+    fn path_sits_next_to_the_config() {
+        assert_eq!(
+            schedules_path(Path::new("/data/podd/config.ron")),
+            PathBuf::from("/data/podd/schedules.json")
+        );
+        // a bare filename means the current directory, like main.rs's base_dir
+        assert_eq!(
+            schedules_path(Path::new("config.ron")),
+            PathBuf::from("./schedules.json")
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_or_corrupt_falls_back_to_all_disabled() {
+        let dir = std::env::temp_dir().join(format!("podd-schedules-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let missing = dir.join("nope.json");
+        assert_eq!(
+            load_schedules(&missing).await,
+            schedule::Schedules::default()
+        );
+
+        let corrupt = dir.join("corrupt.json");
+        std::fs::write(&corrupt, b"{ not json").unwrap();
+        assert_eq!(
+            load_schedules(&corrupt).await,
+            schedule::Schedules::default()
+        );
+
+        // and the default is *unowned*: the config.ron profile keeps driving
+        let loaded = load_schedules(&corrupt).await;
+        assert!(!schedule::side_owned(&loaded.left));
+        assert!(!schedule::side_owned(&loaded.right));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_real_document_round_trips() {
+        let dir = std::env::temp_dir().join(format!("podd-schedules-ok-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("schedules.json");
+
+        let mut want = schedule::Schedules::default();
+        want.left.monday.power.enabled = true;
+        want.left.monday.power.on_temperature = 77;
+        std::fs::write(&path, serde_json::to_vec(&want).unwrap()).unwrap();
+
+        let got = load_schedules(&path).await;
+        assert_eq!(got, want);
+        assert!(schedule::side_owned(&got.left));
+        assert!(!schedule::side_owned(&got.right));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

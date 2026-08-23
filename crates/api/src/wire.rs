@@ -7,7 +7,6 @@
 //! wire. Sides serialize as `"left"` / `"right"`.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 /// °F ↔ internal "level" scale used by the cover firmware.
 /// `level = (F - 82.5) / 27.5 * 100`.
@@ -31,10 +30,12 @@ pub enum Side {
     Right,
 }
 
-/// "HH:mm" (validated against `^([01]\d|2[0-3]):([0-5]\d)$` upstream).
-pub type HhMm = String;
-/// Integer °F, 55..=110 on the wire.
-pub type TempF = i32;
+/// The schedule DTOs live in `podd-core` (it resolves them into bed targets);
+/// the wire shape is unchanged — they are free-sleep's `schedules.json` types.
+pub use podd_core::schedule::{
+    AlarmSchedule, DAY_KEYS, DailySchedule, HhMm, PowerBlock, SIDE_KEYS, Schedules, SideSchedule,
+    TempF, VibrationPattern,
+};
 
 // ---------------------------------------------------------------------------
 // GET /api/deviceStatus
@@ -169,13 +170,6 @@ pub struct DeviceStatusPatch {
 // Alarm / AlarmJob
 // ---------------------------------------------------------------------------
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum VibrationPattern {
-    Double,
-    Rise,
-}
-
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct AlarmJob {
@@ -185,79 +179,6 @@ pub struct AlarmJob {
     pub side: Side,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub force: Option<bool>,
-}
-
-// ---------------------------------------------------------------------------
-// Schedules
-// ---------------------------------------------------------------------------
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct AlarmSchedule {
-    pub vibration_intensity: i32,
-    pub vibration_pattern: VibrationPattern,
-    pub duration: i32,
-    pub time: HhMm,
-    pub enabled: bool,
-    pub alarm_temperature: TempF,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct PowerBlock {
-    pub on: HhMm,
-    pub off: HhMm,
-    pub on_temperature: TempF,
-    pub enabled: bool,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct DailySchedule {
-    pub temperatures: BTreeMap<HhMm, TempF>,
-    pub alarm: AlarmSchedule,
-    pub power: PowerBlock,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct SideSchedule {
-    pub sunday: DailySchedule,
-    pub monday: DailySchedule,
-    pub tuesday: DailySchedule,
-    pub wednesday: DailySchedule,
-    pub thursday: DailySchedule,
-    pub friday: DailySchedule,
-    pub saturday: DailySchedule,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct Schedules {
-    pub left: SideSchedule,
-    pub right: SideSchedule,
-}
-
-impl Default for DailySchedule {
-    fn default() -> Self {
-        DailySchedule {
-            temperatures: BTreeMap::new(),
-            alarm: AlarmSchedule {
-                vibration_intensity: 50,
-                vibration_pattern: VibrationPattern::Rise,
-                duration: 30,
-                time: "07:00".to_string(),
-                enabled: false,
-                alarm_temperature: 80,
-            },
-            power: PowerBlock {
-                on: "21:00".to_string(),
-                off: "07:00".to_string(),
-                on_temperature: 82,
-                enabled: false,
-            },
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------

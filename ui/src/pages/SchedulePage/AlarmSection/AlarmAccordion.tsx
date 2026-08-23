@@ -53,31 +53,47 @@ export default function AlarmAccordion() {
       disabled={ !selectedSchedule?.power.enabled }
     >
       <AccordionSummary expandIcon={ <ExpandMoreIcon/> } >
-        <Typography sx={ { display: 'flex', alignItems: 'center', gap: 3 } }>
-          <AlarmIcon /> Vibration alarm
-        </Typography>
+        <Box>
+          <Typography sx={ { display: 'flex', alignItems: 'center', gap: 3 } }>
+            <AlarmIcon /> Vibration alarm
+          </Typography>
+          <Typography variant='body2' color='text.secondary'>
+            Not yet supported by podd — alarm settings are saved but don&apos;t
+            drive the bed yet.
+          </Typography>
+        </Box>
       </AccordionSummary>
       <Box sx={ { width: '100%', pb: 2 } }>
-        <Row>
-          <AlarmEnabledSwitch/>
-          { selectedSchedule?.alarm.enabled && <AlarmTime/> }
-        </Row>
-        {
-          selectedSchedule?.alarm.enabled &&
-          (
-            <>
-              <Row>
-                <AlarmDuration/>
-                <AlarmPattern/>
-              </Row>
-              <Row sx={ { ml: 3, mr: 3 } }>
-                <AlarmVibrationSlider/>
+        { /*
+          The weekly engine drives heating only; per-weekday alarms are still a
+          future item, so these controls would persist settings nothing acts on.
+          Disabled here rather than in each child so there is one place to undo
+          it. `inert` also keeps them out of the tab order.
+          The test button below stays live: it POSTs /api/alarm (fire now) and
+          never touches schedule state.
+        */ }
+        <Box inert sx={ { opacity: 0.5 } }>
+          <Row>
+            <AlarmEnabledSwitch/>
+            { selectedSchedule?.alarm.enabled && <AlarmTime/> }
+          </Row>
+          {
+            selectedSchedule?.alarm.enabled &&
+            (
+              <>
+                <Row>
+                  <AlarmDuration/>
+                  <AlarmPattern/>
+                </Row>
+                <Row sx={ { ml: 3, mr: 3 } }>
+                  <AlarmVibrationSlider/>
 
-              </Row>
-              <AlarmTest />
-            </>
-          )
-        }
+                </Row>
+              </>
+            )
+          }
+        </Box>
+        <AlarmTest />
       </Box>
     </Accordion>
   );
