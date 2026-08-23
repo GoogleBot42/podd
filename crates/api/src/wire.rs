@@ -33,8 +33,8 @@ pub enum Side {
 /// The schedule DTOs live in `podd-core` (it resolves them into bed targets);
 /// the wire shape is unchanged — they are free-sleep's `schedules.json` types.
 pub use podd_core::schedule::{
-    AlarmSchedule, DailySchedule, HhMm, PowerBlock, Schedules, SideSchedule, TempF,
-    VibrationPattern,
+    AlarmSchedule, DAY_KEYS, DailySchedule, HhMm, PowerBlock, SIDE_KEYS, Schedules, SideSchedule,
+    TempF, VibrationPattern,
 };
 
 // ---------------------------------------------------------------------------
