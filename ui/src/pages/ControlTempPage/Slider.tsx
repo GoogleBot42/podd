@@ -33,7 +33,23 @@ export default function Slider({ isOn, currentTargetTemp, refetch, currentTemper
   const disabled = isUpdating || isInAwayMode || !isOn;
   const { width, ref } = useResizeDetector();
   const theme = useTheme();
-  const sliderColor = getTemperatureColor(deviceStatus?.[side]?.targetTemperatureF);
+
+  const sideStatus = deviceStatus?.[side];
+  // A side that's off publishes an out-of-range sentinel target (32°F).
+  // react-circular-slider-svg's valueToAngle doesn't clamp, so anything outside
+  // [MIN_TEMP_F, MAX_TEMP_F] lands outside the 60°–300° arc and the arc flags
+  // draw a malformed path across the dial's bottom gap.
+  const clampTemp = (temp: number | undefined) => {
+    if (typeof temp !== 'number' || !Number.isFinite(temp)) return MIN_TEMP_F;
+    return Math.min(MAX_TEMP_F, Math.max(MIN_TEMP_F, temp));
+  };
+  const currentTemp = clampTemp(sideStatus?.currentTemperatureF);
+  const targetTemp = clampTemp(sideStatus?.targetTemperatureF);
+  const minTemp = isOn ? Math.min(currentTemp, targetTemp) : MIN_TEMP_F;
+  const maxTemp = isOn ? Math.max(currentTemp, targetTemp) : MIN_TEMP_F;
+  const isHeating = currentTemp < targetTemp;
+
+  const sliderColor = getTemperatureColor(targetTemp);
   const handleControlFinished = async () => {
     // Send-time read (see TemperatureButtons.postUpdate): this closure can be
     // one render behind the last onChange when the drag ends quickly.
@@ -81,11 +97,6 @@ export default function Slider({ isOn, currentTargetTemp, refetch, currentTemper
     );
     return Math.abs(distance - trackRadius) <= TRACK_HIT_TOLERANCE_PX;
   };
-
-  const sideStatus = deviceStatus?.[side];
-  const minTemp = Math.min(sideStatus?.currentTemperatureF || 55, sideStatus?.targetTemperatureF || 55);
-  const maxTemp = Math.max(sideStatus?.currentTemperatureF || 55, sideStatus?.targetTemperatureF || 55);
-  const isHeating = (sideStatus?.currentTemperatureF ?? 55) < (sideStatus?.targetTemperatureF ?? 55);
 
   return (
     <div
@@ -148,7 +159,7 @@ export default function Slider({ isOn, currentTargetTemp, refetch, currentTemper
         >
           <TemperatureLabel
             isOn={ isOn }
-            sliderTemp={ deviceStatus?.[side]?.targetTemperatureF || 55 }
+            sliderTemp={ targetTemp }
             sliderColor={ sliderColor }
             currentTargetTemp={ currentTargetTemp }
             currentTemperatureF={ currentTemperatureF }
