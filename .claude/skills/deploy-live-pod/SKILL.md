@@ -106,7 +106,9 @@ Since PR #97 clients revalidate `index.html`, so no stale-client worries.
    backup for instant revert).
 4. Verify the served page references the new hashed bundle:
    `curl -s http://<pod>:3000/ | grep -o "index-[A-Za-z0-9]*\.js"` and that
-   the asset returns 200.
+   the asset returns 200. Run this from the workstation — the device has no
+   `curl` (busybox userland; bit a deploy script 2026-08-23, after the swap
+   had already succeeded).
 
 ## Procedure — deploying an edited config
 
