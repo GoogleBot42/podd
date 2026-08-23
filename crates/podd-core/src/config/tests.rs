@@ -86,6 +86,17 @@ async fn test_load_pod3_example_config() {
     );
 }
 
+#[tokio::test]
+async fn test_prime_enabled_defaults_true_when_absent() {
+    // configs written before `prime_enabled` existed must keep priming — a
+    // default-off would silently stop the daily prime on live units
+    let config = Config::load("example_solo.ron").await.unwrap();
+    assert!(config.prime_enabled);
+    // the examples spell it out explicitly
+    let config = Config::load("../../config.pod4.example.ron").await.unwrap();
+    assert!(config.prime_enabled);
+}
+
 #[test]
 fn test_device_partial_override() {
     let dev = parse_device(r#"(frozen_port: "/dev/ttyUSB9", led_addr: 0x30)"#);

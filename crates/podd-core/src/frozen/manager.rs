@@ -105,6 +105,7 @@ pub async fn run(
     let timezone = cfg.timezone.clone();
     let mut away_mode = cfg.away_mode;
     let mut prime = cfg.prime;
+    let mut prime_enabled = cfg.prime_enabled;
     let mut side_config = cfg.profile.clone();
     drop(cfg);
 
@@ -177,6 +178,7 @@ pub async fn run(
                 &timezone,
                 &away_mode,
                 &prime,
+                prime_enabled,
                 &side_config,
                 &mut overrides,
             ) {
@@ -211,6 +213,7 @@ pub async fn run(
                 let cfg = config_rx.borrow();
                 away_mode = cfg.away_mode;
                 prime = cfg.prime;
+                prime_enabled = cfg.prime_enabled;
                 side_config = cfg.profile.clone();
                 // New config = new intent; manual overrides don't outlive it.
                 overrides = ManualOverrides::default();
@@ -378,6 +381,7 @@ fn get_next_command(
     timezone: &TimeZone,
     away_mode: &bool,
     prime_time: &Time,
+    prime_enabled: bool,
     side_config: &SidesConfig,
     overrides: &mut ManualOverrides,
 ) -> Option<FrozenCommand> {
@@ -428,16 +432,37 @@ fn get_next_command(
     let now_local = Timestamp::now().to_zoned(timezone.clone()).time();
 
     // TODO verify it actually started priming
-    if !away_mode
-        // prime if we are within 30 seconds of prime time AND we havn't tried to prime in the last minute
-        && now.duration_since(timers.last_prime) > Duration::from_secs(60)
-        && in_prime_window(now_local, *prime_time)
-    {
+    if should_prime(
+        *away_mode,
+        prime_enabled,
+        now.duration_since(timers.last_prime),
+        now_local,
+        *prime_time,
+    ) {
         timers.last_prime = now;
         return Some(FrozenCommand::Prime);
     }
 
     None
+}
+
+/// Whether the *scheduled daily* prime should fire now.
+///
+/// `prime_enabled` is the UI's "Prime daily?" toggle: with it off the bed
+/// never primes on a schedule. It does not gate an explicit
+/// [`Command::Prime`] (UI "Prime Now" / MQTT), which always runs.
+fn should_prime(
+    away_mode: bool,
+    prime_enabled: bool,
+    since_last_prime: Duration,
+    now_local: Time,
+    prime_time: Time,
+) -> bool {
+    prime_enabled
+        && !away_mode
+        // prime if we are within 30 seconds of prime time AND we havn't tried to prime in the last minute
+        && since_last_prime > Duration::from_secs(60)
+        && in_prime_window(now_local, prime_time)
 }
 
 /// True when `now` is within 30 s (either side) of `prime_time` on the
@@ -581,6 +606,61 @@ mod tests {
         let prime = time(23, 59, 55, 0);
         assert!(in_prime_window(time(0, 0, 10, 0), prime));
         assert!(!in_prime_window(time(0, 0, 30, 0), prime));
+    }
+
+    #[test]
+    fn daily_prime_fires_when_everything_lines_up() {
+        let prime = time(15, 0, 0, 0);
+        assert!(should_prime(
+            false,
+            true,
+            Duration::from_secs(3600),
+            time(15, 0, 0, 0),
+            prime
+        ));
+    }
+
+    #[test]
+    fn daily_prime_blocked_by_the_prime_enabled_flag() {
+        // "Prime daily?" off in the UI => never primes on a schedule, even at
+        // the configured time with everything else satisfied
+        let prime = time(15, 0, 0, 0);
+        assert!(!should_prime(
+            false,
+            false,
+            Duration::from_secs(3600),
+            time(15, 0, 0, 0),
+            prime
+        ));
+    }
+
+    #[test]
+    fn daily_prime_still_blocked_by_away_mode_and_the_rate_limit() {
+        let prime = time(15, 0, 0, 0);
+        // away mode
+        assert!(!should_prime(
+            true,
+            true,
+            Duration::from_secs(3600),
+            time(15, 0, 0, 0),
+            prime
+        ));
+        // primed less than a minute ago
+        assert!(!should_prime(
+            false,
+            true,
+            Duration::from_secs(30),
+            time(15, 0, 0, 0),
+            prime
+        ));
+        // outside the window
+        assert!(!should_prime(
+            false,
+            true,
+            Duration::from_secs(3600),
+            time(3, 0, 0, 0),
+            prime
+        ));
     }
 
     fn target(enabled: bool, temp: u16) -> FrozenTarget {
