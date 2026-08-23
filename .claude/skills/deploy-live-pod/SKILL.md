@@ -87,6 +87,12 @@ still holds.
    "is it running": `journalctl -u podd --since "2 minutes ago"` (or a tighter
    `--since` around when you restarted) and read for the actual symptom, not
    just the absence of a crash.
+7. **Confirm the build identity** (since PR #120, 2026-08-23): the startup
+   journal logs `Starting podd v0.0.1-g<rev>` and
+   `curl -s http://<pod>:3000/api/deviceStatus` reports it under
+   `freeSleep.version` — match `<rev>` against the commit you built. This is
+   the quick cross-check for the "someone else's build is live" and "silent
+   no-op restart" failure modes below (sha256 comparison still works too).
 
 ## Procedure — deploying UI only (no restart needed)
 
