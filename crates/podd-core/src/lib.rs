@@ -93,12 +93,46 @@ fn detect_device_label<'a>(candidates: impl IntoIterator<Item = &'a str>) -> Str
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+/// Apply a "Prime daily?" change (UI settings) to the live config.
+///
+/// Deliberately identical to the MQTT `set_prime` path
+/// ([`config::mqtt::handle_action`]): update the config watch so the managers
+/// pick it up, then persist `config.ron` so it survives a restart. A no-op
+/// change is dropped — sending on the watch resets the frozen manager's manual
+/// overrides, which a settings save must not do gratuitously.
+async fn apply_prime_daily(
+    config_tx: &watch::Sender<Config>,
+    config_path: &str,
+    enabled: bool,
+    time: jiff::civil::Time,
+) {
+    let mut cfg = config_tx.borrow().clone();
+    if cfg.prime_enabled == enabled && cfg.prime == time {
+        return;
+    }
+    cfg.prime_enabled = enabled;
+    cfg.prime = time;
+    log::info!(
+        "Set daily prime to {} (enabled={enabled})",
+        time.strftime("%H:%M")
+    );
+    if let Err(e) = config_tx.send(cfg.clone()) {
+        log::error!("Error sending to config watch channel: {e}");
+        return;
+    }
+    if let Err(e) = cfg.save(config_path).await {
+        log::error!("Failed to save config: {e}");
+    }
+}
+
 /// Route a command to the manager that owns it. System-level commands and
 /// not-yet-mapped ones are logged (dry-run) here.
 async fn dispatch_commands(
     mut cmd_rx: mpsc::Receiver<Command>,
     frozen_tx: mpsc::Sender<Command>,
     sensor_tx: mpsc::Sender<Command>,
+    config_tx: watch::Sender<Config>,
+    config_path: Arc<str>,
 ) {
     while let Some(cmd) = cmd_rx.recv().await {
         match &cmd {
@@ -106,6 +140,10 @@ async fn dispatch_commands(
                 if frozen_tx.send(cmd).await.is_err() {
                     log::warn!("frozen command channel closed; dropping command");
                 }
+            }
+            // Config edit, not a manager op: the UI's "Prime daily?" toggle.
+            Command::SetPrimeDaily { enabled, time } => {
+                apply_prime_daily(&config_tx, &config_path, *enabled, *time).await;
             }
             Command::ClearAlarm { .. } | Command::FireAlarm(_) => {
                 if sensor_tx.send(cmd).await.is_err() {
@@ -152,6 +190,7 @@ async fn run_inner(
     let config_path_str = config_path
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("config path is not valid UTF-8: {config_path:?}"))?;
+    let config_path_arc: Arc<str> = Arc::from(config_path_str);
     let config = Config::load(config_path_str).await?;
     log::info!("`{}` loaded", config_path.display());
     // Hardware wiring (device paths/bauds/I2C). Borrowed by the subsystem tasks
@@ -186,7 +225,13 @@ async fn run_inner(
     // Fan the single public command channel out to per-manager channels.
     let (frozen_cmd_tx, frozen_cmd_rx) = mpsc::channel(COMMAND_QUEUE);
     let (sensor_cmd_tx, sensor_cmd_rx) = mpsc::channel(COMMAND_QUEUE);
-    tokio::spawn(dispatch_commands(cmd_rx, frozen_cmd_tx, sensor_cmd_tx));
+    tokio::spawn(dispatch_commands(
+        cmd_rx,
+        frozen_cmd_tx,
+        sensor_cmd_tx,
+        config_tx.clone(),
+        config_path_arc.clone(),
+    ));
 
     // reset the STM32s via the PCAL6416A I2C expander, then hand the bus to the LED
     let mut resetter = ResetController::new(&device.i2c_bus, device.pcal6416a_addr)
@@ -199,7 +244,6 @@ async fn run_inner(
 
     let (calibrate_tx, calibrate_rx) = mpsc::channel(32);
 
-    let config_path_arc: Arc<str> = Arc::from(config_path_str);
     let mut mqtt_man = MqttManager::new(
         config_tx.clone(),
         config_rx.clone(),

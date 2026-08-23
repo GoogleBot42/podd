@@ -7,6 +7,7 @@
 
 use crate::wire::{AlarmJob, Side, VibrationPattern};
 use async_trait::async_trait;
+use jiff::civil::Time;
 use podd_core::bus::{AlarmSpec, Command};
 use pod_proto::packet::BedSide;
 use pod_proto::sensor::command::AlarmPattern;
@@ -41,8 +42,13 @@ pub trait PodControl: Send + Sync {
     /// Clear (dismiss) a vibrating alarm on a side. Can only clear, never set.
     async fn clear_alarm(&self, side: Side) -> anyhow::Result<()>;
 
-    /// Prime the water circuit.
+    /// Prime the water circuit now. Always runs, whatever the daily-prime
+    /// toggle says.
     async fn prime(&self) -> anyhow::Result<()>;
+
+    /// Apply the "Prime daily?" setting (toggle + local time) to the daemon's
+    /// live config. `time` is already validated by the caller.
+    async fn set_prime_daily(&self, enabled: bool, time: Time) -> anyhow::Result<()>;
 
     /// Fire an alarm immediately (the `POST /api/alarm` "test alarm" path).
     async fn fire_alarm(&self, job: AlarmJob) -> anyhow::Result<()>;
@@ -69,6 +75,7 @@ pub enum Call {
     SetPower(Side, bool),
     ClearAlarm(Side),
     Prime,
+    SetPrimeDaily(bool, Time),
     FireAlarm(AlarmJob),
     ApplyDeviceSettings(serde_json::Value),
     Reboot,
@@ -137,6 +144,11 @@ impl PodControl for MockControl {
 
     async fn prime(&self) -> anyhow::Result<()> {
         self.record(Call::Prime);
+        Ok(())
+    }
+
+    async fn set_prime_daily(&self, enabled: bool, time: Time) -> anyhow::Result<()> {
+        self.record(Call::SetPrimeDaily(enabled, time));
         Ok(())
     }
 
@@ -241,6 +253,10 @@ impl PodControl for PoddControl {
 
     async fn prime(&self) -> anyhow::Result<()> {
         self.send(Command::Prime).await
+    }
+
+    async fn set_prime_daily(&self, enabled: bool, time: Time) -> anyhow::Result<()> {
+        self.send(Command::SetPrimeDaily { enabled, time }).await
     }
 
     async fn fire_alarm(&self, job: AlarmJob) -> anyhow::Result<()> {
