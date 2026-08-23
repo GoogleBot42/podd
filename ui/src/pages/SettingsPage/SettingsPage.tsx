@@ -1,5 +1,6 @@
+import { useState } from 'react';
 import { DeepPartial } from 'ts-essentials';
-import { Typography, Box } from '@mui/material';
+import { Alert, Typography, Box, Snackbar } from '@mui/material';
 import InfoIcon from '@mui/icons-material/Info';
 
 import SideSettings from './SideSettings.tsx';
@@ -21,6 +22,7 @@ import ErrorBoundary from '@components/ErrorBoundary.tsx';
 export default function SettingsPage() {
   const { data: settings, refetch } = useSettings();
   const { setIsUpdating } = useAppStore();
+  const [saveError, setSaveError] = useState(false);
 
   const updateSettings = (settings: DeepPartial<Settings>) => {
     setIsUpdating(true);
@@ -29,6 +31,7 @@ export default function SettingsPage() {
       .then(() => refetch())
       .catch(error => {
         console.error(error);
+        setSaveError(true);
       })
       .finally(() => setIsUpdating(false));
   };
@@ -78,6 +81,15 @@ export default function SettingsPage() {
         <Divider/>
         <LicenseModal/>
       </ErrorBoundary>
+      <Snackbar
+        open={ saveError }
+        autoHideDuration={ 6000 }
+        onClose={ () => setSaveError(false) }
+      >
+        <Alert severity="error" onClose={ () => setSaveError(false) }>
+          Failed to save settings
+        </Alert>
+      </Snackbar>
     </PageContainer>
   );
 }

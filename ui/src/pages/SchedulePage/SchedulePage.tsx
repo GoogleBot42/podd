@@ -1,6 +1,6 @@
 import _ from 'lodash';
-import { useEffect } from 'react';
-import { Box } from '@mui/material';
+import { useEffect, useState } from 'react';
+import { Alert, Box, Snackbar } from '@mui/material';
 import { DeepPartial } from 'ts-essentials';
 import moment from 'moment-timezone';
 
@@ -51,6 +51,7 @@ export default function SchedulePage() {
     selectDay
   } = useScheduleStore();
   const { data: settings } = useSettings();
+  const [saveError, setSaveError] = useState(false);
   const displayCelsius = settings?.temperatureFormat === 'celsius';
   // TODO: Add changes lost notification using changesPresent when user tries to switch tab before saving
 
@@ -90,6 +91,7 @@ export default function SchedulePage() {
       .then(() => refetch())
       .catch(error => {
         console.error(error);
+        setSaveError(true);
       })
       .finally(() => {
         setIsUpdating(false);
@@ -121,6 +123,15 @@ export default function SchedulePage() {
       <AlarmAccordion/>
       <ApplyToOtherDaysAccordion/>
 
+      <Snackbar
+        open={ saveError }
+        autoHideDuration={ 6000 }
+        onClose={ () => setSaveError(false) }
+      >
+        <Alert severity="error" onClose={ () => setSaveError(false) }>
+          Failed to save schedule
+        </Alert>
+      </Snackbar>
     </PageContainer>
   );
 }
