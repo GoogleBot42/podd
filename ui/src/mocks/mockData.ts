@@ -8,6 +8,7 @@ import type { SleepRecord } from '@api/sleepSchema.ts';
 import type { VitalsRecord } from '@api/vitals.ts';
 import type { ServerStatus } from '@api/serverStatusSchema.ts';
 import type { Jobs } from '@api/jobs.ts';
+import { UI_VERSION } from '@lib/version.ts';
 
 type Side = 'left' | 'right';
 
@@ -332,8 +333,9 @@ const createDeviceStatus = (): DeviceStatus => ({
   coverVersion: 'Pod 5',
   hubVersion: 'Pod 5',
   freeSleep: {
-    version: '1.2.0',
-    branch: 'main',
+    // The mock "daemon" is this bundle, so it reports this bundle's build stamp.
+    version: UI_VERSION,
+    branch: 'demo',
   },
   wifiStrength: 82,
 });

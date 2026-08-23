@@ -56,6 +56,13 @@ You can also trigger it manually via **workflow_dispatch** with an explicit
 > `app-0.1.0.squashfs`. The manifest carries the full version, and the device reads
 > the artifact filename back out of the manifest, so nothing needs to guess.
 
+> The build stamp baked *into* the binary and the UI bundle (the Settings
+> device-info chips, `crates/podd-core/build.rs`) is not the tag: `nix build`
+> gets no `.git` and no environment from the caller, so `flake.nix` stamps the
+> flake revision instead — `0.0.1-g<shortRev>` plus the short commit. That
+> identifies the release commit exactly; the tag it was cut as lives in the
+> manifest and in `dist/VERSION`.
+
 ### Building a release locally
 
 `scripts/build-release.sh` runs the same steps outside CI (needs `nix` with flakes

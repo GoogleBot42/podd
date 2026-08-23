@@ -46,9 +46,12 @@ This is a clean-vendored fork, not a mirror. Deltas:
    `server/src/serverInfo.json`. Those schema files are inlined under
    `src/api/schemas/` (see below) and the API shim files now import from there.
    `rg "\.\./.*server" src` returns nothing.
-4. **Local version file.** `server/src/serverInfo.json` was replaced with a local
-   `src/versionInfo.json` (`{version, branch}`); the "update available" check
-   still compares against the upstream `serverInfo.json` on GitHub.
+4. **Version stamped at build time.** Upstream's `server/src/serverInfo.json`
+   (and the `src/versionInfo.json` it was first replaced with, frozen at
+   free-sleep's 2.1.5) are gone. `src/lib/version.ts` exports `UI_VERSION`,
+   substituted by vite's `define` from `PODD_VERSION` or `git describe` — see
+   `vite.config.ts`, and `crates/podd-core/build.rs` for the daemon's matching
+   stamp.
 5. **Sentry plugin gated.** The `@sentry/vite-plugin` sourcemap upload (which
    needs `.env.sentry-build-plugin` + network) is opt-in behind
    `VITE_ENABLE_SENTRY_PLUGIN=true`; a default build has zero external coupling.
