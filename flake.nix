@@ -13,6 +13,19 @@
       # `pod-probe` diagnostic, cross-compiled to aarch64 for the Pod.
       packages = forAll (pkgs:
         let
+          # Build stamp (issue #109). A flake src has no `.git`, so the git
+          # describe in crates/podd-core/build.rs and ui/vite.config.ts can't
+          # run — hand them the flake's own revision instead. `shortRev` is a
+          # clean checkout, `dirtyShortRev` a working tree with local edits;
+          # neither exists for a non-git source (tarball), hence "unknown".
+          # Deliberately no timestamp: same input, same output.
+          gitRev = self.shortRev or self.dirtyShortRev or "unknown";
+          cargoVersion = "0.0.1";
+          poddVersion = "${cargoVersion}-g${gitRev}";
+          versionEnv = {
+            PODD_VERSION = poddVersion;
+            PODD_GIT_REV = gitRev;
+          };
           # Static aarch64 (musl): the on-device deps (tokio-serial/serialport,
           # linux-embedded-hal, jiff, rumqttc→rustls→ring) all build against
           # musl, so we get a fully static ELF that runs regardless of the Pod's
@@ -23,7 +36,8 @@
           # aarch64 static musl build of one workspace member.
           mkAarch64 = { pname, member }: crossMusl.rustPlatform.buildRustPackage {
             inherit pname;
-            version = "0.0.1";
+            version = poddVersion;
+            env = versionEnv;
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
             cargoBuildFlags = [ "-p" member ];
@@ -36,7 +50,8 @@
         rec {
           podup = pkgs.rustPlatform.buildRustPackage {
             pname = "podup";
-            version = "0.0.1";
+            version = poddVersion;
+            env = versionEnv;
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
             # Build just the host tooling for now; podd is a stub.
@@ -59,7 +74,9 @@
           # bundle to $out. `podd` serves that as its static asset root.
           ui = pkgs.buildNpmPackage {
             pname = "podd-ui";
-            version = "0.0.0";
+            version = poddVersion;
+            # Stamped into the bundle by vite's `define` (see ui/vite.config.ts).
+            env = versionEnv;
             src = ./ui;
             # Regenerate after any package-lock.json change:
             #   nix build .#ui  → read the "got:" hash from the mismatch error.
