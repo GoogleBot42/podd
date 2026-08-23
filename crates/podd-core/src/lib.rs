@@ -19,6 +19,7 @@ pub mod led;
 pub mod mqtt;
 pub mod reset;
 pub mod sensor;
+pub mod version;
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -32,7 +33,7 @@ use crate::health::HealthRegistry;
 use crate::{led::IS31FL3194Controller, mqtt::MqttManager, reset::ResetController};
 
 pub const NAME: &str = "podd";
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub use crate::version::{GIT_REV, VERSION};
 
 /// Command channel depth (api/scheduler -> managers).
 const COMMAND_QUEUE: usize = 64;
