@@ -21,6 +21,10 @@ const HWINFO_INT: Duration = Duration::from_secs(1);
 const TEMP_INT: Duration = Duration::from_secs(10);
 const MAX_WAKE_ATTEMPTS: u32 = 5;
 
+/// Safe setpoint (centi-°C, 27.5 °C) for a "turn this side on" with no real
+/// setpoint to carry forward.
+const DEFAULT_TEMP_CENTI_C: u16 = 2750;
+
 struct CommandTimers {
     last_wake: Instant,
     last_hwinfo: Instant,
@@ -293,21 +297,21 @@ async fn handle_command(
             .delimiter_safe(side),
         }),
         Command::SetPower { side, on, duration_s } => {
-            // Preserve the last known target temp for the side; the firmware
-            // ignores temp when disabling. The firmware has no session timer,
-            // so duration_s becomes the override's expiry (#31).
+            // Carry the last *real* setpoint forward (see [`power_on_temp`]);
+            // the firmware ignores temp when disabling. The firmware has no
+            // session timer, so duration_s becomes the override's expiry (#31).
             if on && duration_s > 0 {
                 expires_at = Some(Instant::now() + Duration::from_secs(duration_s as u64));
             }
             let last = match side {
-                BedSide::Left => state.left_target.clone(),
-                BedSide::Right => state.right_target.clone(),
+                BedSide::Left => state.left_target.as_ref(),
+                BedSide::Right => state.right_target.as_ref(),
             };
             Some(FrozenCommand::SetTargetTemperature {
                 side,
                 tar: FrozenTarget {
                     enabled: on,
-                    temp: last.map(|t| t.temp).unwrap_or(2750),
+                    temp: power_on_temp(last),
                 }
                 .delimiter_safe(side),
             })
@@ -338,6 +342,21 @@ async fn handle_command(
         send_command(writer, frame).await;
         manual
     }
+}
+
+/// Setpoint to use when powering a side on, given the side's last known
+/// target.
+///
+/// SAFETY: a *disabled* stored target is the firmware's off sentinel
+/// (`{enabled: false, temp: 0}`) — its temp is not a setpoint. Carrying it
+/// into a `SetPower { on: true }` frame drove the bed to 0 °C and a 12 h
+/// manual override then held it there. Only an enabled target has a real
+/// setpoint to preserve; anything else falls back to
+/// [`DEFAULT_TEMP_CENTI_C`].
+fn power_on_temp(last: Option<&FrozenTarget>) -> u16 {
+    last.filter(|t| t.enabled)
+        .map(|t| t.temp)
+        .unwrap_or(DEFAULT_TEMP_CENTI_C)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -625,6 +644,24 @@ mod tests {
         );
         assert_eq!(wanted, target(false, 0));
         assert!(slot.is_none());
+    }
+
+    #[test]
+    fn power_on_temp_ignores_the_disabled_sentinel() {
+        // A side that is off stores `{enabled: false, temp: 0}` — 0 centi-°C
+        // is NOT a setpoint. "Turn on" must not drive the bed to 0 °C.
+        assert_eq!(power_on_temp(Some(&target(false, 0))), 2750);
+        // even a disabled target that happens to carry a stale temp is not a
+        // setpoint the user asked for
+        assert_eq!(power_on_temp(Some(&target(false, 1500))), 2750);
+        // nothing known yet -> the safe default
+        assert_eq!(power_on_temp(None), 2750);
+    }
+
+    #[test]
+    fn power_on_temp_preserves_a_real_setpoint() {
+        assert_eq!(power_on_temp(Some(&target(true, 3111))), 3111);
+        assert_eq!(power_on_temp(Some(&target(true, 2200))), 2200);
     }
 
     fn temps(left: u16, right: u16) -> Option<TemperatureUpdate> {
