@@ -15,11 +15,18 @@ type AppState = {
 
 const SIDE_KEY = 'side';
 
+// A blind cast let anything in localStorage through, and every side-keyed
+// lookup in the app would then read undefined off deviceStatus/settings.
+function storedSide(): Side {
+  const stored = localStorage.getItem(SIDE_KEY);
+  return stored === 'left' || stored === 'right' ? stored : 'left';
+}
+
 // Create Zustand store
 export const useAppStore = create<AppState>((set) => ({
   isUpdating: false,
   setIsUpdating: (isUpdating: boolean) => set({ isUpdating }),
-  side: localStorage.getItem(SIDE_KEY) as Side || 'left',
+  side: storedSide(),
   setSide: (side: Side) => {
     set({ side });
     localStorage.setItem(SIDE_KEY, side);

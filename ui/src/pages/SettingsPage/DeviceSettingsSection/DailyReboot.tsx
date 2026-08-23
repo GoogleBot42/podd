@@ -2,7 +2,6 @@ import { FormControlLabel, Switch, Typography } from '@mui/material';
 import { DeepPartial } from 'ts-essentials';
 
 import { Settings } from '@api/settingsSchema.ts';
-import { useAppStore } from '@state/appStore.tsx';
 
 type DailyRebootProps = {
   settings?: Settings;
@@ -10,13 +9,14 @@ type DailyRebootProps = {
 }
 
 export default function DailyReboot({ settings, updateSettings }: DailyRebootProps) {
-  const { isUpdating } = useAppStore();
   return (
     <>
       <FormControlLabel
         control={
           <Switch
-            disabled={ isUpdating }
+            // podd has no reboot scheduler at all, so the toggle would only
+            // persist a setting nothing acts on.
+            disabled
             checked={ settings?.rebootDaily || false }
             onChange={ (event) => updateSettings({ rebootDaily: event.target.checked }) }
           />
@@ -26,6 +26,9 @@ export default function DailyReboot({ settings, updateSettings }: DailyRebootPro
       <Typography color='text.secondary'>
         Automatically reboot the Pod once per day to keep it running smoothly.
         Reboot time is scheduled 1 hour before the daily prime time.
+      </Typography>
+      <Typography variant='body2' color='text.secondary'>
+        Not yet supported by podd
       </Typography>
     </>
   );

@@ -57,6 +57,7 @@ type ScheduleStore = {
 
   selectedDays: Record<DayOfWeek, boolean>;
   toggleSelectedDay: (day: DayOfWeek) => void;
+  selectDays: (days: DayOfWeek[]) => void;
 };
 
 export const useScheduleStore = create<ScheduleStore>((set, get) => ({
@@ -148,6 +149,18 @@ export const useScheduleStore = create<ScheduleStore>((set, get) => ({
         [day]: !selectedDays[day],
       }
     });
+    checkForChanges();
+  },
+  // Shortcut buttons (Weekdays/Weekends/Everyday) need to *select* their days,
+  // not toggle each one — toggling meant pressing Everyday twice cleared the
+  // whole list. Individual day checkboxes still toggle.
+  selectDays: (days) => {
+    const { selectedDays, checkForChanges } = get();
+    const updatedDays = { ...selectedDays };
+    days.forEach(day => {
+      updatedDays[day] = true;
+    });
+    set({ selectedDays: updatedDays });
     checkForChanges();
   },
 

@@ -33,7 +33,38 @@ export default function Slider({ isOn, currentTargetTemp, refetch, currentTemper
   const disabled = isUpdating || isInAwayMode || !isOn;
   const { width, ref } = useResizeDetector();
   const theme = useTheme();
-  const sliderColor = getTemperatureColor(deviceStatus?.[side]?.targetTemperatureF);
+
+  const sideStatus = deviceStatus?.[side];
+  // A side that's off publishes an out-of-range sentinel target (32°F).
+  // react-circular-slider-svg's valueToAngle doesn't clamp, so anything outside
+  // [MIN_TEMP_F, MAX_TEMP_F] lands outside the 60°–300° arc and the arc flags
+  // draw a malformed path across the dial's bottom gap.
+  const clampTemp = (temp: number | undefined) => {
+    if (typeof temp !== 'number' || !Number.isFinite(temp)) return MIN_TEMP_F;
+    return Math.min(MAX_TEMP_F, Math.max(MIN_TEMP_F, temp));
+  };
+  const currentTemp = clampTemp(sideStatus?.currentTemperatureF);
+  const targetTemp = clampTemp(sideStatus?.targetTemperatureF);
+  const minTemp = isOn ? Math.min(currentTemp, targetTemp) : MIN_TEMP_F;
+  const maxTemp = isOn ? Math.max(currentTemp, targetTemp) : MIN_TEMP_F;
+  const isHeating = currentTemp < targetTemp;
+
+  const sliderColor = getTemperatureColor(targetTemp);
+
+  // The dial draws two handles — one at the target, one at the current bed
+  // temperature — and which one is the min/max swaps as the bed heats or
+  // cools. Only the target handle may write; the other is a read-only marker
+  // (Slider.module.scss hides its dot for the same reason). Routing both to
+  // the target let a grab on the current-temperature handle silently re-target
+  // the bed, and made the handle jump when min/max swapped mid-drag.
+  const setTarget = (value: number) => {
+    if (disabled) return;
+    const rounded = Math.round(value);
+    if (rounded !== deviceStatus?.[side]?.targetTemperatureF) {
+      setDeviceStatus({ [side]: { targetTemperatureF: rounded } });
+    }
+  };
+
   const handleControlFinished = async () => {
     // Send-time read (see TemperatureButtons.postUpdate): this closure can be
     // one render behind the last onChange when the drag ends quickly.
@@ -82,11 +113,6 @@ export default function Slider({ isOn, currentTargetTemp, refetch, currentTemper
     return Math.abs(distance - trackRadius) <= TRACK_HIT_TOLERANCE_PX;
   };
 
-  const sideStatus = deviceStatus?.[side];
-  const minTemp = Math.min(sideStatus?.currentTemperatureF || 55, sideStatus?.targetTemperatureF || 55);
-  const maxTemp = Math.max(sideStatus?.currentTemperatureF || 55, sideStatus?.targetTemperatureF || 55);
-  const isHeating = (sideStatus?.currentTemperatureF ?? 55) < (sideStatus?.targetTemperatureF ?? 55);
-
   return (
     <div
       ref={ ref }
@@ -125,30 +151,22 @@ export default function Slider({ isOn, currentTargetTemp, refetch, currentTemper
           } }
           handle1={ {
             value: minTemp,
-            onChange: (value) => {
-              if (disabled) return;
-              if (Math.round(value) !== deviceStatus?.[side]?.targetTemperatureF) {
-                setDeviceStatus({ [side]: { targetTemperatureF: Math.round(value) } });
-              }
-            },
-
+            // The library picks whichever handle is nearest the press, so both
+            // need a callback (it also bails out entirely without handle1's).
+            // Only the one carrying the target may write — see setTarget.
+            onChange: (value) => { if (!isHeating) setTarget(value); },
           } }
           arcColor={ isOn ? sliderColor : arcBackgroundColor }
           arcBackgroundColor={ arcBackgroundColor }
           handle2={ {
             value: maxTemp,
-            onChange: (value) => {
-              if (disabled) return;
-              if (Math.round(value) !== deviceStatus?.[side]?.targetTemperatureF) {
-                setDeviceStatus({ [side]: { targetTemperatureF: Math.round(value) } });
-              }
-            },
+            onChange: (value) => { if (isHeating) setTarget(value); },
           } }
           handleSize={ 8 }
         >
           <TemperatureLabel
             isOn={ isOn }
-            sliderTemp={ deviceStatus?.[side]?.targetTemperatureF || 55 }
+            sliderTemp={ targetTemp }
             sliderColor={ sliderColor }
             currentTargetTemp={ currentTargetTemp }
             currentTemperatureF={ currentTemperatureF }

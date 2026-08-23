@@ -6,7 +6,7 @@ import { useAppStore } from '@state/appStore.tsx';
 import { Box, Slider, Typography } from '@mui/material';
 
 export default function LedBrightnessSlider() {
-  const { isUpdating, setIsUpdating } = useAppStore();
+  const { setIsUpdating } = useAppStore();
   const { data: deviceStatus, refetch } = useDeviceStatus();
   const [settingsCopy, setSettingsCopy] = useState<undefined | DeviceStatus['settings']>();
   useEffect(() => {
@@ -58,9 +58,14 @@ export default function LedBrightnessSlider() {
           { value: 0, label: 'Off' },
           { value: 100, label: '100%' },
         ] }
-        disabled={ isUpdating }
+        // podd answers this setting with 501 and reports a constant 100, so
+        // the control stays visible but must not pretend to do anything.
+        disabled
         sx={ { width: '100%', ml: 2 } }
       />
+      <Typography variant='body2' color='text.secondary'>
+        Not yet supported by podd
+      </Typography>
     </Box>
   );
 }

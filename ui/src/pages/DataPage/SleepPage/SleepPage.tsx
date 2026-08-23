@@ -3,7 +3,7 @@ import moment from 'moment-timezone';
 import BedIcon from '@mui/icons-material/Bed';
 import NavigateBeforeIcon from '@mui/icons-material/NavigateBefore';
 import NavigateNextIcon from '@mui/icons-material/NavigateNext';
-import { Alert } from '@mui/material';
+import { Alert, Button, CircularProgress } from '@mui/material';
 import { Box, Typography } from '@mui/material';
 import { useResizeDetector } from 'react-resize-detector';
 
@@ -41,7 +41,7 @@ export default function SleepPage() {
   const [selectedSleepRecord, setSelectedSleepRecord] = useState<SleepRecord | undefined>(undefined);
 
   // Fetch sleep records for the selected week
-  const { data: sleepRecords, refetch } = useSleepRecords({
+  const { data: sleepRecords, refetch, isError, isPending } = useSleepRecords({
     side,
     startTime: startTime.toISOString(),
     endTime: endTime.toISOString()
@@ -117,7 +117,22 @@ export default function SleepPage() {
           </Box>
         </Box>
         {
-          sleepRecords?.length === 0 && <NoData/>
+          // Without these the page just rendered an empty frame whenever the
+          // request was still in flight or had failed outright.
+          isPending && <CircularProgress/>
+        }
+        {
+          isError && (
+            <Alert
+              severity="error"
+              action={ <Button color="inherit" size="small" onClick={ () => refetch() }>Try again</Button> }
+            >
+              Couldn&apos;t load sleep records
+            </Alert>
+          )
+        }
+        {
+          !isPending && !isError && sleepRecords?.length === 0 && <NoData/>
         }
         <SleepBarChart
           width={ width }

@@ -11,6 +11,9 @@ import { useTheme } from '@mui/material/styles';
 import { PAGES } from './pages';
 import appIcon from '../../public/free-sleep-icon.svg';
 
+// Routes that render the temperature page without being /temperature itself.
+const TEMPERATURE_ROUTES = ['/', '/left', '/right'];
+
 export default function Navbar() {
   const navigate = useNavigate();
   const { pathname } = useLocation();
@@ -18,7 +21,9 @@ export default function Navbar() {
   const theme = useTheme(); // Access the Material-UI theme
   // Derive the highlighted tab from the route, like the desktop nav does, so
   // it stays right for deep links, the back button and the index route.
-  const currentRoute = pathname === '/' ? '/temperature' : pathname;
+  // /left and /right are the temperature page for one side and have no tab of
+  // their own; without this the bottom nav highlighted nothing at all there.
+  const currentRoute = TEMPERATURE_ROUTES.includes(pathname) ? '/temperature' : pathname;
   const mobileNavValue = PAGES.findIndex(
     ({ route }) => currentRoute === route || currentRoute.startsWith(`${route}/`)
   );
@@ -86,7 +91,7 @@ export default function Navbar() {
                 key={ route }
                 onClick={ () => handleNavigation(route) }
                 sx={ { color: 'white' } }
-                variant={ pathname === route ? 'outlined' : 'text' }
+                variant={ currentRoute === route ? 'outlined' : 'text' }
               >
                 { title }
               </Button>
