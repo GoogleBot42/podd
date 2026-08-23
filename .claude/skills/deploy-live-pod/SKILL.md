@@ -19,10 +19,18 @@ still holds.
 
 ## Before anything else
 
-- **Confirm with Jeremy before restarting podd, pushing a config, or
-  power-cycling** — this is his real bed, not a lab box. He'll do the
-  "is that fine?" round-trip and can run physical tests (e.g. double-tap
-  dismissal) when given a clear protocol.
+- **Know which deploys are pre-authorized.** Routine deploys of *merged*
+  work — binary/UI swap + podd restart — are pre-authorized (CLAUDE.md,
+  2026-08-15; restated in CLAUDE.local.md) and don't need a confirmation
+  round-trip. **Everything beyond that still needs Jeremy's confirmation
+  first**: flashing, power-cycling, config pushes that change
+  alarm/actuation semantics, deploying unmerged/experimental code. He'll do
+  the "is that fine?" round-trip and can run physical tests (e.g. double-tap
+  dismissal) when given a clear protocol. Exception inside the exception: a
+  config change that merely *applies a setting Jeremy explicitly asked for*
+  (e.g. his bug report says a toggle is off but the device ignores it) is
+  implementing his stated intent — do it, back up first, and report it
+  prominently.
 - Check whether the live unit overrides `PODD_DRY_RUN` via a systemd drop-in
   (`/etc/systemd/system/podd.service.d/*.conf`) **before** assuming the
   binary's compiled-in default (dry-run=true) is what's actually running.
@@ -101,6 +109,16 @@ Since PR #97 clients revalidate `index.html`, so no stale-client worries.
    the asset returns 200.
 
 ## Procedure — deploying an edited config
+
+**podd rewrites `config.ron` itself** on any prime/settings save (the
+`POST /settings` primePodDaily bridge, MQTT `set_prime`/`set_away_mode`,
+presence calibration): it serde-round-trips the whole file, which **strips
+every hand-written comment** and normalizes formatting (observed 2026-08-23;
+verified it does NOT inject alarm blocks). Don't be surprised by a
+comment-free config, don't treat the rewrite as corruption, and keep the
+commented original as a `config.ron.pre-<change>` backup before triggering
+any such save. Hand-edits that matter long-term belong in a backup or the
+repo, not only in on-device comments.
 
 1. `scp` the live `config.ron` down to your workstation.
 2. Edit it locally.
