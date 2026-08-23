@@ -14,6 +14,7 @@ pub mod bus;
 pub mod config;
 pub mod frozen;
 pub mod ha_discovery;
+pub mod health;
 pub mod led;
 pub mod mqtt;
 pub mod reset;
@@ -27,6 +28,7 @@ use config::{Config, Cover};
 use tokio::sync::{mpsc, watch};
 
 use crate::bus::{Command, DeviceSnapshot, Shared, StatusTx};
+use crate::health::HealthRegistry;
 use crate::{led::IS31FL3194Controller, mqtt::MqttManager, reset::ResetController};
 
 pub const NAME: &str = "podd";
@@ -54,13 +56,15 @@ pub fn start(
 ) -> (Shared, impl Future<Output = anyhow::Result<()>>) {
     let (status_tx, status_rx) = watch::channel(DeviceSnapshot::default());
     let (cmd_tx, cmd_rx) = mpsc::channel(COMMAND_QUEUE);
+    let (health, health_rx) = HealthRegistry::new();
 
     let shared = Shared {
         status: status_rx,
+        health: health_rx,
         commands: cmd_tx,
     };
 
-    let fut = run_inner(config_path, Arc::new(status_tx), cmd_rx, dry_run);
+    let fut = run_inner(config_path, Arc::new(status_tx), health, cmd_rx, dry_run);
     (shared, fut)
 }
 
@@ -168,6 +172,7 @@ async fn dispatch_commands(
 async fn run_inner(
     config_path: PathBuf,
     status_tx: StatusTx,
+    health: HealthRegistry,
     cmd_rx: mpsc::Receiver<Command>,
     dry_run: bool,
 ) -> anyhow::Result<()> {
@@ -250,6 +255,7 @@ async fn run_inner(
         calibrate_tx,
         device_label,
         config_path_arc.clone(),
+        health.clone(),
     );
 
     // MQTT must NEVER gate the hardware. Give the broker a brief chance to
@@ -276,6 +282,7 @@ async fn run_inner(
             mqtt_man.client.clone(),
             status_tx.clone(),
             frozen_cmd_rx,
+            health.clone(),
             dry_run,
         ) => {
             match res {
@@ -298,6 +305,7 @@ async fn run_inner(
             mqtt_man.client.clone(),
             status_tx.clone(),
             sensor_cmd_rx,
+            health.clone(),
             dry_run,
         ) => {
             match res {

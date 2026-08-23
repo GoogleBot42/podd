@@ -460,6 +460,52 @@ impl StatusInfo {
             timestamp: None,
         }
     }
+
+    /// A subsystem that hasn't reported yet (podd-core not running, or the
+    /// manager hasn't reached its first transition).
+    pub fn not_started(name: &str, description: &str) -> Self {
+        StatusInfo {
+            name: name.to_string(),
+            status: Status::NotStarted,
+            description: description.to_string(),
+            message: "no report yet".to_string(),
+            timestamp: None,
+        }
+    }
+
+    /// Render one [`podd_core::health::Subsystem`] entry, falling back to
+    /// [`Self::not_started`] when the registry has no entry for `key`.
+    pub fn from_health(
+        health: &podd_core::health::HealthMap,
+        key: &str,
+        name: &str,
+        description: &str,
+    ) -> Self {
+        match health.get(key) {
+            Some(sub) => StatusInfo {
+                name: name.to_string(),
+                status: sub.health.into(),
+                description: description.to_string(),
+                message: sub.message.clone(),
+                timestamp: Some(sub.since.to_string()),
+            },
+            None => Self::not_started(name, description),
+        }
+    }
+}
+
+impl From<podd_core::health::Health> for Status {
+    fn from(h: podd_core::health::Health) -> Self {
+        use podd_core::health::Health as H;
+        match h {
+            H::NotStarted => Status::NotStarted,
+            H::Started => Status::Started,
+            H::Restarting => Status::Restarting,
+            H::Retrying => Status::Retrying,
+            H::Failed => Status::Failed,
+            H::Healthy => Status::Healthy,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -504,40 +550,55 @@ impl Default for Services {
     }
 }
 
-/// All required control keys; optional biometrics keys are omitted.
+/// podd's real subsystems, as reported by [`podd_core::health`].
+///
+/// These are podd's own components, not free-sleep's Node internals: the
+/// vendored UI's `express`/`database`/`franken`/... keys described a server
+/// that doesn't exist here, and every one of them was hardcoded healthy. The
+/// UI iterates `Object.keys`, so it renders whatever is here.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerStatus {
-    pub alarm_schedule: StatusInfo,
-    pub database: StatusInfo,
-    pub express: StatusInfo,
-    pub franken: StatusInfo,
-    pub franken_monitor: StatusInfo,
-    pub jobs: StatusInfo,
-    pub logger: StatusInfo,
-    pub power_schedule: StatusInfo,
-    pub prime_schedule: StatusInfo,
-    pub reboot_schedule: StatusInfo,
-    pub system_date: StatusInfo,
-    pub temperature_schedule: StatusInfo,
+    pub api: StatusInfo,
+    pub clock: StatusInfo,
+    pub cover_control: StatusInfo,
+    pub mqtt: StatusInfo,
+    pub sensor: StatusInfo,
+}
+
+/// Human descriptions, one per subsystem. `(health key, display name,
+/// description)` — the health keys come from `podd_core::health`.
+const SENSOR_DESC: &str = "Sensor MCU: presence, piezo/HR, taps, alarms";
+const COVER_DESC: &str = "Cover control MCU: TEC, pump, water level";
+const MQTT_DESC: &str = "MQTT broker link (Home Assistant)";
+const CLOCK_DESC: &str = "System clock / NTP sync (gates scheduled alarms)";
+const API_DESC: &str = "This HTTP API";
+
+impl ServerStatus {
+    /// Render the live health registry. `api` is always healthy here — the
+    /// handler answering at all is the proof.
+    pub fn from_health(health: &podd_core::health::HealthMap) -> Self {
+        use podd_core::health as h;
+        ServerStatus {
+            api: StatusInfo::healthy("api", API_DESC),
+            clock: StatusInfo::from_health(health, h::CLOCK, "clock", CLOCK_DESC),
+            cover_control: StatusInfo::from_health(
+                health,
+                h::COVER_CONTROL,
+                "coverControl",
+                COVER_DESC,
+            ),
+            mqtt: StatusInfo::from_health(health, h::MQTT, "mqtt", MQTT_DESC),
+            sensor: StatusInfo::from_health(health, h::SENSOR, "sensor", SENSOR_DESC),
+        }
+    }
 }
 
 impl Default for ServerStatus {
+    /// Everything podd-core owns is "not started" until it reports; only the
+    /// API can vouch for itself.
     fn default() -> Self {
-        ServerStatus {
-            alarm_schedule: StatusInfo::healthy("alarmSchedule", "Alarm scheduler"),
-            database: StatusInfo::healthy("database", "State store"),
-            express: StatusInfo::healthy("express", "HTTP server"),
-            franken: StatusInfo::healthy("franken", "Cover control"),
-            franken_monitor: StatusInfo::healthy("frankenMonitor", "Cover monitor"),
-            jobs: StatusInfo::healthy("jobs", "Job runner"),
-            logger: StatusInfo::healthy("logger", "Logger"),
-            power_schedule: StatusInfo::healthy("powerSchedule", "Power scheduler"),
-            prime_schedule: StatusInfo::healthy("primeSchedule", "Prime scheduler"),
-            reboot_schedule: StatusInfo::healthy("rebootSchedule", "Reboot scheduler"),
-            system_date: StatusInfo::healthy("systemDate", "System clock"),
-            temperature_schedule: StatusInfo::healthy("temperatureSchedule", "Temperature scheduler"),
-        }
+        Self::from_health(&podd_core::health::HealthMap::new())
     }
 }
 

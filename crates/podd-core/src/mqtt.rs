@@ -4,6 +4,7 @@ use crate::{
         self, Config,
         mqtt::{TOPIC_SET_AWAY_MODE, TOPIC_SET_PRESENCE, TOPIC_SET_PRIME, TOPIC_SET_PROFILE},
     },
+    health::{self, Health, HealthRegistry},
     sensor::presence::TOPIC_CALIBRATE,
 };
 use rumqttc::{
@@ -41,6 +42,9 @@ pub struct MqttManager {
     /// from, NOT the process CWD.
     config_path: Arc<str>,
     reconnect_attempts: u32,
+    /// Observation only: mirrors the connect/reconnect transitions already
+    /// logged in [`Self::handle_event`] onto the status bus.
+    health: HealthRegistry,
 }
 
 impl MqttManager {
@@ -50,8 +54,10 @@ impl MqttManager {
         calibrate_tx: mpsc::Sender<()>,
         device_label: String,
         config_path: Arc<str>,
+        health: HealthRegistry,
     ) -> Self {
         log::info!("Initializing MQTT...");
+        health.report(health::MQTT, Health::Started, "connecting to broker");
 
         let cfg = config_rx.borrow().mqtt.clone();
 
@@ -97,6 +103,7 @@ impl MqttManager {
             device_label,
             config_path,
             reconnect_attempts: 0,
+            health,
         }
     }
 
@@ -151,12 +158,16 @@ impl MqttManager {
         match msg {
             Ok(Event::Incoming(Packet::ConnAck(_))) => {
                 log::info!("MQTT broker connected");
+                self.health
+                    .report(health::MQTT, Health::Healthy, "connected to broker");
                 self.reconnect_attempts = 0;
                 self.spawn_new_conn_task().await;
                 return Ok(true);
             }
             Ok(Event::Incoming(Packet::Disconnect)) => {
                 log::warn!("MQTT broker disconnected");
+                self.health
+                    .report(health::MQTT, Health::Retrying, "broker disconnected");
             }
             Ok(Event::Incoming(Packet::Publish(publ))) => {
                 self.handle_action(publ).await;
@@ -168,24 +179,28 @@ impl MqttManager {
                 self.reconnect_attempts += 1;
                 let backoff = self.calc_backoff();
                 log::error!("I/O error: {e}. Reconnecting in {backoff:?}...");
+                self.report_reconnect(format!("I/O error: {e}"), backoff);
                 sleep(backoff).await;
             }
             Err(ConnectionError::ConnectionRefused(code)) => {
                 self.reconnect_attempts += 1;
                 let backoff = self.calc_backoff();
                 log::error!("Connection refused ({code:?}). Reconnecting in {backoff:?}...");
+                self.report_reconnect(format!("connection refused ({code:?})"), backoff);
                 sleep(backoff).await;
             }
             Err(ConnectionError::NetworkTimeout) => {
                 self.reconnect_attempts += 1;
                 let backoff = self.calc_backoff();
                 log::error!("Network timeout. Reconnecting in {backoff:?}...");
+                self.report_reconnect("network timeout".to_string(), backoff);
                 sleep(backoff).await;
             }
             Err(ConnectionError::Tls(e)) => {
                 self.reconnect_attempts += 1;
                 let backoff = self.calc_backoff();
                 log::error!("TLS error: {e}. Reconnecting in {backoff:?}...");
+                self.report_reconnect(format!("TLS error: {e}"), backoff);
                 sleep(backoff).await;
             }
 
@@ -202,6 +217,8 @@ impl MqttManager {
             // fatal errors
             Err(ConnectionError::RequestsDone) => {
                 log::info!("Requests channel closed");
+                self.health
+                    .report(health::MQTT, Health::Failed, "requests channel closed");
                 return Err(());
             }
 
@@ -211,6 +228,15 @@ impl MqttManager {
             }
         }
         Ok(false)
+    }
+
+    /// Observation only: mirror a reconnect-backoff arm onto the health bus.
+    fn report_reconnect(&self, reason: String, backoff: Duration) {
+        self.health.report(
+            health::MQTT,
+            Health::Retrying,
+            format!("{reason}; reconnecting in {backoff:?} (attempt {})", self.reconnect_attempts),
+        );
     }
 
     fn calc_backoff(&self) -> Duration {

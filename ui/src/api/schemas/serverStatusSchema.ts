@@ -1,4 +1,6 @@
-// Vendored from throwaway31265/free-sleep (server/src). Canonical wire-type contract for podd's API; keep in sync with the podd backend implementation.
+// `StatusInfo`/`Status` are vendored from throwaway31265/free-sleep
+// (server/src); `ServerStatus`'s key set is podd's own. Canonical wire-type
+// contract for podd's API; keep in sync with crates/api/src/wire.rs.
 import { z } from 'zod';
 
 
@@ -23,25 +25,19 @@ export const StatusInfoSchema = z.object({
 
 export type StatusInfo = z.infer<typeof StatusInfoSchema>;
 
+// podd's real subsystems, from the `podd_core::health` registry (see
+// crates/api/src/wire.rs). free-sleep's Node service keys (express, database,
+// franken, ...) are gone: they described a server podd doesn't run, and the
+// backend hardcoded every one of them healthy.
+//
+// The page renders `Object.keys`, so extra keys the backend grows later show
+// up without a UI change.
 export type ServerStatus = {
-  alarmSchedule: StatusInfo;
-  database: StatusInfo;
-  express: StatusInfo;
-  franken: StatusInfo;
-  frankenMonitor: StatusInfo;
-  jobs: StatusInfo;
-  logger: StatusInfo;
-  powerSchedule: StatusInfo;
-  primeSchedule: StatusInfo;
-  rebootSchedule: StatusInfo;
-  systemDate: StatusInfo;
-  temperatureSchedule: StatusInfo;
-  analyzeSleepLeft?: StatusInfo;
-  analyzeSleepRight?: StatusInfo;
-  biometricsInstallation?: StatusInfo;
-  biometricsStream?: StatusInfo;
-  biometricsCalibrationLeft?: StatusInfo;
-  biometricsCalibrationRight?: StatusInfo;
+  api: StatusInfo;
+  clock: StatusInfo;
+  coverControl: StatusInfo;
+  mqtt: StatusInfo;
+  sensor: StatusInfo;
 };
 
 // eslint-disable-next-line @typescript-eslint/no-type-alias

@@ -91,6 +91,13 @@ All JSON under `/api`. Control endpoints (implemented):
 `GET/POST /metrics/presence`. POST bodies are deep-merged; `deviceStatus`/`jobs`
 return 204, others return the merged doc.
 
+`GET /serverStatus` keeps free-sleep's `StatusInfo` wire shape but **not** its
+key set: it reports podd's own subsystems (`sensor`, `coverControl`, `mqtt`,
+`clock`, `api`) from the `podd_core::health` registry, which the managers
+publish into at transitions they already detect. free-sleep's twelve Node
+service keys (`express`, `database`, `franken`, …) described a server that
+doesn't exist here and were hardcoded healthy.
+
 Biometrics endpoints (`/metrics/sleep|vitals|movement`) are **deferred** — they
 were free-sleep's Python/SQLite layer; we'll reimplement the piezo HR/HRV/breathing
 DSP in Rust later (opensleep parses piezo samples but discards them; `rustfft` is
