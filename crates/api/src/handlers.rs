@@ -12,9 +12,12 @@ use axum::Json;
 use futures::Stream;
 use serde_json::{json, Value};
 use std::convert::Infallible;
+use std::pin::Pin;
+use std::process::Stdio;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio_stream::wrappers::IntervalStream;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::Command;
+use tokio_stream::wrappers::LinesStream;
 use tokio_stream::StreamExt;
 
 /// Shared handler state.
@@ -275,20 +278,80 @@ pub async fn get_server_status() -> Json<ServerStatus> {
 // logs
 // ---------------------------------------------------------------------------
 
+/// Journald sources the UI is allowed to tail. podd logs to stderr → journald
+/// (there is no log file on the image), so "log names" are systemd units here.
+/// `system` is the pseudo-entry for the whole journal (`journalctl` with no
+/// `-u` filter).
+///
+/// This doubles as the validation whitelist for [`get_log_stream`]: the name
+/// becomes a subprocess argument, so nothing outside this list may reach it.
+pub const LOG_SOURCES: &[&str] = &["podd", "podd-wifi-setup", "NetworkManager", "system"];
+
+/// Pseudo-entry meaning "the whole journal", i.e. no `-u` unit filter.
+const LOG_SOURCE_SYSTEM: &str = "system";
+
+/// How much backlog to show before following.
+const LOG_TAIL_LINES: &str = "200";
+
 pub async fn get_logs() -> Json<Value> {
-    Json(json!({ "logs": ["podd.log"] }))
+    Json(json!({ "logs": LOG_SOURCES }))
 }
 
-/// SSE stream of log lines. A simple periodic heartbeat implementation — the
-/// live tail is wired to podd-core's logger later.
-pub async fn get_log_stream(
-    Path(filename): Path<String>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let stream = IntervalStream::new(tokio::time::interval(Duration::from_secs(1))).map(move |_| {
-        let payload = json!({ "message": format!("[{filename}] tailing log...") });
-        Ok(Event::default().data(payload.to_string()))
-    });
-    Sse::new(stream).keep_alive(KeepAlive::default())
+/// SSE stream of live journald lines for one whitelisted source.
+///
+/// Spawns `journalctl -n 200 -f -o cat --no-pager` (with `-u <unit>` unless the
+/// source is `system`) and forwards each line as `{"message": "..."}`. The
+/// child is held by the stream with `kill_on_drop`, so closing the browser tab
+/// reaps the follower instead of leaking one `journalctl -f` per page view.
+pub async fn get_log_stream(Path(name): Path<String>) -> Response {
+    if !LOG_SOURCES.contains(&name.as_str()) {
+        return crate::error::not_found();
+    }
+
+    let mut cmd = Command::new("journalctl");
+    if name != LOG_SOURCE_SYSTEM {
+        cmd.arg("-u").arg(&name);
+    }
+    cmd.args(["-n", LOG_TAIL_LINES, "-f", "-o", "cat", "--no-pager"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+
+    let stream: BoxStream = match cmd.spawn() {
+        Ok(mut child) => match child.stdout.take() {
+            Some(stdout) => {
+                let lines = LinesStream::new(BufReader::new(stdout).lines());
+                Box::pin(lines.map_while(move |line| {
+                    // Hold the child for the life of the stream: dropping it is
+                    // what kills the `journalctl -f` (kill_on_drop above).
+                    let _child = &child;
+                    line.ok().map(|l| Ok(log_event(&l)))
+                }))
+            }
+            None => Box::pin(once_event("log stream unavailable: journalctl stdout not captured")),
+        },
+        Err(e) => Box::pin(once_event(&format!(
+            "log stream unavailable: could not run journalctl ({e})"
+        ))),
+    };
+
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
+type BoxStream = Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>>;
+
+fn log_event(line: &str) -> Event {
+    Event::default().data(json!({ "message": line }).to_string())
+}
+
+/// A one-shot stream carrying a single explanatory message, then EOF. Used when
+/// journald isn't reachable (dev hosts, CI) so the UI shows a reason rather than
+/// hanging on an empty stream.
+fn once_event(message: &str) -> impl Stream<Item = Result<Event, Infallible>> + Send {
+    futures::stream::once(futures::future::ready(Ok(log_event(message))))
 }
 
 // ---------------------------------------------------------------------------
