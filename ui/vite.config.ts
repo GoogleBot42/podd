@@ -1,12 +1,26 @@
-import { defineConfig } from 'vite';
+import { rmSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import tsconfigPaths from 'vite-tsconfig-paths';
 
 const isDemoMode = process.env.VITE_ENV === 'demo';
 
+// The MSW worker script in public/ is only registered by the static demo
+// build; keep it out of every other bundle so it never ships to the Pod.
+const stripMswWorker = (): Plugin => ({
+  name: 'strip-msw-worker',
+  apply: 'build',
+  closeBundle() {
+    if (!isDemoMode) {
+      rmSync(resolve(__dirname, 'dist/mockServiceWorker.js'), { force: true });
+    }
+  },
+});
+
 // https://vitejs.dev/config/
 export default defineConfig({
-  plugins: [react(), tsconfigPaths()],
+  plugins: [react(), tsconfigPaths(), stripMswWorker()],
   server: {
     host: '0.0.0.0', // Accessible to other devices on the network
     port: 5173,
