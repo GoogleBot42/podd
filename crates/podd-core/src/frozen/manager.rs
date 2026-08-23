@@ -1,6 +1,7 @@
 use crate::bus::{Command, DeviceSnapshot, SideSnapshot, StatusTx};
 use crate::config::{Config, SidesConfig};
 use crate::frozen::state::FrozenState;
+use crate::health::{self, Health, HealthRegistry};
 use crate::led::{IS31FL3194Config, IS31FL3194Controller, LedPattern};
 use pod_proto::codec::{CommandTrait, PacketCodec};
 use pod_proto::frozen::packet::FrozenTarget;
@@ -82,9 +83,15 @@ pub async fn run(
     mut client: AsyncClient,
     status: StatusTx,
     mut cmd_rx: mpsc::Receiver<Command>,
+    health: HealthRegistry,
     dry_run: bool,
 ) -> Result<(), FrozenError> {
     log::info!("Initializing Frozen Subsystem...");
+    health.report(
+        health::COVER_CONTROL,
+        Health::Started,
+        "opening the cover-control serial port",
+    );
 
     let cfg = config_rx.borrow_and_update();
     let led_idle = cfg.led.idle.get_config(cfg.led.band.clone());
@@ -187,6 +194,11 @@ pub async fn run(
                 // ready to send command
                 if state.is_awake() {
                     wake_attempts = 0;
+                    health.report(
+                        health::COVER_CONTROL,
+                        Health::Healthy,
+                        "cover MCU awake; driving the TEC/pump",
+                    );
                     send_command(&mut writer, cmd).await;
                 }
 
@@ -196,8 +208,25 @@ pub async fn run(
                     wake_attempts += 1;
 
                     if wake_attempts > MAX_WAKE_ATTEMPTS {
+                        health.report(
+                            health::COVER_CONTROL,
+                            Health::Failed,
+                            format!(
+                                "cover MCU did not wake after {MAX_WAKE_ATTEMPTS} attempts; \
+                                 restarting podd"
+                            ),
+                        );
                         break Err(FrozenError::FailedToWake)
                     }
+
+                    health.report(
+                        health::COVER_CONTROL,
+                        Health::Retrying,
+                        format!(
+                            "cover MCU asleep; ping + jump-to-firmware (attempt {wake_attempts}/\
+                             {MAX_WAKE_ATTEMPTS})"
+                        ),
+                    );
 
                     if let Err(e) = writer.send(FrozenCommand::Ping).await {
                         log::error!("Failed to ping: {e}");

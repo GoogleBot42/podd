@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use crate::bus::{Command, DeviceSnapshot, StatusTx};
 use crate::config::{Config, SideConfig, SidesConfig};
+use crate::health::{self, Health, HealthRegistry};
 use crate::sensor::presence::PresenseManager;
 use crate::sensor::state::{PIEZO_FREQ, PIEZO_GAIN, SensorState};
 use crate::sensor::tap::{Tap, TapDetector};
@@ -24,6 +25,12 @@ use tokio_util::codec::Framed;
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long a fresh sensor connection is reported as `Started` rather than
+/// `Healthy`: the MCU is a zombie for ~60 s after any podd restart (it streams
+/// telemetry and answers Ping but silently ignores actuation writes). Purely a
+/// reporting threshold — it gates nothing.
+const SETTLE: Duration = Duration::from_secs(60);
+
 type Reader = SplitStream<Framed<SerialStream, PacketCodec<SensorPacket>>>;
 type Writer = SplitSink<Framed<SerialStream, PacketCodec<SensorPacket>>, SensorCommand>;
 type CommandCheck = fn(&SensorState, &Time, &bool, &SidesConfig) -> Option<SensorCommand>;
@@ -36,6 +43,8 @@ struct CommandScheduler {
     /// A manually fired alarm (API test) we haven't seen start yet. The G0
     /// eats writes early in a connection, so resend until the FW confirms.
     pending_fire: Option<PendingFire>,
+    /// Observation only: used to surface an unconfirmed alarm write.
+    health: HealthRegistry,
 }
 
 struct PendingFire {
@@ -86,6 +95,7 @@ pub async fn supervise(
     client: AsyncClient,
     status: StatusTx,
     mut cmd_rx: mpsc::Receiver<Command>,
+    health: HealthRegistry,
     dry_run: bool,
 ) -> Result<(), SensorError> {
     const RETRY_DELAY: Duration = Duration::from_secs(10);
@@ -117,6 +127,7 @@ pub async fn supervise(
             client.clone(),
             status.clone(),
             &mut cmd_rx,
+            health.clone(),
             dry_run,
             &mut dismissed,
         )
@@ -125,6 +136,11 @@ pub async fn supervise(
             Ok(()) => {
                 consecutive = 0;
                 log::error!("Sensor task exited cleanly; restarting it");
+                health.report(
+                    health::SENSOR,
+                    Health::Restarting,
+                    format!("task exited cleanly; restarting in {RETRY_DELAY:?}"),
+                );
             }
             Err(e) => {
                 if attempt_started.elapsed() >= PROGRESS {
@@ -136,9 +152,21 @@ pub async fn supervise(
                         "Sensor task failed {consecutive}x in a row ({e}); escalating to a \
                          process restart for an MCU reset"
                     );
+                    health.report(
+                        health::SENSOR,
+                        Health::Failed,
+                        format!(
+                            "failed {consecutive}x in a row ({e}); restarting podd to reset the MCU"
+                        ),
+                    );
                     return Err(e);
                 }
                 log::error!("Sensor task failed: {e}; retrying in {RETRY_DELAY:?}");
+                health.report(
+                    health::SENSOR,
+                    Health::Retrying,
+                    format!("{e}; retrying in {RETRY_DELAY:?} (attempt {consecutive})"),
+                );
             }
         }
         tokio::time::sleep(RETRY_DELAY).await;
@@ -157,10 +185,12 @@ pub async fn run(
     mut client: AsyncClient,
     status: StatusTx,
     cmd_rx: &mut mpsc::Receiver<Command>,
+    health: HealthRegistry,
     dry_run: bool,
     dismissed: &mut [bool; 2],
 ) -> Result<(), SensorError> {
     log::info!("Initializing Sensor Subsystem...");
+    health.report(health::SENSOR, Health::Started, "discovering the sensor MCU");
 
     let mut presense_man =
         PresenseManager::new(config_tx, config_rx.clone(), config_path, client.clone());
@@ -169,15 +199,26 @@ pub async fn run(
     state.alarm_left_dismissed = dismissed[0];
     state.alarm_right_dismissed = dismissed[1];
     state.clock_synced = clock_is_synced();
+    publish_clock_health(&health, state.clock_synced);
     state.publish_reset(&mut client).await;
 
     let (writer, mut reader) =
         run_discovery(port, bootloader_baud, firmware_baud, &mut client, &mut state).await?;
     log::info!("Connected");
+    // Not `Healthy` yet: for ~60 s after a (re)start the MCU streams telemetry
+    // and answers Ping while silently ignoring actuation writes. `Started` is
+    // the honest state for that window; the tick loop below promotes it.
+    health.report(
+        health::SENSOR,
+        Health::Started,
+        "connected; MCU may ignore actuation writes for ~60 s after a restart",
+    );
+    let connected_at = Instant::now();
+    let mut settled = false;
 
     let cfg = config_rx.borrow_and_update();
     let timezone = cfg.timezone.clone();
-    let mut scheduler = CommandScheduler::new(cfg.away_mode, cfg.profile.clone(), writer);
+    let mut scheduler = CommandScheduler::new(cfg.away_mode, cfg.profile.clone(), writer, health.clone());
     drop(cfg);
 
     // Defensive: we may have (re)started mid-alarm with no memory of starting
@@ -255,6 +296,17 @@ pub async fn run(
                     scheduler.send_alarm_stop(dry_run, BedSide::Right).await;
                 }
 
+                // Observation only: once the connection has outlived the
+                // post-restart write-blind window, call the sensor healthy.
+                if !settled && Instant::now().duration_since(connected_at) >= SETTLE {
+                    settled = true;
+                    health.report(
+                        health::SENSOR,
+                        Health::Healthy,
+                        "connected; streaming telemetry",
+                    );
+                }
+
                 if !state.clock_synced
                     && Instant::now().duration_since(last_sync_check) > Duration::from_secs(5)
                 {
@@ -263,6 +315,7 @@ pub async fn run(
                     if state.clock_synced {
                         log::info!("System clock is NTP-synced; scheduled alarms armed");
                     }
+                    publish_clock_health(&health, state.clock_synced);
                 }
 
                 // this is not expensive so its fine to do at 20hz
@@ -298,6 +351,25 @@ pub async fn run(
 /// replug and re-fired the alarm. Until sync, wall time can't gate actuation.
 const CLOCK_SYNC_FILE: &str = "/run/systemd/timesync/synchronized";
 
+/// Mirror the NTP-sync check onto the health bus. Not synced is `Retrying`,
+/// not `Failed`: timesyncd keeps trying, and the only consequence is that
+/// scheduled alarms stay disarmed (which is the safe state).
+fn publish_clock_health(health: &HealthRegistry, synced: bool) {
+    if synced {
+        health.report(
+            health::CLOCK,
+            Health::Healthy,
+            "NTP-synced; scheduled alarms armed",
+        );
+    } else {
+        health.report(
+            health::CLOCK,
+            Health::Retrying,
+            "waiting for NTP sync; scheduled alarms are held (no RTC battery)",
+        );
+    }
+}
+
 fn clock_is_synced() -> bool {
     if matches!(
         std::env::var("PODD_ASSUME_CLOCK_SYNC").ok().as_deref(),
@@ -323,7 +395,12 @@ fn publish_sensor(status: &StatusTx, state: &SensorState, presence: &crate::sens
 }
 
 impl CommandScheduler {
-    fn new(away_mode: bool, sides_config: SidesConfig, writer: Writer) -> Self {
+    fn new(
+        away_mode: bool,
+        sides_config: SidesConfig,
+        writer: Writer,
+        health: HealthRegistry,
+    ) -> Self {
         let now = Instant::now();
         const CONFIG_RES_TIME: Duration = Duration::from_millis(800);
         Self {
@@ -331,6 +408,7 @@ impl CommandScheduler {
             sides_config,
             writer,
             pending_fire: None,
+            health,
             cmds: vec![
                 RegisteredCommand {
                     name: "ping",
@@ -484,6 +562,19 @@ impl CommandScheduler {
                             "FireAlarm[{}]: no FW confirmation after {} sends; giving up",
                             pending.cmd.side,
                             pending.attempts
+                        );
+                        // A write the firmware never confirmed is a real
+                        // actuation failure — the thing a status page exists
+                        // to show. (The scheduler's own `max_attempts`
+                        // give-up is NOT reported: on Pod 4 the G0 simply
+                        // doesn't ack commands it did apply.)
+                        self.health.report(
+                            health::SENSOR,
+                            Health::Failed,
+                            format!(
+                                "alarm[{}] write never confirmed by the firmware after {} sends",
+                                pending.cmd.side, pending.attempts
+                            ),
                         );
                         self.pending_fire = None;
                         None

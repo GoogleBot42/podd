@@ -135,6 +135,8 @@ pub enum Command {
 pub struct Shared {
     /// Latest device telemetry.
     pub status: watch::Receiver<DeviceSnapshot>,
+    /// Latest per-subsystem health (read-only; see [`crate::health`]).
+    pub health: watch::Receiver<crate::health::HealthMap>,
     /// Command sink into the managers.
     pub commands: mpsc::Sender<Command>,
 }
