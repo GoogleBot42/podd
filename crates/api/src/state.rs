@@ -9,6 +9,7 @@ use crate::wire::{
     c_to_f, f_to_level, DeviceStatus, PresenceState, Schedules, Settings, SidePresence, SideStatus,
 };
 use podd_core::bus::{DeviceSnapshot, SideSnapshot};
+use podd_core::health::HealthMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tokio::sync::watch;
@@ -28,6 +29,10 @@ pub struct StateStore {
     schedules: RwLock<Schedules>,
     status: RwLock<DeviceStatus>,
     presence: RwLock<PresenceState>,
+    /// Latest per-subsystem health from podd-core. Empty until the health
+    /// updater is attached (API-only mode / tests), which renders as
+    /// "not started" rather than as a lie.
+    health: RwLock<HealthMap>,
 }
 
 fn load_or_default<T>(path: &Option<PathBuf>) -> T
@@ -75,6 +80,7 @@ impl StateStore {
             schedules: RwLock::new(schedules),
             status: RwLock::new(DeviceStatus::default()),
             presence: RwLock::new(PresenceState::default()),
+            health: RwLock::new(HealthMap::new()),
         }
     }
 
@@ -103,6 +109,33 @@ impl StateStore {
         });
 
         store
+    }
+
+    /// Mirror podd-core's health watch into the store, so `GET /serverStatus`
+    /// is a plain read. Same shape as [`Self::from_watch`]'s updater; separate
+    /// because the two watches have independent lifetimes (an API-only build
+    /// simply never attaches this one).
+    pub fn spawn_health_updater(self: &Arc<Self>, mut rx: watch::Receiver<HealthMap>) {
+        self.set_health(rx.borrow_and_update().clone());
+
+        let updater = self.clone();
+        tokio::spawn(async move {
+            while rx.changed().await.is_ok() {
+                let health = rx.borrow_and_update().clone();
+                updater.set_health(health);
+            }
+            log::info!("health watch closed; updater exiting");
+        });
+    }
+
+    // ---- subsystem health (in-memory only) ----
+
+    pub fn health(&self) -> HealthMap {
+        self.health.read().unwrap().clone()
+    }
+
+    pub fn set_health(&self, health: HealthMap) {
+        *self.health.write().unwrap() = health;
     }
 
     /// Fold a live [`DeviceSnapshot`] into the in-memory device status + presence.

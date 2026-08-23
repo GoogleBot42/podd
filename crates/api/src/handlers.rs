@@ -302,8 +302,10 @@ pub async fn post_services(ApiJson(patch): ApiJson<Value>) -> Response {
     }
 }
 
-pub async fn get_server_status() -> Json<ServerStatus> {
-    Json(ServerStatus::default())
+/// podd's real subsystem health (see `podd_core::health`) — not free-sleep's
+/// twelve permanently-"OK" Node services.
+pub async fn get_server_status(State(app): State<AppState>) -> Json<ServerStatus> {
+    Json(ServerStatus::from_health(&app.store.health()))
 }
 
 // ---------------------------------------------------------------------------

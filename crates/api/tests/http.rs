@@ -215,15 +215,87 @@ async fn services_and_server_status() {
     let resp = app.oneshot(get("/api/serverStatus")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let v = body_json(resp).await;
-    for key in [
-        "alarmSchedule", "database", "express", "franken", "frankenMonitor",
-        "jobs", "logger", "powerSchedule", "primeSchedule", "rebootSchedule",
-        "systemDate", "temperatureSchedule",
-    ] {
-        assert_eq!(v[key]["status"], "healthy", "missing/unhealthy key {key}");
+
+    // podd's real subsystems, not free-sleep's Node internals.
+    for key in ["api", "clock", "coverControl", "mqtt", "sensor"] {
+        assert!(v[key]["status"].is_string(), "missing key {key}");
+        assert!(v[key]["name"].is_string());
+        assert!(v[key]["description"].is_string());
     }
-    // optional biometrics keys omitted
-    assert!(v.get("analyzeSleepLeft").is_none());
+    for gone in ["express", "database", "franken", "frankenMonitor", "logger"] {
+        assert!(v.get(gone).is_none(), "free-sleep fiction still present: {gone}");
+    }
+
+    // Nothing has reported (no podd-core behind this store), so every
+    // core-owned subsystem is honestly "not started" — only the API, which
+    // just answered, may claim to be healthy.
+    assert_eq!(v["api"]["status"], "healthy");
+    for key in ["clock", "coverControl", "mqtt", "sensor"] {
+        assert_eq!(v[key]["status"], "not_started", "unreported {key} should be not_started");
+        assert!(v[key]["timestamp"].is_null(), "unreported {key} should have no timestamp");
+    }
+}
+
+#[tokio::test]
+async fn server_status_reflects_the_health_registry() {
+    use podd_core::health::{Health, HealthMap, Subsystem};
+
+    let (app, _c, store) = build();
+
+    let mut health = HealthMap::new();
+    health.insert(
+        podd_core::health::SENSOR.to_string(),
+        Subsystem {
+            health: Health::Retrying,
+            message: "Sensor not responding; retrying in 10s".to_string(),
+            since: jiff::Timestamp::now(),
+        },
+    );
+    health.insert(
+        podd_core::health::MQTT.to_string(),
+        Subsystem {
+            health: Health::Healthy,
+            message: "connected to broker".to_string(),
+            since: jiff::Timestamp::now(),
+        },
+    );
+    store.set_health(health);
+
+    let resp = app.oneshot(get("/api/serverStatus")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = body_json(resp).await;
+
+    assert_eq!(v["sensor"]["status"], "retrying");
+    assert_eq!(v["sensor"]["message"], "Sensor not responding; retrying in 10s");
+    assert!(v["sensor"]["timestamp"].is_string());
+    assert_eq!(v["mqtt"]["status"], "healthy");
+    // Subsystems the registry never mentioned stay "not started".
+    assert_eq!(v["coverControl"]["status"], "not_started");
+}
+
+#[tokio::test]
+async fn server_status_follows_the_health_watch() {
+    use podd_core::health::{Health, HealthRegistry};
+
+    let (registry, rx) = HealthRegistry::new();
+    let store = Arc::new(StateStore::in_memory());
+    store.spawn_health_updater(rx);
+    let control = Arc::new(MockControl::new());
+    let app = router(store.clone(), control as Arc<dyn PodControl>, None);
+
+    let resp = app.clone().oneshot(get("/api/serverStatus")).await.unwrap();
+    let v = body_json(resp).await;
+    assert_eq!(v["sensor"]["status"], "not_started");
+
+    registry.report(podd_core::health::SENSOR, Health::Failed, "MCU wedged");
+    // let the updater task run
+    tokio::task::yield_now().await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let resp = app.oneshot(get("/api/serverStatus")).await.unwrap();
+    let v = body_json(resp).await;
+    assert_eq!(v["sensor"]["status"], "failed");
+    assert_eq!(v["sensor"]["message"], "MCU wedged");
 }
 
 #[tokio::test]
