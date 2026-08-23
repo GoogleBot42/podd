@@ -445,3 +445,54 @@ async fn malformed_json_400() {
     let v = body_json(resp).await;
     assert_eq!(v, json!({ "error": { "message": "Invalid JSON" } }));
 }
+
+// ---------------------------------------------------------------------------
+// logs (journald-backed)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn get_logs_lists_journald_sources() {
+    let (app, _c, _s) = build();
+    let resp = app.oneshot(get("/api/logs")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = body_json(resp).await;
+    // podd has no log file — these are systemd units plus the whole-journal
+    // pseudo-entry. The UI feeds these names straight back to /api/logs/<name>.
+    assert_eq!(
+        v,
+        json!({ "logs": ["podd", "podd-wifi-setup", "NetworkManager", "system"] })
+    );
+}
+
+#[tokio::test]
+async fn get_log_stream_rejects_unknown_source() {
+    // The name becomes a journalctl argument, so anything off the whitelist —
+    // including the old fake "podd.log" and flag/path-shaped names — must 404
+    // instead of reaching the subprocess.
+    for name in ["podd.log", "bogus", "-u", "..%2F..%2Fetc"] {
+        let (app, _c, _s) = build();
+        let resp = app.oneshot(get(&format!("/api/logs/{name}"))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "name={name}");
+        let v = body_json(resp).await;
+        assert_eq!(v, json!({ "error": { "message": "Not Found" } }));
+    }
+}
+
+#[tokio::test]
+async fn get_log_stream_whitelisted_source_is_sse() {
+    // Holds both on a systemd host (real tail) and without journalctl (single
+    // fallback message): either way the response is an SSE stream. Dropping it
+    // at the end of the loop is what exercises kill_on_drop.
+    for name in ["podd", "system"] {
+        let (app, _c, _s) = build();
+        let resp = app.oneshot(get(&format!("/api/logs/{name}"))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "name={name}");
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert!(ct.starts_with("text/event-stream"), "name={name} ct={ct}");
+    }
+}

@@ -22,7 +22,7 @@ log.workspace = true
 axum.workspace = true
 tower-http.workspace = true
 futures.workspace = true
-tokio-stream.workspace = true
+tokio-stream = { workspace = true, features = ["io-util"] }
 
 [dev-dependencies]
 tempfile = "3"
