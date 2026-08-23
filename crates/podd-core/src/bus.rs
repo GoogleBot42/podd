@@ -124,6 +124,18 @@ pub enum Command {
     /// Update the schedule timezone in the live config. `iana` is validated
     /// by the API layer; an unknown name is dropped here with an error log.
     SetTimezone { iana: String },
+    /// Replace the live per-weekday heating schedule (the UI's Schedule page).
+    ///
+    /// The API layer has already persisted `schedules.json` — podd-core never
+    /// writes that file — so this only refreshes the in-memory schedule the
+    /// Frozen manager resolves its target from, exactly like a config-watch
+    /// update (manual overrides are dropped). Boxed: [`schedule::Schedules`]
+    /// is by far the largest variant and would otherwise bloat every command.
+    ///
+    /// Alarm fields inside are persisted but inert (#106).
+    ///
+    /// [`schedule::Schedules`]: crate::schedule::Schedules
+    SetSchedules(Box<crate::schedule::Schedules>),
     /// Fire an alarm immediately.
     FireAlarm(AlarmSpec),
     /// Apply an opaque CBOR device-settings block (gains / LED brightness).

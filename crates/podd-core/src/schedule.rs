@@ -38,7 +38,7 @@ pub enum VibrationPattern {
     Rise,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AlarmSchedule {
     pub vibration_intensity: i32,
@@ -49,7 +49,7 @@ pub struct AlarmSchedule {
     pub alarm_temperature: TempF,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PowerBlock {
     pub on: HhMm,
@@ -58,7 +58,7 @@ pub struct PowerBlock {
     pub enabled: bool,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DailySchedule {
     pub temperatures: BTreeMap<HhMm, TempF>,
@@ -66,7 +66,7 @@ pub struct DailySchedule {
     pub power: PowerBlock,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SideSchedule {
     pub sunday: DailySchedule,
@@ -78,11 +78,33 @@ pub struct SideSchedule {
     pub saturday: DailySchedule,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Schedules {
     pub left: SideSchedule,
     pub right: SideSchedule,
+}
+
+/// The two side keys of a `schedules.json` document, in wire order.
+pub const SIDE_KEYS: [&str; 2] = ["left", "right"];
+
+/// The seven day keys of a [`SideSchedule`], in wire order.
+pub const DAY_KEYS: [&str; 7] = [
+    "sunday",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+];
+
+impl Schedules {
+    /// The two sides with their wire key. Lets callers (API validation) report
+    /// offenses as `left.monday.…` without re-deriving the key names.
+    pub fn sides(&self) -> [(&'static str, &SideSchedule); 2] {
+        [("left", &self.left), ("right", &self.right)]
+    }
 }
 
 impl Default for DailySchedule {
@@ -131,6 +153,20 @@ impl SideSchedule {
             Weekday::Friday => &self.friday,
             Weekday::Saturday => &self.saturday,
         }
+    }
+
+    /// All seven rows with their wire key, in [`DAY_KEYS`] order. Used by the
+    /// API layer to validate a whole document and name each offending row.
+    pub fn days(&self) -> [(&'static str, &DailySchedule); 7] {
+        [
+            ("sunday", &self.sunday),
+            ("monday", &self.monday),
+            ("tuesday", &self.tuesday),
+            ("wednesday", &self.wednesday),
+            ("thursday", &self.thursday),
+            ("friday", &self.friday),
+            ("saturday", &self.saturday),
+        ]
     }
 }
 
@@ -469,6 +505,41 @@ mod tests {
             .map(|wd| side.day(wd).power.on_temperature)
             .collect();
         assert_eq!(got, vec![1, 2, 3, 4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn day_keys_match_the_day_accessor() {
+        // `days()` is what the API validator walks; it must line up with both
+        // DAY_KEYS and the weekday accessor, or an offense gets reported
+        // against the wrong row.
+        let side = SideSchedule {
+            sunday: row("21:00", "22:00", 1, &[]),
+            monday: row("21:00", "22:00", 2, &[]),
+            tuesday: row("21:00", "22:00", 3, &[]),
+            wednesday: row("21:00", "22:00", 4, &[]),
+            thursday: row("21:00", "22:00", 5, &[]),
+            friday: row("21:00", "22:00", 6, &[]),
+            saturday: row("21:00", "22:00", 7, &[]),
+        };
+
+        let keys: Vec<&str> = side.days().iter().map(|&(k, _)| k).collect();
+        assert_eq!(keys, DAY_KEYS.to_vec());
+
+        for (wd, (_, day)) in Weekday::Sunday.cycle_forward().take(7).zip(side.days()) {
+            assert_eq!(side.day(wd).power.on_temperature, day.power.on_temperature);
+        }
+    }
+
+    #[test]
+    fn side_keys_match_the_sides_accessor() {
+        let s = Schedules {
+            left: monday_only(row("21:00", "22:00", 70, &[])),
+            right: SideSchedule::default(),
+        };
+        let keys: Vec<&str> = s.sides().iter().map(|&(k, _)| k).collect();
+        assert_eq!(keys, SIDE_KEYS.to_vec());
+        assert!(side_owned(s.sides()[0].1));
+        assert!(!side_owned(s.sides()[1].1));
     }
 
     #[test]
