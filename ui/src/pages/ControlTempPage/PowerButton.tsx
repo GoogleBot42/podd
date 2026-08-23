@@ -28,6 +28,14 @@ export default function PowerButton({ isOn, refetch }: PowerButtonProps) {
   const [showAnalyzeNotification, setShowAnalyzeNotification] = useState(false);
 
   const handleOnClick = (powerOn: boolean) => {
+    // Drop any debounced temp edit before turning off: the backend maps a
+    // setpoint POST to enabled:true, so a flush racing this isOn:false POST
+    // would power the side straight back on (#105). Must happen before the
+    // optimistic setDeviceStatus below — that unmounts TemperatureButtons,
+    // whose cleanup consults the same pending entry.
+    if (!powerOn) {
+      useControlTempStore.getState().pendingTempPost?.cancel();
+    }
     const deviceStatus: DeepPartial<DeviceStatus> = {
       [side]: {
         isOn: powerOn
