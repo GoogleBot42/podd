@@ -132,9 +132,9 @@ async fn settings_prime_pod_daily_reaches_the_config() {
 }
 
 #[tokio::test]
-async fn settings_without_prime_pod_daily_touch_nothing() {
+async fn settings_without_bridged_fields_touch_nothing() {
     let (app, control, _s) = build();
-    let patch = json!({ "timeZone": "America/Denver", "rebootDaily": false });
+    let patch = json!({ "rebootDaily": false, "left": { "name": "Bedroom" } });
     let resp = app.oneshot(post_json("/api/settings", &patch)).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(
@@ -142,6 +142,53 @@ async fn settings_without_prime_pod_daily_touch_nothing() {
         "unrelated settings must not touch the config: {:?}",
         control.calls()
     );
+}
+
+#[tokio::test]
+async fn settings_away_mode_reaches_the_config() {
+    let (app, control, _s) = build();
+
+    // one side away: the command carries both sides' merged state
+    let patch = json!({ "left": { "awayMode": true } });
+    let resp = app.clone().oneshot(post_json("/api/settings", &patch)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    match control.calls().as_slice() {
+        [Call::SetAwayMode(true, false)] => {}
+        other => panic!("expected SetAwayMode(true, false), got {other:?}"),
+    }
+
+    // the other side follows (left inherited from the stored settings)
+    let patch = json!({ "right": { "awayMode": true } });
+    let resp = app.clone().oneshot(post_json("/api/settings", &patch)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    match control.calls().as_slice() {
+        [_, Call::SetAwayMode(true, true)] => {}
+        other => panic!("expected a second SetAwayMode(true, true), got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn settings_timezone_reaches_the_config() {
+    let (app, control, _s) = build();
+    let patch = json!({ "timeZone": "America/Denver" });
+    let resp = app.oneshot(post_json("/api/settings", &patch)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    match control.calls().as_slice() {
+        [Call::SetTimezone(tz)] => assert_eq!(tz, "America/Denver"),
+        other => panic!("expected one SetTimezone, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn settings_reject_a_bad_timezone_without_applying_anything() {
+    let (app, control, store) = build();
+    let patch = json!({ "timeZone": "Not/AZone" });
+    let resp = app.oneshot(post_json("/api/settings", &patch)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let v = body_json(resp).await;
+    assert_eq!(v["error"], "Invalid request data");
+    assert_eq!(store.settings().time_zone, "UTC");
+    assert!(control.calls().is_empty());
 }
 
 #[tokio::test]
@@ -180,6 +227,21 @@ async fn schedules_partial_merge() {
     assert_eq!(v["left"]["monday"]["temperatures"]["07:00"], 72);
     // other day untouched
     assert!(v["left"]["tuesday"]["power"].is_object());
+}
+
+#[tokio::test]
+async fn schedules_partial_alarm_patch_merges() {
+    let (app, _c, _s) = build();
+    // A lone alarm field must merge into the stored alarm, not replace it
+    // wholesale (which 400'd on the missing required fields, #106).
+    let patch = json!({ "right": { "friday": { "alarm": { "enabled": true } } } });
+    let resp = app.clone().oneshot(post_json("/api/schedules", &patch)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = body_json(resp).await;
+    assert_eq!(v["right"]["friday"]["alarm"]["enabled"], true);
+    // the untouched alarm fields survive from the default
+    assert_eq!(v["right"]["friday"]["alarm"]["time"], "07:00");
+    assert_eq!(v["right"]["friday"]["alarm"]["vibrationIntensity"], 50);
 }
 
 #[tokio::test]

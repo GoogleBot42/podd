@@ -117,6 +117,13 @@ pub enum Command {
     /// "Prime daily?" toggle + its time. Applied to the config watch and
     /// persisted to `config.ron`, exactly like the MQTT `set_prime` action.
     SetPrimeDaily { enabled: bool, time: Time },
+    /// Update per-side away mode in the live config (the UI settings page's
+    /// away switches). Applied to the config watch and persisted, like
+    /// [`Command::SetPrimeDaily`].
+    SetAwayMode { left: bool, right: bool },
+    /// Update the schedule timezone in the live config. `iana` is validated
+    /// by the API layer; an unknown name is dropped here with an error log.
+    SetTimezone { iana: String },
     /// Fire an alarm immediately.
     FireAlarm(AlarmSpec),
     /// Apply an opaque CBOR device-settings block (gains / LED brightness).

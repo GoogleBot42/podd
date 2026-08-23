@@ -129,6 +129,58 @@ async fn apply_prime_daily(
     }
 }
 
+/// Apply a per-side away-mode change (UI settings page) to the live config.
+/// Same shape as [`apply_prime_daily`]: no-op changes are dropped so a
+/// settings save doesn't gratuitously reset manual overrides.
+async fn apply_away_mode(
+    config_tx: &watch::Sender<Config>,
+    config_path: &str,
+    away: config::AwayMode,
+) {
+    let mut cfg = config_tx.borrow().clone();
+    if cfg.away_mode == away {
+        return;
+    }
+    cfg.away_mode = away;
+    log::info!(
+        "Set away mode: left={} right={}",
+        away.left,
+        away.right
+    );
+    if let Err(e) = config_tx.send(cfg.clone()) {
+        log::error!("Error sending to config watch channel: {e}");
+        return;
+    }
+    if let Err(e) = cfg.save(config_path).await {
+        log::error!("Failed to save config: {e}");
+    }
+}
+
+/// Apply a timezone change (UI settings page) to the live config. The API
+/// layer already validated the IANA name; re-parse defensively anyway.
+async fn apply_timezone(config_tx: &watch::Sender<Config>, config_path: &str, iana: &str) {
+    let tz = match jiff::tz::TimeZone::get(iana) {
+        Ok(tz) => tz,
+        Err(e) => {
+            log::error!("SetTimezone: unknown timezone {iana:?}: {e}");
+            return;
+        }
+    };
+    let mut cfg = config_tx.borrow().clone();
+    if cfg.timezone == tz {
+        return;
+    }
+    cfg.timezone = tz;
+    log::info!("Set timezone to {iana}");
+    if let Err(e) = config_tx.send(cfg.clone()) {
+        log::error!("Error sending to config watch channel: {e}");
+        return;
+    }
+    if let Err(e) = cfg.save(config_path).await {
+        log::error!("Failed to save config: {e}");
+    }
+}
+
 /// Route a command to the manager that owns it. System-level commands and
 /// not-yet-mapped ones are logged (dry-run) here.
 async fn dispatch_commands(
@@ -145,9 +197,23 @@ async fn dispatch_commands(
                     log::warn!("frozen command channel closed; dropping command");
                 }
             }
-            // Config edit, not a manager op: the UI's "Prime daily?" toggle.
+            // Config edits, not manager ops: settings-page bridges.
             Command::SetPrimeDaily { enabled, time } => {
                 apply_prime_daily(&config_tx, &config_path, *enabled, *time).await;
+            }
+            Command::SetAwayMode { left, right } => {
+                apply_away_mode(
+                    &config_tx,
+                    &config_path,
+                    config::AwayMode {
+                        left: *left,
+                        right: *right,
+                    },
+                )
+                .await;
+            }
+            Command::SetTimezone { iana } => {
+                apply_timezone(&config_tx, &config_path, iana).await;
             }
             Command::ClearAlarm { .. } | Command::FireAlarm(_) => {
                 if sensor_tx.send(cmd).await.is_err() {

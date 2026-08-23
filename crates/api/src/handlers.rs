@@ -43,8 +43,11 @@ fn deep_merge(base: &mut Value, patch: Value) {
     }
 }
 
-/// Schedules merge per spec: per side/day, `power` is deep-merged while
-/// `temperatures` and `alarm` are replaced wholesale.
+/// Schedules merge: per side/day, the `power` and `alarm` structs are
+/// deep-merged (individual fields may be sent alone — a partial alarm patch
+/// used to 400 on the missing required fields, #106), while `temperatures`
+/// is replaced wholesale: it's a time→temp map, so merging would make
+/// removing an entry impossible.
 fn merge_schedules(base: &mut Value, patch: Value) {
     let (Some(base_obj), Value::Object(patch_obj)) = (base.as_object_mut(), patch) else {
         return;
@@ -67,12 +70,11 @@ fn merge_schedules(base: &mut Value, patch: Value) {
             };
             for (key, val) in day_patch {
                 match key.as_str() {
-                    // deep-merge power (individual fields may be sent alone)
-                    "power" => {
-                        let slot = base_day.entry("power").or_insert(json!({}));
+                    "power" | "alarm" => {
+                        let slot = base_day.entry(key).or_insert(json!({}));
                         deep_merge(slot, val);
                     }
-                    // replace temperatures + alarm wholesale
+                    // replace temperatures (a map) wholesale
                     _ => {
                         base_day.insert(key, val);
                     }
@@ -159,10 +161,15 @@ pub async fn post_settings(
     if let Some(obj) = patch.as_object_mut() {
         obj.remove("id");
     }
-    // `primePodDaily` is the one settings field the daemon acts on, so a patch
-    // that touches it has to reach the live config too (settings.json alone is
-    // read by nobody: the bed primed daily whatever the toggle said).
+    // Fields the daemon acts on have to reach the live config too —
+    // settings.json alone is read by nobody (#106). Each bridged field is
+    // forwarded over the command bus only when the patch touches it, so an
+    // unrelated settings save never resets daemon state.
     let prime_touched = patch.get("primePodDaily").is_some();
+    let away_touched = ["left", "right"]
+        .iter()
+        .any(|side| patch.get(side).and_then(|s| s.get("awayMode")).is_some());
+    let tz_touched = patch.get("timeZone").is_some();
     let mut base = serde_json::to_value(app.store.settings()).unwrap();
     deep_merge(&mut base, patch);
     let merged: Settings = match serde_json::from_value(base) {
@@ -183,6 +190,12 @@ pub async fn post_settings(
     } else {
         None
     };
+    if tz_touched && jiff::tz::TimeZone::get(&merged.time_zone).is_err() {
+        return invalid_request_data(vec![format!(
+            "timeZone must be an IANA zone name, got {:?}",
+            merged.time_zone
+        )]);
+    }
     if let Err(e) = app.store.set_settings(merged.clone()) {
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
@@ -192,6 +205,20 @@ pub async fn post_settings(
             .set_prime_daily(merged.prime_pod_daily.enabled, time)
             .await
         {
+            return control_error(e);
+        }
+    }
+    if away_touched {
+        if let Err(e) = app
+            .control
+            .set_away_mode(merged.left.away_mode, merged.right.away_mode)
+            .await
+        {
+            return control_error(e);
+        }
+    }
+    if tz_touched {
+        if let Err(e) = app.control.set_timezone(&merged.time_zone).await {
             return control_error(e);
         }
     }

@@ -14,7 +14,8 @@ fn parse_device(src: &str) -> DeviceConfig {
 async fn test_load_solo_config() {
     let config = Config::load("example_solo.ron").await.unwrap();
     assert_eq!(config.timezone.iana_name().unwrap(), "America/New_York");
-    assert!(!config.away_mode);
+    // `away_mode: false` in the file is the legacy whole-bed bool form
+    assert_eq!(config.away_mode, AwayMode::default());
     match &config.profile {
         SidesConfig::Solo(profile) => {
             assert_eq!(profile.temperatures, vec![27., 29., 31.]);
@@ -97,6 +98,36 @@ async fn test_prime_enabled_defaults_true_when_absent() {
     assert!(config.prime_enabled);
 }
 
+fn parse_away(src: &str) -> AwayMode {
+    let opts = ron::Options::default().with_default_extension(Extensions::IMPLICIT_SOME);
+    opts.from_str(src).unwrap()
+}
+
+#[test]
+fn test_away_mode_legacy_bool_forms() {
+    // pre-per-side configs said `away_mode: true/false`; a bool sets both sides
+    assert_eq!(parse_away("false"), AwayMode { left: false, right: false });
+    assert_eq!(parse_away("true"), AwayMode { left: true, right: true });
+}
+
+#[test]
+fn test_away_mode_per_side_form() {
+    assert_eq!(
+        parse_away("(left: true, right: false)"),
+        AwayMode { left: true, right: false }
+    );
+    // partial struct: unnamed side defaults to home
+    assert_eq!(parse_away("(right: true)"), AwayMode { left: false, right: true });
+}
+
+#[test]
+fn test_away_mode_round_trips_through_save_format() {
+    // what Config::save writes must load back identically
+    let away = AwayMode { left: true, right: false };
+    let ron_str = ron::ser::to_string(&away).unwrap();
+    assert_eq!(parse_away(&ron_str), away);
+}
+
 #[test]
 fn test_device_partial_override() {
     let dev = parse_device(r#"(frozen_port: "/dev/ttyUSB9", led_addr: 0x30)"#);
@@ -111,7 +142,7 @@ fn test_device_partial_override() {
 async fn test_load_couples_config() {
     let config = Config::load("example_couples.ron").await.unwrap();
     assert_eq!(config.timezone.iana_name().unwrap(), "America/New_York");
-    assert!(!config.away_mode);
+    assert_eq!(config.away_mode, AwayMode::default());
     match &config.profile {
         SidesConfig::Couples { left, right } => {
             assert_eq!(left.temperatures, vec![27., 29., 31.]);

@@ -69,6 +69,71 @@ fn default_true() -> bool {
     true
 }
 
+/// Per-side away state. Away suppresses a side's temperature schedule and its
+/// scheduled alarms; the daily prime is skipped only when the whole bed is
+/// away (see [`AwayMode::both`]).
+///
+/// Deserializes from either the modern per-side form
+/// `away_mode: (left: false, right: false)` or the legacy whole-bed bool
+/// `away_mode: false` (both sides set to it), so pre-existing configs parse
+/// unchanged. Always serialized in the per-side form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub struct AwayMode {
+    pub left: bool,
+    pub right: bool,
+}
+
+impl AwayMode {
+    pub fn get(&self, side: &BedSide) -> bool {
+        match side {
+            BedSide::Left => self.left,
+            BedSide::Right => self.right,
+        }
+    }
+
+    /// Whole bed away (both sides).
+    pub fn both(&self) -> bool {
+        self.left && self.right
+    }
+}
+
+impl<'de> Deserialize<'de> for AwayMode {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct AwayVisitor;
+        impl<'de> serde::de::Visitor<'de> for AwayVisitor {
+            type Value = AwayMode;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a bool or a (left: bool, right: bool) struct")
+            }
+
+            fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<AwayMode, E> {
+                Ok(AwayMode { left: v, right: v })
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<AwayMode, A::Error> {
+                let (mut left, mut right) = (false, false);
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "left" => left = map.next_value()?,
+                        "right" => right = map.next_value()?,
+                        other => {
+                            return Err(serde::de::Error::unknown_field(other, &["left", "right"]))
+                        }
+                    }
+                }
+                Ok(AwayMode { left, right })
+            }
+        }
+        // RON is self-describing, so deserialize_any routes the legacy bool to
+        // visit_bool and the struct form to visit_map.
+        deserializer.deserialize_any(AwayVisitor)
+    }
+}
+
 fn time_de<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Time, D::Error> {
     let s = String::deserialize(deserializer)?;
     Time::strptime("%H:%M", &s).map_err(serde::de::Error::custom)
@@ -109,7 +174,8 @@ pub enum SidesConfig {
 pub struct Config {
     #[serde(deserialize_with = "timezone_de", serialize_with = "timezone_ser")]
     pub timezone: TimeZone,
-    pub away_mode: bool,
+    #[serde(default)]
+    pub away_mode: AwayMode,
     #[serde(deserialize_with = "time_de", serialize_with = "time_ser")]
     pub prime: Time,
     /// Whether the *daily* prime at [`Config::prime`] runs at all (the UI's

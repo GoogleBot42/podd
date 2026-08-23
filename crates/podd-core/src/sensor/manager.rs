@@ -2,7 +2,7 @@ use std::io::ErrorKind;
 use std::time::Duration;
 
 use crate::bus::{Command, DeviceSnapshot, StatusTx};
-use crate::config::{Config, SideConfig, SidesConfig};
+use crate::config::{AwayMode, Config, SideConfig, SidesConfig};
 use crate::health::{self, Health, HealthRegistry};
 use crate::sensor::presence::PresenseManager;
 use crate::sensor::state::{PIEZO_FREQ, PIEZO_GAIN, SensorState};
@@ -33,11 +33,11 @@ const SETTLE: Duration = Duration::from_secs(60);
 
 type Reader = SplitStream<Framed<SerialStream, PacketCodec<SensorPacket>>>;
 type Writer = SplitSink<Framed<SerialStream, PacketCodec<SensorPacket>>, SensorCommand>;
-type CommandCheck = fn(&SensorState, &Time, &bool, &SidesConfig) -> Option<SensorCommand>;
+type CommandCheck = fn(&SensorState, &Time, &AwayMode, &SidesConfig) -> Option<SensorCommand>;
 
 struct CommandScheduler {
     cmds: Vec<RegisteredCommand>,
-    away_mode: bool,
+    away_mode: AwayMode,
     sides_config: SidesConfig,
     writer: Writer,
     /// A manually fired alarm (API test) we haven't seen start yet. The G0
@@ -217,7 +217,7 @@ pub async fn run(
     let mut settled = false;
 
     let cfg = config_rx.borrow_and_update();
-    let timezone = cfg.timezone.clone();
+    let mut timezone = cfg.timezone.clone();
     let mut scheduler =
         CommandScheduler::new(cfg.away_mode, cfg.profile.clone(), writer, health.clone());
     drop(cfg);
@@ -334,6 +334,7 @@ pub async fn run(
 
             Ok(_) = config_rx.changed() => {
                 let cfg = config_rx.borrow();
+                timezone = cfg.timezone.clone();
                 scheduler.away_mode = cfg.away_mode;
                 scheduler.sides_config = cfg.profile.clone();
             }
@@ -397,7 +398,7 @@ fn publish_sensor(status: &StatusTx, state: &SensorState, presence: &crate::sens
 
 impl CommandScheduler {
     fn new(
-        away_mode: bool,
+        away_mode: AwayMode,
         sides_config: SidesConfig,
         writer: Writer,
         health: HealthRegistry,
@@ -508,7 +509,7 @@ impl CommandScheduler {
                     last_run: now,
                     can_run: |state, now, away, sides_cfg| {
                         if state.vibration_enabled {
-                            get_alarm_cmd(state, now, *away, sides_cfg, &BedSide::Left)
+                            get_alarm_cmd(state, now, away.get(&BedSide::Left), sides_cfg, &BedSide::Left)
                         } else {
                             None
                         }
@@ -522,7 +523,7 @@ impl CommandScheduler {
                     last_run: now,
                     can_run: |state, now, away, sides_cfg| {
                         if state.vibration_enabled {
-                            get_alarm_cmd(state, now, *away, sides_cfg, &BedSide::Right)
+                            get_alarm_cmd(state, now, away.get(&BedSide::Right), sides_cfg, &BedSide::Right)
                         } else {
                             None
                         }
