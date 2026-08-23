@@ -65,9 +65,8 @@ The eight workspace members and how the earlier planned split maps onto them:
 | `podd` | the daemon binary: wires `podd-core` + `api` + `pod-updater` together | opensleep fork |
 
 **Planned, not yet built:** a dedicated `onboarding` path (config-file /
-local-web WiFi bring-up), a full autonomous weekday scheduler loop (the
-thermostat curve math exists in `pod-proto`'s `profile.rs`; the API stores
-schedules today), and the L2 OS-image release artifact (`podd-rootfs.tar.gz`).
+local-web WiFi bring-up) and the L2 OS-image release artifact
+(`podd-rootfs.tar.gz`).
 
 ## The three gaps opensleep leaves us
 
@@ -76,9 +75,14 @@ schedules today), and the L2 OS-image release artifact (`podd-rootfs.tar.gz`).
    and lives in `pod-updater` (Tier-3), gated behind a dry-run default.
 2. **Scheduler** — opensleep has a per-side daily temperature curve
    (`profile.rs` lerp over a sleep→wake window) but no weekday schedules, manual
-   override, or set-now. The curve math is reused in `pod-proto`; the `api`
-   crate persists schedules/settings, and a full autonomous scheduler loop is
-   still being wired.
+   override, or set-now. All three are new: the curve math is reused in
+   `pod-proto`; manual override/set-now live in `podd-core`'s frozen manager;
+   and `podd-core::schedule` resolves the per-weekday `schedules.json`
+   document (free-sleep schema, persisted by `api`, step temps) into targets.
+   Ownership rule: a side follows its weekly schedule iff any weekday row has
+   `power.enabled`, else the `config.ron` profile — see the `schedule` module
+   docs. Per-weekday alarm fields are persisted but inert (issue #106): the
+   alarm path still derives its windows from the `config.ron` profile.
 3. **Web API** — opensleep is MQTT-only. `api` is all-new (axum), serving the
    forked free-sleep SPA and the compat endpoints.
 
