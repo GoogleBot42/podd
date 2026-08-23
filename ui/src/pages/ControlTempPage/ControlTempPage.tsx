@@ -1,6 +1,9 @@
 import { useEffect } from 'react';
 import Button from '@mui/material/Button';
 import { Alert, Box, CircularProgress, Snackbar } from '@mui/material';
+import { DeepPartial } from 'ts-essentials';
+
+import { DeviceStatus } from '@api/deviceStatusSchema.ts';
 
 import AlarmDismissal from './AlarmDismissal.tsx';
 import AlarmNotification from './AlarmNotification.tsx';
@@ -38,12 +41,21 @@ export default function ControlTempPage() {
 
   useEffect(() => {
     if (!deviceStatus) return;
-    // Don't clobber optimistic edits still on their way to the server (a poll
-    // or confirm-refetch can land mid-debounce); once pendingEdits drops back
-    // to zero this re-runs and syncs the confirmed server state.
-    if (pendingEdits > 0) return;
-    setDeviceStatus(deviceStatus);
-  }, [deviceStatus, pendingEdits]);
+    // Always sync — skipping the whole update while an edit was in flight also
+    // withheld isAlarmVibrating, which the dismissal dialog reads, for the
+    // several seconds a +/- burst takes to settle. Only the one field an
+    // optimistic edit owns is held back: the setpoint of the side being
+    // edited, which a poll or confirm-refetch would otherwise clobber with a
+    // stale value.
+    const synced: DeepPartial<DeviceStatus> = { ...deviceStatus };
+    if (pendingEdits > 0) {
+      const pendingTarget = useControlTempStore.getState().deviceStatus?.[side]?.targetTemperatureF;
+      if (pendingTarget !== undefined) {
+        synced[side] = { ...deviceStatus[side], targetTemperatureF: pendingTarget };
+      }
+    }
+    setDeviceStatus(synced);
+  }, [deviceStatus, pendingEdits, side]);
 
   return (
     <PageContainer
