@@ -50,6 +50,21 @@ export default function Slider({ isOn, currentTargetTemp, refetch, currentTemper
   const isHeating = currentTemp < targetTemp;
 
   const sliderColor = getTemperatureColor(targetTemp);
+
+  // The dial draws two handles — one at the target, one at the current bed
+  // temperature — and which one is the min/max swaps as the bed heats or
+  // cools. Only the target handle may write; the other is a read-only marker
+  // (Slider.module.scss hides its dot for the same reason). Routing both to
+  // the target let a grab on the current-temperature handle silently re-target
+  // the bed, and made the handle jump when min/max swapped mid-drag.
+  const setTarget = (value: number) => {
+    if (disabled) return;
+    const rounded = Math.round(value);
+    if (rounded !== deviceStatus?.[side]?.targetTemperatureF) {
+      setDeviceStatus({ [side]: { targetTemperatureF: rounded } });
+    }
+  };
+
   const handleControlFinished = async () => {
     // Send-time read (see TemperatureButtons.postUpdate): this closure can be
     // one render behind the last onChange when the drag ends quickly.
@@ -136,24 +151,16 @@ export default function Slider({ isOn, currentTargetTemp, refetch, currentTemper
           } }
           handle1={ {
             value: minTemp,
-            onChange: (value) => {
-              if (disabled) return;
-              if (Math.round(value) !== deviceStatus?.[side]?.targetTemperatureF) {
-                setDeviceStatus({ [side]: { targetTemperatureF: Math.round(value) } });
-              }
-            },
-
+            // The library picks whichever handle is nearest the press, so both
+            // need a callback (it also bails out entirely without handle1's).
+            // Only the one carrying the target may write — see setTarget.
+            onChange: (value) => { if (!isHeating) setTarget(value); },
           } }
           arcColor={ isOn ? sliderColor : arcBackgroundColor }
           arcBackgroundColor={ arcBackgroundColor }
           handle2={ {
             value: maxTemp,
-            onChange: (value) => {
-              if (disabled) return;
-              if (Math.round(value) !== deviceStatus?.[side]?.targetTemperatureF) {
-                setDeviceStatus({ [side]: { targetTemperatureF: Math.round(value) } });
-              }
-            },
+            onChange: (value) => { if (isHeating) setTarget(value); },
           } }
           handleSize={ 8 }
         >
