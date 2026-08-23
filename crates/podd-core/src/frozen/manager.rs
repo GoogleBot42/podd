@@ -1,5 +1,5 @@
 use crate::bus::{Command, DeviceSnapshot, SideSnapshot, StatusTx};
-use crate::config::{Config, SidesConfig};
+use crate::config::{AwayMode, Config, SidesConfig};
 use crate::frozen::state::FrozenState;
 use crate::health::{self, Health, HealthRegistry};
 use crate::led::{IS31FL3194Config, IS31FL3194Controller, LedPattern};
@@ -109,7 +109,7 @@ pub async fn run(
         .unwrap_or(LedPattern::SlowBreath(0, 60, 255))
         .get_config(cfg.led.band.clone());
     set_led(&mut led, &led_idle);
-    let timezone = cfg.timezone.clone();
+    let mut timezone = cfg.timezone.clone();
     let mut away_mode = cfg.away_mode;
     let mut prime = cfg.prime;
     let mut prime_enabled = cfg.prime_enabled;
@@ -240,6 +240,7 @@ pub async fn run(
 
             Ok(_) = config_rx.changed() => {
                 let cfg = config_rx.borrow();
+                timezone = cfg.timezone.clone();
                 away_mode = cfg.away_mode;
                 prime = cfg.prime;
                 prime_enabled = cfg.prime_enabled;
@@ -254,7 +255,7 @@ pub async fn run(
                     let cfg_side = side_config.get_side(&side);
                     let config_enabled = FrozenTarget::calc_wanted(
                         &timezone,
-                        away_mode,
+                        away_mode.get(&side),
                         &cfg_side.temperatures,
                         cfg_side.sleep,
                         cfg_side.wake,
@@ -408,7 +409,7 @@ fn get_next_command(
     timers: &mut CommandTimers,
     state: &FrozenState,
     timezone: &TimeZone,
-    away_mode: &bool,
+    away_mode: &AwayMode,
     prime_time: &Time,
     prime_enabled: bool,
     side_config: &SidesConfig,
@@ -426,7 +427,7 @@ fn get_next_command(
         let cfg = side_config.get_side(&side);
         let config_wanted = FrozenTarget::calc_wanted(
             timezone,
-            *away_mode,
+            away_mode.get(&side),
             &cfg.temperatures,
             cfg.sleep,
             cfg.wake,
@@ -462,7 +463,7 @@ fn get_next_command(
 
     // TODO verify it actually started priming
     if should_prime(
-        *away_mode,
+        away_mode.both(),
         prime_enabled,
         now.duration_since(timers.last_prime),
         now_local,
@@ -480,15 +481,17 @@ fn get_next_command(
 /// `prime_enabled` is the UI's "Prime daily?" toggle: with it off the bed
 /// never primes on a schedule. It does not gate an explicit
 /// [`Command::Prime`] (UI "Prime Now" / MQTT), which always runs.
+/// `whole_bed_away` is [`AwayMode::both`]: one side still home keeps the
+/// daily maintenance prime running.
 fn should_prime(
-    away_mode: bool,
+    whole_bed_away: bool,
     prime_enabled: bool,
     since_last_prime: Duration,
     now_local: Time,
     prime_time: Time,
 ) -> bool {
     prime_enabled
-        && !away_mode
+        && !whole_bed_away
         // prime if we are within 30 seconds of prime time AND we havn't tried to prime in the last minute
         && since_last_prime > Duration::from_secs(60)
         && in_prime_window(now_local, prime_time)

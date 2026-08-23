@@ -50,6 +50,13 @@ pub trait PodControl: Send + Sync {
     /// live config. `time` is already validated by the caller.
     async fn set_prime_daily(&self, enabled: bool, time: Time) -> anyhow::Result<()>;
 
+    /// Apply the per-side away-mode switches to the daemon's live config.
+    async fn set_away_mode(&self, left: bool, right: bool) -> anyhow::Result<()>;
+
+    /// Apply the schedule timezone to the daemon's live config. `iana` is
+    /// already validated by the caller.
+    async fn set_timezone(&self, iana: &str) -> anyhow::Result<()>;
+
     /// Fire an alarm immediately (the `POST /api/alarm` "test alarm" path).
     async fn fire_alarm(&self, job: AlarmJob) -> anyhow::Result<()>;
 
@@ -76,6 +83,8 @@ pub enum Call {
     ClearAlarm(Side),
     Prime,
     SetPrimeDaily(bool, Time),
+    SetAwayMode(bool, bool),
+    SetTimezone(String),
     FireAlarm(AlarmJob),
     ApplyDeviceSettings(serde_json::Value),
     Reboot,
@@ -149,6 +158,16 @@ impl PodControl for MockControl {
 
     async fn set_prime_daily(&self, enabled: bool, time: Time) -> anyhow::Result<()> {
         self.record(Call::SetPrimeDaily(enabled, time));
+        Ok(())
+    }
+
+    async fn set_away_mode(&self, left: bool, right: bool) -> anyhow::Result<()> {
+        self.record(Call::SetAwayMode(left, right));
+        Ok(())
+    }
+
+    async fn set_timezone(&self, iana: &str) -> anyhow::Result<()> {
+        self.record(Call::SetTimezone(iana.to_string()));
         Ok(())
     }
 
@@ -257,6 +276,17 @@ impl PodControl for PoddControl {
 
     async fn set_prime_daily(&self, enabled: bool, time: Time) -> anyhow::Result<()> {
         self.send(Command::SetPrimeDaily { enabled, time }).await
+    }
+
+    async fn set_away_mode(&self, left: bool, right: bool) -> anyhow::Result<()> {
+        self.send(Command::SetAwayMode { left, right }).await
+    }
+
+    async fn set_timezone(&self, iana: &str) -> anyhow::Result<()> {
+        self.send(Command::SetTimezone {
+            iana: iana.to_string(),
+        })
+        .await
     }
 
     async fn fire_alarm(&self, job: AlarmJob) -> anyhow::Result<()> {

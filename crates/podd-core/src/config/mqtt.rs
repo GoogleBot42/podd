@@ -5,7 +5,7 @@ use crate::{
     mqtt::publish_guaranteed_wait,
 };
 
-use super::{AlarmConfig, Config, SidesConfig};
+use super::{AlarmConfig, AwayMode, Config, SidesConfig};
 use jiff::civil::Time;
 use rumqttc::AsyncClient;
 use tokio::sync::watch;
@@ -137,8 +137,10 @@ async fn publish_prime(client: &mut AsyncClient, value: Time) {
     publish_guaranteed_wait(client, TOPIC_PRIME, true, value.to_string()).await;
 }
 
-async fn publish_away_mode(client: &mut AsyncClient, mode: bool) {
-    publish_guaranteed_wait(client, TOPIC_AWAY_MODE, true, mode.to_string()).await;
+/// The retained topic keeps its historical whole-bed bool semantics: "true"
+/// only when both sides are away.
+async fn publish_away_mode(client: &mut AsyncClient, mode: AwayMode) {
+    publish_guaranteed_wait(client, TOPIC_AWAY_MODE, true, mode.both().to_string()).await;
 }
 
 async fn publish_left_profile(client: &mut AsyncClient, side: &SideConfig) {
@@ -184,8 +186,14 @@ pub async fn handle_action(
     // modify config
     match topic {
         TOPIC_SET_AWAY_MODE => {
-            cfg.away_mode = payload.trim().parse()?;
-            log::info!("Set away_mode to {}", cfg.away_mode);
+            // Whole-bed toggle (historical payload): a bool sets both sides.
+            // Per-side away comes from the UI settings page.
+            let mode: bool = payload.trim().parse()?;
+            cfg.away_mode = AwayMode {
+                left: mode,
+                right: mode,
+            };
+            log::info!("Set away_mode to {:?}", cfg.away_mode);
             publish_away_mode(client, cfg.away_mode).await;
         }
 
