@@ -8,7 +8,6 @@ import { DeepPartial } from 'ts-essentials';
 export default function FeaturesSection() {
   const { data: services, refetch, isLoading } = useServices();
   const setIsUpdating = useAppStore(state => state.setIsUpdating);
-  const isUpdating = useAppStore(state => state.isUpdating);
 
   const updateServices = (services: DeepPartial<Services>) => {
     setIsUpdating(true);
@@ -28,7 +27,9 @@ export default function FeaturesSection() {
       <FormControlLabel
         control={
           <Switch
-            disabled={ isUpdating || services?.biometrics.jobs.installation.status !== 'healthy' }
+            // podd persists nothing for this service, so the switch used to
+            // bounce straight back on the next refetch.
+            disabled
             checked={ services.biometrics.enabled }
             onChange={ (event) => updateServices({ biometrics: { enabled: event.target.checked } }) }
           />
@@ -39,9 +40,14 @@ export default function FeaturesSection() {
 
         <InfoIcon sx={ { color: 'text.secondary' } }/>
 
-        <Typography color='text.secondary'>
-          Calculate biometrics (heart rate, breathing, HRV) from the bed sensors.
-        </Typography>
+        <Box>
+          <Typography color='text.secondary'>
+            Calculate biometrics (heart rate, breathing, HRV) from the bed sensors.
+          </Typography>
+          <Typography variant='body2' color='text.secondary'>
+            Not yet supported by podd
+          </Typography>
+        </Box>
 
       </Box>
     </Section>

@@ -5,6 +5,7 @@ import {
   Alert,
   Box,
   Button,
+  Tooltip,
 } from '@mui/material';
 
 import { useAppStore } from '@state/appStore.tsx';
@@ -15,6 +16,11 @@ import { DayOfWeek } from '../../api/schemas/schedulesSchema';
 import AlarmOverride from './AlarmOverride.tsx';
 import AlarmDisabledDialog from './AlarmDisabledDialog.tsx';
 
+
+// The override dialogs write settings.<side>.scheduleOverrides, which no alarm
+// code on the pod reads — enabling them would tell the user an armed alarm is
+// off. Keep the state they display, disable the ways of changing it.
+const OVERRIDES_UNSUPPORTED = 'Alarm overrides aren\'t wired up yet';
 
 export default function AlarmNotification() {
   const { side } = useAppStore();
@@ -96,14 +102,19 @@ export default function AlarmNotification() {
                 Alarm is disabled
                 &nbsp;
                 </div>
-                <Button
-                  variant="outlined"
-                  size="small"
-                  color="warning"
-                  onClick={ () => setDisabledOpen(true) }
-                >
-                  Enable
-                </Button>
+                <Tooltip title={ OVERRIDES_UNSUPPORTED }>
+                  <span>
+                    <Button
+                      variant="outlined"
+                      size="small"
+                      color="warning"
+                      disabled
+                      onClick={ () => setDisabledOpen(true) }
+                    >
+                      Enable
+                    </Button>
+                  </span>
+                </Tooltip>
               </Box>
 
             )
@@ -112,25 +123,35 @@ export default function AlarmNotification() {
               <>
                 <div>
                   Alarm at &nbsp;
-                  <Button
-                    variant="outlined"
-                    size="small"
-                    color="warning"
-                    onClick={ () => setOverrideOpen(!overrideOpen) }
-                  >
-                    { scheduledAlarmTimeAmPm }
-                  </Button>
+                  <Tooltip title={ OVERRIDES_UNSUPPORTED }>
+                    <span>
+                      <Button
+                        variant="outlined"
+                        size="small"
+                        color="warning"
+                        disabled
+                        onClick={ () => setOverrideOpen(!overrideOpen) }
+                      >
+                        { scheduledAlarmTimeAmPm }
+                      </Button>
+                    </span>
+                  </Tooltip>
 
                 </div>
                 &nbsp;
-                <Button
-                  variant="outlined"
-                  size="small"
-                  color="warning"
-                  onClick={ () => setDisabledOpen(true) }
-                >
-                  Disable
-                </Button>
+                <Tooltip title={ OVERRIDES_UNSUPPORTED }>
+                  <span>
+                    <Button
+                      variant="outlined"
+                      size="small"
+                      color="warning"
+                      disabled
+                      onClick={ () => setDisabledOpen(true) }
+                    >
+                      Disable
+                    </Button>
+                  </span>
+                </Tooltip>
               </>
             )
         }
