@@ -88,12 +88,7 @@ impl HealthRegistry {
             })
             .collect();
         let (tx, rx) = watch::channel(seed);
-        (
-            HealthRegistry {
-                tx: Arc::new(tx),
-            },
-            rx,
-        )
+        (HealthRegistry { tx: Arc::new(tx) }, rx)
     }
 
     /// Record `name`'s current state.

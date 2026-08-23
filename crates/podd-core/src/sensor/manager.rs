@@ -218,7 +218,8 @@ pub async fn run(
 
     let cfg = config_rx.borrow_and_update();
     let timezone = cfg.timezone.clone();
-    let mut scheduler = CommandScheduler::new(cfg.away_mode, cfg.profile.clone(), writer, health.clone());
+    let mut scheduler =
+        CommandScheduler::new(cfg.away_mode, cfg.profile.clone(), writer, health.clone());
     drop(cfg);
 
     // Defensive: we may have (re)started mid-alarm with no memory of starting
