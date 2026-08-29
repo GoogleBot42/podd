@@ -20,6 +20,7 @@ pub mod mqtt;
 pub mod reset;
 pub mod schedule;
 pub mod sensor;
+pub mod settings;
 pub mod version;
 
 use std::future::Future;
@@ -89,18 +90,26 @@ pub async fn run(config_path: &Path) -> anyhow::Result<()> {
     fut.await
 }
 
-/// Where `schedules.json` lives: next to `config.ron`.
+/// Where the api layer's JSON documents live: next to `config.ron`.
 ///
 /// Deliberately the same derivation the `podd` binary uses for the API layer's
-/// `StateStore` (`crates/podd/src/main.rs`) — the API owns writing that file,
-/// podd-core only ever reads it, and the two must agree on which file it is.
-fn schedules_path(config_path: &Path) -> PathBuf {
+/// `StateStore` (`crates/podd/src/main.rs`) — the API owns writing these files,
+/// podd-core only ever reads them, and the two must agree on which file it is.
+fn sibling_path(config_path: &Path, name: &str) -> PathBuf {
     config_path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("schedules.json")
+        .join(name)
+}
+
+fn schedules_path(config_path: &Path) -> PathBuf {
+    sibling_path(config_path, "schedules.json")
+}
+
+fn settings_path(config_path: &Path) -> PathBuf {
+    sibling_path(config_path, "settings.json")
 }
 
 /// Read `schedules.json`, or the all-disabled default if it is missing or
@@ -128,6 +137,26 @@ async fn load_schedules(path: &Path) -> schedule::Schedules {
     serde_json::from_slice(&bytes).unwrap_or_else(|e| {
         log::warn!("failed to parse {}: {e}; using default", path.display());
         schedule::Schedules::default()
+    })
+}
+
+/// Read `settings.json`, or the free-sleep defaults if it is missing or
+/// unreadable/corrupt — the same load-or-default `api::StateStore` performs,
+/// so the settings the UI shows and the ones the daemon acts on can't diverge
+/// on a garbled file.
+async fn load_settings(path: &Path) -> settings::Settings {
+    let bytes = match tokio::fs::read(path).await {
+        Ok(b) => b,
+        Err(e) => {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                log::warn!("failed to read {}: {e}; using defaults", path.display());
+            }
+            return settings::Settings::default();
+        }
+    };
+    serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+        log::warn!("failed to parse {}: {e}; using defaults", path.display());
+        settings::Settings::default()
     })
 }
 
@@ -254,11 +283,78 @@ fn republish_config_state(
     });
 }
 
+/// Reboot the device via systemd. Gated on `dry_run` like every actuation: a
+/// dev box running the daemon (or `cargo test`) must never reboot itself.
+async fn reboot_device(dry_run: bool) {
+    if dry_run {
+        log::warn!("[dry-run] would reboot the device (systemctl reboot)");
+        return;
+    }
+    log::warn!("Rebooting the device (systemctl reboot)");
+    match tokio::process::Command::new("systemctl")
+        .arg("reboot")
+        .status()
+        .await
+    {
+        Ok(status) if status.success() => {}
+        Ok(status) => log::error!("systemctl reboot exited with {status}"),
+        Err(e) => log::error!("failed to run systemctl reboot: {e}"),
+    }
+}
+
+/// Minimum process uptime before the daily reboot may fire. After a reboot the
+/// system is back inside the ±30 s trigger window (boot takes ~1 min), so an
+/// uptime guard is what breaks the reboot→boot→reboot loop.
+const REBOOT_MIN_UPTIME: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// The daily-reboot scheduler (settings.json `rebootDaily`, #106): reboots the
+/// device one hour before the daily prime time — free-sleep's rule, quoted in
+/// the UI's "Reboot once a day" copy. The prime time and timezone come from
+/// the live config (the settings page bridges them there), the enable flag
+/// from the settings watch.
+///
+/// Fires only when the clock is NTP-synced: with no RTC battery the boot clock
+/// is a restored pre-shutdown timestamp (see `sensor::manager`), and rebooting
+/// on untrusted wall time could loop or fire at a real bedtime.
+async fn run_reboot_scheduler(
+    config_rx: watch::Receiver<Config>,
+    settings_rx: watch::Receiver<settings::Settings>,
+    dry_run: bool,
+) {
+    let started = tokio::time::Instant::now();
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(15));
+    loop {
+        tick.tick().await;
+        if !settings_rx.borrow().reboot_daily || started.elapsed() < REBOOT_MIN_UPTIME {
+            continue;
+        }
+        let (timezone, prime) = {
+            let cfg = config_rx.borrow();
+            (cfg.timezone.clone(), cfg.prime)
+        };
+        let at = settings::reboot_time(prime);
+        let now = jiff::Timestamp::now().to_zoned(timezone).time();
+        if !settings::in_daily_window(now, at) {
+            continue;
+        }
+        if !sensor::manager::clock_is_synced() {
+            log::warn!("daily reboot due ({at}) but the clock is not NTP-synced; skipping");
+        } else {
+            log::info!("Daily reboot window reached ({at})");
+            reboot_device(dry_run).await;
+        }
+        // Sleep past the rest of the ±30 s window so one day triggers one
+        // reboot attempt (or one dry-run/skip log), not four.
+        tokio::time::sleep(std::time::Duration::from_secs(90)).await;
+    }
+}
+
 /// Route a command to the manager that owns it. System-level commands and
 /// not-yet-mapped ones are logged (dry-run) here.
 ///
 /// `mqtt` is used only to republish retained config-state topics after a
 /// config-editing command (#106) — see [`republish_config_state`].
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_commands(
     mut cmd_rx: mpsc::Receiver<Command>,
     frozen_tx: mpsc::Sender<Command>,
@@ -266,7 +362,9 @@ async fn dispatch_commands(
     config_tx: watch::Sender<Config>,
     config_path: Arc<str>,
     schedules_tx: watch::Sender<schedule::Schedules>,
+    settings_tx: watch::Sender<settings::Settings>,
     mqtt: rumqttc::AsyncClient,
+    dry_run: bool,
 ) {
     use config::mqtt::ConfigStateTopic;
     while let Some(cmd) = cmd_rx.recv().await {
@@ -310,6 +408,13 @@ async fn dispatch_commands(
                     log::warn!("schedules watch closed; dropping SetSchedules");
                 }
             }
+            // Same ownership as SetSchedules: `settings.json` was already
+            // persisted by the api layer; only the in-memory copy updates.
+            Command::SetSettings(new_settings) => {
+                if settings_tx.send((**new_settings).clone()).is_err() {
+                    log::warn!("settings watch closed; dropping SetSettings");
+                }
+            }
             Command::ClearAlarm { .. } | Command::FireAlarm(_) => {
                 if sensor_tx.send(cmd).await.is_err() {
                     log::warn!("sensor command channel closed; dropping command");
@@ -322,7 +427,12 @@ async fn dispatch_commands(
                     bytes.len()
                 );
             }
-            Command::Reboot | Command::Update | Command::Execute { .. } => {
+            // Spawned so a slow/hung systemctl can't stall the dispatcher (the
+            // commands queued behind it include alarm dismissal).
+            Command::Reboot => {
+                tokio::spawn(reboot_device(dry_run));
+            }
+            Command::Update | Command::Execute { .. } => {
                 log::warn!("system command {cmd:?} not yet implemented // TODO(live-cutover)");
             }
         }
@@ -394,6 +504,23 @@ async fn run_inner(
     );
     let (schedules_tx, schedules_rx) = watch::channel(schedules);
 
+    // The user settings (`settings.json`, written by the api layer). Read once
+    // here; later edits arrive as `Command::SetSettings`. Today the daemon
+    // acts on `rebootDaily`; prime/away/timezone behavior still comes from
+    // `config.ron` (their settings-page edits are bridged there).
+    let settings_file = settings_path(config_path);
+    let user_settings = load_settings(&settings_file).await;
+    log::info!(
+        "User settings ({}): daily reboot {}",
+        settings_file.display(),
+        if user_settings.reboot_daily {
+            "enabled (1 h before prime time)"
+        } else {
+            "disabled"
+        }
+    );
+    let (settings_tx, settings_rx) = watch::channel(user_settings);
+
     log::info!(
         "Using timezone: {}",
         config.timezone.iana_name().unwrap_or("ERROR")
@@ -444,7 +571,15 @@ async fn run_inner(
         config_tx.clone(),
         config_path_arc.clone(),
         schedules_tx,
+        settings_tx,
         mqtt_man.client.clone(),
+        dry_run,
+    ));
+
+    tokio::spawn(run_reboot_scheduler(
+        config_rx.clone(),
+        settings_rx,
+        dry_run,
     ));
 
     // MQTT must NEVER gate the hardware. Give the broker a brief chance to

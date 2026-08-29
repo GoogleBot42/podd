@@ -136,6 +136,16 @@ pub enum Command {
     ///
     /// [`schedule::Schedules`]: crate::schedule::Schedules
     SetSchedules(Box<crate::schedule::Schedules>),
+    /// Replace the live user-settings document (the UI's Settings page).
+    ///
+    /// Same ownership rule as [`Command::SetSchedules`]: the API layer has
+    /// already persisted `settings.json` (podd-core never writes it), so this
+    /// only refreshes the in-memory copy the daemon-side consumers watch —
+    /// today the daily-reboot scheduler, next the schedule overrides (#106).
+    /// Prime/away/timezone are *additionally* bridged into `config.ron` by
+    /// their own commands above; this document is not the source of truth for
+    /// those.
+    SetSettings(Box<crate::settings::Settings>),
     /// Fire an alarm immediately.
     FireAlarm(AlarmSpec),
     /// Apply an opaque CBOR device-settings block (gains / LED brightness).
