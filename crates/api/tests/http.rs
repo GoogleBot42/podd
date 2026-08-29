@@ -211,6 +211,52 @@ async fn settings_reject_a_bad_timezone_without_applying_anything() {
 }
 
 #[tokio::test]
+async fn settings_accept_a_schedule_override_and_push_it_to_the_daemon() {
+    let (app, control, store) = build();
+    let patch = json!({
+        "left": { "scheduleOverrides": { "alarm": {
+            "disabled": false,
+            "timeOverride": "06:30",
+            "expiresAt": "2026-08-18T06:32:00-06:00"
+        } } }
+    });
+    let resp = app.oneshot(post_json("/api/settings", &patch)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        store.settings().left.schedule_overrides.alarm.time_override,
+        "06:30"
+    );
+    match control.calls().as_slice() {
+        [Call::SetSettings(s)] => {
+            assert_eq!(s.left.schedule_overrides.alarm.time_override, "06:30");
+        }
+        other => panic!("expected exactly one SetSettings, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn settings_reject_bad_override_fields_without_applying_anything() {
+    let (app, control, store) = build();
+    let patch = json!({
+        "left": { "scheduleOverrides": {
+            "alarm": { "timeOverride": "25:99", "expiresAt": "not-a-time" },
+            "temperatureSchedules": { "disabled": true, "expiresAt": "later" }
+        } }
+    });
+    let resp = app.oneshot(post_json("/api/settings", &patch)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let v = body_json(resp).await;
+    assert_eq!(v["error"], "Invalid request data");
+    // three distinct offenses, each named
+    assert_eq!(v["details"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        store.settings().left.schedule_overrides.alarm.time_override,
+        ""
+    );
+    assert!(control.calls().is_empty());
+}
+
+#[tokio::test]
 async fn settings_reject_a_bad_prime_time_without_applying_anything() {
     let (app, control, store) = build();
     let patch = json!({ "primePodDaily": { "enabled": true, "time": "25:99" } });
