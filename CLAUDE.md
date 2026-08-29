@@ -65,6 +65,8 @@ anything on the actuation path as safety-critical.
   `docs/SD-BOOT.md` legacy L1 stock-clone image.
 - `docs/FLASHING.md`, `INSTALL.md`, `RECOVERY.md`, `UPDATING.md`,
   `RELEASING.md` — user/maintainer guides (releases: tag `v*`, CI does the rest).
+- `docs/ALARM-TESTING.md` — staged live-alarm verification protocol (kill
+  switches, dismissal tests, day-attribution gotcha).
 - `docs/research/` — dense reverse-engineering evidence; reference material,
   don't read it all to orient.
 
