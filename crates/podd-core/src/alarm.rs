@@ -19,13 +19,14 @@
 //! that row's day — Monday's row with a 07:00 alarm rings Tuesday 07:00 —
 //! while an alarm at noon or later rings on the row's own day.
 
-use jiff::civil::Time;
+use jiff::civil::{Time, Weekday};
 use jiff::{Span, Timestamp, Zoned};
+use pod_proto::packet::BedSide;
 use pod_proto::sensor::command::AlarmPattern;
 
-use crate::config::SideConfig;
-use crate::schedule::{self, SideSchedule, VibrationPattern};
-use crate::settings::AlarmOverride;
+use crate::config::{SideConfig, SidesConfig};
+use crate::schedule::{self, SideSchedule, VibrationPattern, parse_hhmm};
+use crate::settings::{AlarmOverride, Settings};
 
 /// The alarm that should be vibrating: its window plus vibration parameters.
 #[derive(Clone, Debug, PartialEq)]
@@ -52,10 +53,6 @@ fn to_alarm_pattern(p: VibrationPattern) -> AlarmPattern {
     }
 }
 
-fn parse_hhmm(s: &str) -> Option<Time> {
-    Time::strptime("%H:%M", s).ok()
-}
-
 /// The scheduled alarm whose window contains `now`, if any.
 ///
 /// `now` must be zoned in the *configured* timezone (weekday and civil time
@@ -78,15 +75,71 @@ pub fn resolve_alarm(
     };
 
     let now_ts = now.timestamp();
-    candidates
+    apply_override(candidates, override_)
         .into_iter()
-        .filter_map(|c| apply_override(c, override_))
         .find(|c| {
             let start = c.start.timestamp();
             let end = start + jiff::SignedDuration::from_secs(i64::from(c.alarm.duration_s));
             start <= now_ts && now_ts < end
         })
         .map(|c| c.alarm)
+}
+
+/// [`resolve_alarm`] for one *physical* side, honoring the profile layout:
+/// Solo profiles have no per-side split — both bed sides read the weekly
+/// `left` document and the left override (the UI's side concept collapses to
+/// one bed, exactly as the frozen manager's temperature path maps Solo).
+pub fn resolve_for_side(
+    profile: &SidesConfig,
+    schedules: &schedule::Schedules,
+    settings: &Settings,
+    side: &BedSide,
+    now: &Zoned,
+) -> Option<ResolvedAlarm> {
+    let (weekly, override_) = match (profile, side) {
+        (SidesConfig::Solo(_), _) | (SidesConfig::Couples { .. }, BedSide::Left) => {
+            (&schedules.left, &settings.left.schedule_overrides.alarm)
+        }
+        (SidesConfig::Couples { .. }, BedSide::Right) => {
+            (&schedules.right, &settings.right.schedule_overrides.alarm)
+        }
+    };
+    resolve_alarm(weekly, profile.get_side(side), override_, now)
+}
+
+/// True when a side's `config.ron` profile alarm can never ring because the
+/// weekly schedule owns the side but has no enabled alarm on any row — the
+/// state a pre-weekly install lands in after adopting the weekly schedule for
+/// temperatures only. Callers warn, so the silent regression is visible
+/// before someone oversleeps.
+pub fn profile_alarm_shadowed(weekly: &SideSchedule, profile: &SideConfig) -> bool {
+    schedule::side_owned(weekly)
+        && profile.alarm.is_some()
+        && !Weekday::Sunday
+            .cycle_forward()
+            .take(7)
+            .any(|wd| weekly.day(wd).alarm.enabled)
+}
+
+/// Warn (once per call) for each side whose profile alarm is shadowed — the
+/// sensor manager calls this at startup and whenever the schedules change.
+pub fn warn_shadowed(profile: &SidesConfig, schedules: &schedule::Schedules) {
+    let sides: Vec<(&'static str, &SideSchedule, &SideConfig)> = match profile {
+        SidesConfig::Solo(cfg) => vec![("bed", &schedules.left, cfg)],
+        SidesConfig::Couples { left, right } => vec![
+            ("left", &schedules.left, left),
+            ("right", &schedules.right, right),
+        ],
+    };
+    for (name, weekly, cfg) in sides {
+        if profile_alarm_shadowed(weekly, cfg) {
+            log::warn!(
+                "{name}: the config.ron profile alarm is IGNORED — the weekly schedule owns \
+                 this side and has no alarm enabled on any weekday. Enable one on the \
+                 Schedule page if you still want to be woken (#106)."
+            );
+        }
+    }
 }
 
 /// Weekly candidates near `now`: yesterday's and today's rows are the only
@@ -102,8 +155,12 @@ fn weekly_candidates(side: &SideSchedule, now: &Zoned) -> Vec<Candidate> {
     [yesterday, today]
         .into_iter()
         .filter_map(|row_date| {
-            let a = &side.day(row_date.weekday()).alarm;
-            if !a.enabled {
+            let day = side.day(row_date.weekday());
+            let a = &day.alarm;
+            // `power.enabled` is the row's master switch everywhere the UI is
+            // concerned (the alarm accordion is disabled and the alarm banner
+            // hidden on a powered-off day) — a disabled day must not ring.
+            if !day.power.enabled || !a.enabled {
                 return None;
             }
             let t = parse_hhmm(&a.time)?;
@@ -159,49 +216,54 @@ fn profile_candidates(profile: &SideConfig, now: &Zoned) -> Vec<Candidate> {
         .collect()
 }
 
-/// Apply the side's one-shot override to one candidate.
+/// Apply the side's one-shot override to the candidate set.
 ///
 /// The override holds until `expires_at` (RFC 3339; the UI stamps it two
-/// minutes past the alarm it targets). Applicability is judged against the
-/// alarm's *start* — not against "now" — so an override stays in force for the
-/// whole window it targeted instead of un-applying mid-ring:
+/// minutes past the alarm it targets). Applicability is judged against alarm
+/// *starts* — not against "now" — so an override stays in force for the whole
+/// window it targeted instead of un-applying mid-ring:
 ///
-/// * `disabled`: drop the candidate if its start is before the expiry.
-/// * `time_override` ("HH:mm"): move the candidate to that time on its fire
-///   date, if the *moved* start is before the expiry (the moved time is
-///   typically earlier than the base alarm, which is itself past the expiry).
+/// * `disabled`: drop every candidate whose start is before the expiry.
+/// * `time_override` ("HH:mm"): the override targets ONE alarm instance (the
+///   expiry is stamped two minutes past the moved time), so exactly one
+///   candidate is moved — the one whose moved start lands latest before the
+///   expiry (ties: earliest original start). Moving every candidate in range
+///   would silently relocate a second same-day alarm out of existence.
 ///
 /// A malformed `expires_at` or `time_override` deactivates the override — the
 /// API validates them, but a hand-edited `settings.json` must not take the
 /// resolver down.
-fn apply_override(c: Candidate, o: &AlarmOverride) -> Option<Candidate> {
+fn apply_override(mut candidates: Vec<Candidate>, o: &AlarmOverride) -> Vec<Candidate> {
     let Ok(expires) = o.expires_at.parse::<Timestamp>() else {
-        return Some(c);
+        return candidates;
     };
     if o.disabled {
-        if c.start.timestamp() < expires {
-            return None;
-        }
-        return Some(c);
+        candidates.retain(|c| c.start.timestamp() >= expires);
+        return candidates;
     }
     let Some(t) = parse_hhmm(&o.time_override) else {
-        return Some(c);
+        return candidates;
     };
-    let Ok(moved_start) = c
-        .start
-        .date()
-        .at(t.hour(), t.minute(), 0, 0)
-        .to_zoned(c.start.time_zone().clone())
-    else {
-        return Some(c);
+    let moved_start = |c: &Candidate| {
+        c.start
+            .date()
+            .at(t.hour(), t.minute(), 0, 0)
+            .to_zoned(c.start.time_zone().clone())
+            .ok()
+            .filter(|m| m.timestamp() < expires)
     };
-    if moved_start.timestamp() < expires {
-        return Some(Candidate {
-            start: moved_start,
-            alarm: c.alarm,
+    let target = candidates
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| moved_start(c).map(|m| (i, m)))
+        .max_by(|(i, m), (j, n)| {
+            (m.timestamp(), std::cmp::Reverse(candidates[*i].start.timestamp()))
+                .cmp(&(n.timestamp(), std::cmp::Reverse(candidates[*j].start.timestamp())))
         });
+    if let Some((i, moved)) = target {
+        candidates[i].start = moved;
     }
-    Some(c)
+    candidates
 }
 
 // ---------------------------------------------------------------------------
@@ -454,6 +516,116 @@ mod tests {
             resolve_alarm(&side, &prof, &o, &at(2026, 8, 18, 7, 1)).is_some(),
             "unparseable expiry must not skip real alarms"
         );
+    }
+
+    #[test]
+    fn powered_off_day_never_rings_even_with_alarm_enabled() {
+        // Copy-to-all-days then flipping one day's power off leaves
+        // alarm.enabled true but unreachable in the UI; the daemon must agree
+        // with the UI that power.enabled is the row's master switch.
+        let mut side = owned_side(weekly_alarm("07:00")); // monday: power+alarm on
+        side.tuesday = DailySchedule {
+            alarm: weekly_alarm("07:00"),
+            ..DailySchedule::default()
+        };
+        assert!(!side.tuesday.power.enabled, "premise: tuesday power off");
+        let prof = profile("08:00", None);
+
+        // Monday's row (power on) rings Tuesday morning...
+        assert!(resolve_alarm(&side, &prof, &no_override(), &at(2026, 8, 18, 7, 1)).is_some());
+        // ...but Tuesday's row (power off) must not ring Wednesday morning.
+        assert_eq!(
+            resolve_alarm(&side, &prof, &no_override(), &at(2026, 8, 19, 7, 1)),
+            None
+        );
+    }
+
+    #[test]
+    fn time_override_moves_only_the_alarm_it_targets() {
+        // Monday row 07:00 (rings Tue 07:00) AND Tuesday row 13:00 (rings Tue
+        // 13:00). Moving the morning alarm to 06:30 must not relocate the
+        // afternoon alarm out of existence.
+        let mut side = owned_side(weekly_alarm("07:00"));
+        side.tuesday = DailySchedule {
+            alarm: weekly_alarm("13:00"),
+            ..DailySchedule::default()
+        };
+        side.tuesday.power.enabled = true;
+        let prof = profile("08:00", None);
+        let o = AlarmOverride {
+            disabled: false,
+            time_override: "06:30".to_string(),
+            expires_at: "2026-08-18T06:32:00-06:00".to_string(),
+        };
+
+        assert!(
+            resolve_alarm(&side, &prof, &o, &at(2026, 8, 18, 6, 31)).is_some(),
+            "morning alarm rings at the moved time"
+        );
+        assert_eq!(
+            resolve_alarm(&side, &prof, &o, &at(2026, 8, 18, 7, 1)),
+            None,
+            "and not at its base time"
+        );
+        assert!(
+            resolve_alarm(&side, &prof, &o, &at(2026, 8, 18, 13, 1)).is_some(),
+            "the afternoon alarm is untouched"
+        );
+    }
+
+    #[test]
+    fn solo_profile_maps_both_physical_sides_to_left() {
+        let mut settings = Settings::default();
+        // Whole-bed skip written (by the UI) to the left override only.
+        settings.left.schedule_overrides.alarm = AlarmOverride {
+            disabled: true,
+            time_override: String::new(),
+            expires_at: "2026-08-18T07:02:00-06:00".to_string(),
+        };
+        let schedules = schedule::Schedules {
+            left: owned_side(weekly_alarm("07:00")),
+            ..Default::default()
+        };
+        let solo = SidesConfig::Solo(profile("08:00", None));
+
+        for side in [BedSide::Left, BedSide::Right] {
+            assert_eq!(
+                resolve_for_side(&solo, &schedules, &settings, &side, &at(2026, 8, 18, 7, 1)),
+                None,
+                "{side:?}: the skip silences the whole bed"
+            );
+        }
+        // A couples profile keeps the sides separate: right ignores left's skip.
+        let couples = SidesConfig::Couples {
+            left: profile("08:00", None),
+            right: profile("08:00", None),
+        };
+        let schedules = schedule::Schedules {
+            left: owned_side(weekly_alarm("07:00")),
+            right: owned_side(weekly_alarm("07:00")),
+        };
+        assert!(
+            resolve_for_side(&couples, &schedules, &settings, &BedSide::Right, &at(2026, 8, 18, 7, 1))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn shadowed_profile_alarm_is_detected() {
+        // Owned side (monday power on), no weekly alarm enabled anywhere, and
+        // a profile alarm that used to ring: shadowed.
+        let mut owned_no_alarm = SideSchedule::default();
+        owned_no_alarm.monday.power.enabled = true;
+        let prof_with_alarm = profile("08:00", Some(profile_alarm(0, 600)));
+
+        assert!(profile_alarm_shadowed(&owned_no_alarm, &prof_with_alarm));
+        // Not shadowed when: unowned, no profile alarm, or a weekly alarm exists.
+        assert!(!profile_alarm_shadowed(&SideSchedule::default(), &prof_with_alarm));
+        assert!(!profile_alarm_shadowed(&owned_no_alarm, &profile("08:00", None)));
+        assert!(!profile_alarm_shadowed(
+            &owned_side(weekly_alarm("07:00")),
+            &prof_with_alarm
+        ));
     }
 
     #[test]

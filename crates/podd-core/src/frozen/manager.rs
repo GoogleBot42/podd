@@ -11,7 +11,7 @@ use pod_proto::frozen::{FrozenCommand, FrozenPacket};
 use pod_proto::packet::BedSide;
 use pod_proto::serial::{SerialError, create_framed_port};
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
-use jiff::{SignedDuration, Timestamp, Zoned, civil::Time, tz::TimeZone};
+use jiff::{Timestamp, Zoned, civil::Time, tz::TimeZone};
 use linux_embedded_hal::I2cdev;
 use rumqttc::AsyncClient;
 use thiserror::Error;
@@ -517,9 +517,12 @@ fn scheduled_target(
     timezone: &TimeZone,
     now: &Zoned,
 ) -> FrozenTarget {
-    let suspension = match side {
-        BedSide::Left => &temp_overrides[0],
-        BedSide::Right => &temp_overrides[1],
+    // Solo profiles have no per-side split: both physical sides read the left
+    // suspension, mirroring `wanted_target`'s weekly mapping and the alarm
+    // resolver's Solo collapse.
+    let suspension = match (side_config, side) {
+        (SidesConfig::Solo(_), _) | (_, BedSide::Left) => &temp_overrides[0],
+        (_, BedSide::Right) => &temp_overrides[1],
     };
     if suspension.suspended_at(now.timestamp()) {
         return FrozenTarget::default().delimiter_safe(side);
@@ -627,11 +630,10 @@ fn should_prime(
 }
 
 /// True when `now` is within 30 s (either side) of `prime_time` on the
-/// wrapping 24 h clock. A plain `duration_until(..).abs()` reads ~24 h for a
-/// prime scheduled just across midnight from `now`, missing the window.
+/// wrapping 24 h clock. One formula, shared with the daily-reboot scheduler —
+/// a boundary fix must not split prime timing from reboot timing.
 fn in_prime_window(now: Time, prime_time: Time) -> bool {
-    let d = now.duration_until(prime_time).abs();
-    d.min(SignedDuration::from_hours(24) - d) < SignedDuration::from_secs(30)
+    crate::settings::in_daily_window(now, prime_time)
 }
 
 /// Effective target for a side: the manual override while it lives, else the

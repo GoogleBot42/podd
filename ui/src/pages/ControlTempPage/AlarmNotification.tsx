@@ -35,7 +35,10 @@ export default function AlarmNotification() {
     if (!settings || !schedules) return;
     const alarm = schedules[side][currentDay].alarm;
 
-    const hhMm = moment(alarm.time, 'HH:mm').format('hh:mm');
+    // 24-hour: this string seeds the override dialogs' <input type="time">
+    // and the expiry math — 'hh:mm' (12-hour, no AM/PM) folded 21:00 into
+    // 09:00 and stamped override expiries in the wrong half of the day.
+    const hhMm = moment(alarm.time, 'HH:mm').format('HH:mm');
     const amPm = moment(alarm.time, 'HH:mm').format('h:mm A');
     setScheduledAlarmTimeHhMm(hhMm);
     setScheduledAlarmTimeAmPm(amPm);
@@ -52,7 +55,7 @@ export default function AlarmNotification() {
         } else {
           setAlarmDisabled(false);
           setScheduledAlarmTimeAmPm(moment(alarmScheduleOverrides.timeOverride, 'HH:mm').format('h:mm A'));
-          setScheduledAlarmTimeHhMm(moment(alarmScheduleOverrides.timeOverride, 'HH:mm').format('hh:mm'));
+          setScheduledAlarmTimeHhMm(moment(alarmScheduleOverrides.timeOverride, 'HH:mm').format('HH:mm'));
         }
       }
     }

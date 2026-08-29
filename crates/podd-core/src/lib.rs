@@ -319,6 +319,7 @@ const REBOOT_MIN_UPTIME: std::time::Duration = std::time::Duration::from_secs(15
 /// on untrusted wall time could loop or fire at a real bedtime.
 async fn run_reboot_scheduler(
     config_rx: watch::Receiver<Config>,
+    schedules_rx: watch::Receiver<schedule::Schedules>,
     settings_rx: watch::Receiver<settings::Settings>,
     dry_run: bool,
 ) {
@@ -329,17 +330,23 @@ async fn run_reboot_scheduler(
         if !settings_rx.borrow().reboot_daily || started.elapsed() < REBOOT_MIN_UPTIME {
             continue;
         }
-        let (timezone, prime) = {
+        let (timezone, prime, profile) = {
             let cfg = config_rx.borrow();
-            (cfg.timezone.clone(), cfg.prime)
+            (cfg.timezone.clone(), cfg.prime, cfg.profile.clone())
         };
         let at = settings::reboot_time(prime);
-        let now = jiff::Timestamp::now().to_zoned(timezone).time();
-        if !settings::in_daily_window(now, at) {
+        let now_zoned = jiff::Timestamp::now().to_zoned(timezone);
+        if !settings::in_daily_window(now_zoned.time(), at) {
             continue;
         }
         if !sensor::manager::clock_is_synced() {
             log::warn!("daily reboot due ({at}) but the clock is not NTP-synced; skipping");
+        } else if alarm_nearby(&profile, &schedules_rx, &settings_rx, &now_zoned) {
+            // A reboot inside (or just before) an alarm window loses the
+            // task-local dismissal state and holds the alarm behind the
+            // post-boot NTP gate — either re-firing a dismissed alarm or
+            // swallowing one. Skip today's reboot instead.
+            log::warn!("daily reboot due ({at}) but an alarm window is active or imminent; skipping");
         } else {
             log::info!("Daily reboot window reached ({at})");
             reboot_device(dry_run).await;
@@ -348,6 +355,28 @@ async fn run_reboot_scheduler(
         // reboot attempt (or one dry-run/skip log), not four.
         tokio::time::sleep(std::time::Duration::from_secs(90)).await;
     }
+}
+
+/// Is a scheduled alarm ringing now — or due within the next five minutes
+/// (a reboot takes ~1 min plus the NTP wait) — on either side?
+fn alarm_nearby(
+    profile: &config::SidesConfig,
+    schedules_rx: &watch::Receiver<schedule::Schedules>,
+    settings_rx: &watch::Receiver<settings::Settings>,
+    now: &jiff::Zoned,
+) -> bool {
+    let schedules = schedules_rx.borrow();
+    let user_settings = settings_rx.borrow();
+    [0i64, 2, 5].iter().any(|mins| {
+        let t = now
+            .checked_add(jiff::Span::new().minutes(*mins))
+            .unwrap_or_else(|_| now.clone());
+        [pod_proto::packet::BedSide::Left, pod_proto::packet::BedSide::Right]
+            .iter()
+            .any(|side| {
+                alarm::resolve_for_side(profile, &schedules, &user_settings, side, &t).is_some()
+            })
+    })
 }
 
 /// Route a command to the manager that owns it. System-level commands and
@@ -579,6 +608,7 @@ async fn run_inner(
 
     tokio::spawn(run_reboot_scheduler(
         config_rx.clone(),
+        schedules_rx.clone(),
         settings_rx.clone(),
         dry_run,
     ));

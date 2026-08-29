@@ -12,7 +12,7 @@ import {
   useTheme,
 } from '@mui/material';
 import AccessTime from '@mui/icons-material/AccessTime';
-import moment from 'moment-timezone';
+import { overrideExpiry } from './alarmOverrideTarget.ts';
 import { postSettings, useSettings } from '@api/settings.ts';
 import { useAppStore } from '@state/appStore.tsx';
 
@@ -40,24 +40,9 @@ export default function AlarmOverride({
 
   const handleSave = () => {
     if (!settings) return null;
-    const now = moment.tz(settings.timeZone);
-    const noonToday = now.clone().hour(12).minute(0).second(0).millisecond(0);
-    const targetDay = now.isSameOrAfter(noonToday) ? now.clone().add(1, 'day') : now;
-
-
-    const [hour, minute] = alarmTimeLocalOverride.split(':').map(Number);
-    const expiresAt = moment.tz(
-      {
-        year: targetDay.year(),
-        month: targetDay.month(), // 0-based
-        date: targetDay.date(),
-        hour,
-        minute,
-        second: 0,
-        millisecond: 0,
-      },
-      settings.timeZone
-    ).add(2, 'minutes').format();
+    // Expiry two minutes past the moved alarm's next occurrence — the daemon
+    // applies the override to the one alarm whose moved start precedes this.
+    const expiresAt = overrideExpiry(alarmTimeLocalOverride, settings.timeZone);
     setIsSaving(true);
 
     postSettings({

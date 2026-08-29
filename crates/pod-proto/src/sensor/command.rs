@@ -113,12 +113,85 @@ impl AlarmCommand {
             pattern,
         }
     }
+
+    /// LSP has no byte-stuffing: a `0x7E` anywhere after the start delimiter
+    /// (payload — the duration bytes here are user-settable — or CRC) gets the
+    /// whole frame silently dropped by the MCU's parser, no echo, no error
+    /// (`docs/research/pod4-sensor-protocol.md`). Mirror
+    /// `FrozenTarget::delimiter_safe`: nudge the duration by up to ±3 s
+    /// (imperceptible for an alarm) until the encoded frame is clean.
+    ///
+    /// The intensity-0/duration-0 *cancel* frame is fixed and verified clean
+    /// by test — never nudged (a nudged cancel is still a cancel, but delta 0
+    /// is checked first so it stays byte-identical anyway).
+    pub fn delimiter_safe(self) -> Self {
+        const DELIM: u8 = 0x7E;
+        for delta in [0i64, -1, 1, -2, 2, -3, 3] {
+            let Ok(duration) = u32::try_from(i64::from(self.duration) + delta) else {
+                continue;
+            };
+            let candidate = AlarmCommand {
+                duration,
+                ..self.clone()
+            };
+            let frame = SensorCommand::SetAlarm(candidate.clone()).to_bytes();
+            if !frame[1..].contains(&DELIM) {
+                return candidate;
+            }
+        }
+        self
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use hex_literal::hex;
+
+    #[test]
+    fn alarm_delimiter_safe_covers_the_reachable_parameter_space() {
+        // duration=126 puts 0x7E in the payload; other combos land it in the
+        // CRC. Every user-reachable combination must nudge to a clean frame.
+        let dirty = AlarmCommand::new(BedSide::Left, 50, 126, AlarmPattern::Single);
+        assert!(
+            SensorCommand::SetAlarm(dirty.clone()).to_bytes()[1..].contains(&0x7E),
+            "premise: duration 126 encodes the delimiter"
+        );
+        let safe = dirty.clone().delimiter_safe();
+        assert_ne!(safe.duration, 126);
+
+        for side in [BedSide::Left, BedSide::Right] {
+            for pattern in [AlarmPattern::Single, AlarmPattern::Double] {
+                for intensity in [0u8, 1, 30, 50, 80, 100] {
+                    for duration in 0..=600u32 {
+                        let cmd = AlarmCommand::new(side, intensity, duration, pattern.clone());
+                        let safe = cmd.delimiter_safe();
+                        assert!(
+                            (i64::from(safe.duration) - i64::from(duration)).abs() <= 3,
+                            "nudge stayed within 3 s"
+                        );
+                        let frame = SensorCommand::SetAlarm(safe).to_bytes();
+                        assert!(
+                            !frame[1..].contains(&0x7E),
+                            "{side:?} intensity {intensity} duration {duration}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn alarm_cancel_frames_are_delimiter_clean_as_is() {
+        // The cancel (intensity 0, duration 0) is sent verbatim on the
+        // stop/dismiss paths — it must never need a nudge.
+        for side in [BedSide::Left, BedSide::Right] {
+            let cancel = AlarmCommand::new(side, 0, 0, AlarmPattern::Double);
+            let frame = SensorCommand::SetAlarm(cancel.clone()).to_bytes();
+            assert!(!frame[1..].contains(&0x7E), "{side:?} cancel frame");
+            assert_eq!(cancel.clone().delimiter_safe(), cancel);
+        }
+    }
 
     #[test]
     fn test_sensor_commands() {

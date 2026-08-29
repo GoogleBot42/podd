@@ -278,8 +278,8 @@ fn step_temp(
 
 /// "HH:mm" → civil time. Unparseable keys are treated as absent: the API layer
 /// rejects them long before they land, but a hand-edited `schedules.json` must
-/// not panic the control core.
-fn parse_hhmm(s: &str) -> Option<Time> {
+/// not panic the control core. Shared with the alarm resolver (`crate::alarm`).
+pub(crate) fn parse_hhmm(s: &str) -> Option<Time> {
     Time::strptime("%H:%M", s).ok()
 }
 

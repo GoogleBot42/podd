@@ -5,8 +5,8 @@ use crate::alarm::{self, ResolvedAlarm};
 use crate::bus::{Command, DeviceSnapshot, StatusTx};
 use crate::config::{AwayMode, Config, SidesConfig};
 use crate::health::{self, Health, HealthRegistry};
-use crate::schedule::{Schedules, SideSchedule};
-use crate::settings::{AlarmOverride, Settings};
+use crate::schedule::Schedules;
+use crate::settings::Settings;
 use crate::sensor::presence::PresenseManager;
 use crate::sensor::state::{PIEZO_FREQ, PIEZO_GAIN, SensorState};
 use crate::sensor::tap::{Tap, TapDetector};
@@ -45,49 +45,17 @@ struct AlarmSources {
     away_mode: AwayMode,
     profile: SidesConfig,
     schedules: Schedules,
-    /// `[left, right]` (settings.json `scheduleOverrides.alarm`).
-    overrides: [AlarmOverride; 2],
+    settings: Settings,
 }
 
 impl AlarmSources {
-    fn override_for(&self, side: &BedSide) -> &AlarmOverride {
-        match side {
-            BedSide::Left => &self.overrides[0],
-            BedSide::Right => &self.overrides[1],
-        }
-    }
-
-    /// The weekly document side for `side`. Solo profiles have no per-side
-    /// split — both bed sides map to `left`, exactly as the frozen manager's
-    /// `wanted_target` does.
-    fn weekly_for(&self, side: &BedSide) -> &SideSchedule {
-        match (&self.profile, side) {
-            (SidesConfig::Solo(_), _) | (SidesConfig::Couples { .. }, BedSide::Left) => {
-                &self.schedules.left
-            }
-            (SidesConfig::Couples { .. }, BedSide::Right) => &self.schedules.right,
-        }
-    }
-
     /// The scheduled alarm whose window contains `now`, if any. Away mode and
     /// dismissals are *not* considered — callers gate on them separately so
-    /// the cancel path stays reachable.
+    /// the cancel path stays reachable. Solo profiles collapse both physical
+    /// sides onto the left document/override (see [`alarm::resolve_for_side`]).
     fn resolve(&self, side: &BedSide, now: &Zoned) -> Option<ResolvedAlarm> {
-        alarm::resolve_alarm(
-            self.weekly_for(side),
-            self.profile.get_side(side),
-            self.override_for(side),
-            now,
-        )
+        alarm::resolve_for_side(&self.profile, &self.schedules, &self.settings, side, now)
     }
-}
-
-/// The two per-side alarm overrides out of a settings document.
-fn overrides_from(settings: &Settings) -> [AlarmOverride; 2] {
-    [
-        settings.left.schedule_overrides.alarm.clone(),
-        settings.right.schedule_overrides.alarm.clone(),
-    ]
 }
 
 struct CommandScheduler {
@@ -282,8 +250,11 @@ pub async fn run(
         away_mode: cfg.away_mode,
         profile: cfg.profile.clone(),
         schedules: schedules_rx.borrow_and_update().clone(),
-        overrides: overrides_from(&settings_rx.borrow_and_update()),
+        settings: settings_rx.borrow_and_update().clone(),
     };
+    // A profile alarm that the weekly ownership rule shadows must be loud in
+    // the journal, not discovered by oversleeping.
+    alarm::warn_shadowed(&sources.profile, &sources.schedules);
     let mut scheduler = CommandScheduler::new(sources, writer, health.clone());
     drop(cfg);
 
@@ -408,9 +379,10 @@ pub async fn run(
             // dialogs): refresh the alarm sources.
             Ok(_) = schedules_rx.changed() => {
                 scheduler.sources.schedules = schedules_rx.borrow().clone();
+                alarm::warn_shadowed(&scheduler.sources.profile, &scheduler.sources.schedules);
             }
             Ok(_) = settings_rx.changed() => {
-                scheduler.sources.overrides = overrides_from(&settings_rx.borrow());
+                scheduler.sources.settings = settings_rx.borrow().clone();
             }
 
             // api / scheduler commands routed to the Sensor subsystem.
@@ -772,12 +744,15 @@ impl CommandScheduler {
                             + Duration::from_secs(u64::from(spec.duration_s) + 65),
                     ),
                 );
+                // delimiter_safe: a 0x7E in the duration/CRC would make this
+                // frame (and every resend of it) silently undeliverable.
                 let cmd = AlarmCommand {
                     side: spec.side,
                     intensity: spec.intensity,
                     duration: spec.duration_s,
                     pattern: spec.pattern,
-                };
+                }
+                .delimiter_safe();
                 if !dry_run {
                     self.pending_fire = Some(PendingFire {
                         cmd: cmd.clone(),
@@ -836,12 +811,18 @@ fn get_alarm_cmd(
                 return None;
             }
             log::info!("Alarm[{side}] requesting to start");
-            return Some(SensorCommand::SetAlarm(AlarmCommand {
-                side: *side,
-                intensity: due.intensity,
-                duration: due.duration_s,
-                pattern: due.pattern,
-            }));
+            // delimiter_safe: LSP has no byte-stuffing, and the user-settable
+            // duration can put 0x7E in the payload/CRC — such a frame is
+            // silently dropped forever (see .claude/rules/actuation-safety.md).
+            return Some(SensorCommand::SetAlarm(
+                AlarmCommand {
+                    side: *side,
+                    intensity: due.intensity,
+                    duration: due.duration_s,
+                    pattern: due.pattern,
+                }
+                .delimiter_safe(),
+            ));
         }
     } else if alarm_running && !state.manual_alarm_active(side) {
         // Out of window, or dismissed mid-window. Cancel via an intensity-0
@@ -996,7 +977,7 @@ mod tests {
                 right: side(time(7, 0, 0, 0), 600, 1200),
             },
             schedules: Schedules::default(),
-            overrides: overrides_from(&Settings::default()),
+            settings: Settings::default(),
         }
     }
 
@@ -1138,7 +1119,7 @@ mod tests {
         let mut state = synced_state();
         state.alarm_left_running = true;
         let mut src = sources(false);
-        src.overrides[0] = AlarmOverride {
+        src.settings.left.schedule_overrides.alarm = crate::settings::AlarmOverride {
             disabled: true,
             time_override: String::new(),
             // covers the whole 06:50 window (2026-08-17 is in MDT, -06:00)
