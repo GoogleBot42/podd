@@ -604,6 +604,7 @@ async fn run_inner(
             device.frozen_baud,
             config_rx.clone(),
             schedules_rx.clone(),
+            settings_rx.clone(),
             led,
             mqtt_man.client.clone(),
             status_tx.clone(),

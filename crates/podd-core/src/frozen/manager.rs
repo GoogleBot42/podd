@@ -4,6 +4,7 @@ use crate::frozen::state::FrozenState;
 use crate::health::{self, Health, HealthRegistry};
 use crate::led::{IS31FL3194Config, IS31FL3194Controller, LedPattern};
 use crate::schedule::{self, Schedules};
+use crate::settings::{Settings, TemperatureScheduleOverride};
 use pod_proto::codec::{CommandTrait, PacketCodec};
 use pod_proto::frozen::packet::FrozenTarget;
 use pod_proto::frozen::{FrozenCommand, FrozenPacket};
@@ -81,6 +82,7 @@ pub async fn run(
     baud: u32,
     mut config_rx: watch::Receiver<Config>,
     mut schedules_rx: watch::Receiver<Schedules>,
+    mut settings_rx: watch::Receiver<Settings>,
     mut led: IS31FL3194Controller<I2cdev>,
     mut client: AsyncClient,
     status: StatusTx,
@@ -120,6 +122,10 @@ pub async fn run(
     // The per-weekday schedule, refreshed by `Command::SetSchedules`. It only
     // *replaces* the config profile for sides it owns (see [`wanted_target`]).
     let mut schedules = schedules_rx.borrow_and_update().clone();
+    // Per-side temperature-schedule suspensions (settings.json
+    // `scheduleOverrides.temperatureSchedules`), refreshed by
+    // `Command::SetSettings`.
+    let mut temp_overrides = temp_overrides_from(&settings_rx.borrow_and_update());
 
     let (mut writer, mut reader) = create_framed_port::<FrozenPacket>(port, baud)?.split();
 
@@ -193,6 +199,7 @@ pub async fn run(
                 prime_enabled,
                 &side_config,
                 &schedules,
+                &temp_overrides,
                 &mut overrides,
             ) {
                 let now = Instant::now();
@@ -262,16 +269,25 @@ pub async fn run(
                 overrides = ManualOverrides::default();
             }
 
+            // Settings saved: refresh the schedule suspensions. Manual
+            // temperature overrides deliberately survive — most settings saves
+            // (name, taps, daily reboot) are not new *temperature* intent, and
+            // a suspension change expires them anyway via the enabled flip.
+            Ok(_) = settings_rx.changed() => {
+                temp_overrides = temp_overrides_from(&settings_rx.borrow());
+            }
+
             // api / scheduler commands routed to the Frozen subsystem.
             Some(cmd) = cmd_rx.recv() => {
                 if let Some((side, target, expires_at)) = handle_command(&mut writer, &state, dry_run, cmd).await {
                     // Must be the *same* wanted target `get_next_command`
                     // computes, weekly path included: this flag is what the
                     // override's schedule-boundary expiry compares against.
-                    let config_enabled = wanted_target(
+                    let config_enabled = scheduled_target(
                         side,
                         &side_config,
                         &schedules,
+                        &temp_overrides,
                         away_mode.get(&side),
                         &timezone,
                         &Timestamp::now().to_zoned(timezone.clone()),
@@ -470,6 +486,47 @@ fn wanted_target(
         .delimiter_safe(side)
 }
 
+/// The two per-side temperature-schedule suspensions (`[left, right]`) out of
+/// a settings document.
+fn temp_overrides_from(settings: &Settings) -> [TemperatureScheduleOverride; 2] {
+    [
+        settings
+            .left
+            .schedule_overrides
+            .temperature_schedules
+            .clone(),
+        settings
+            .right
+            .schedule_overrides
+            .temperature_schedules
+            .clone(),
+    ]
+}
+
+/// [`wanted_target`], unless the side's settings.json override suspends its
+/// temperature schedule until an expiry — the side then reads as off (#106).
+/// Manual overrides are applied on top by the caller, so an explicit "turn it
+/// on" from the UI still works during a suspension.
+#[allow(clippy::too_many_arguments)]
+fn scheduled_target(
+    side: BedSide,
+    side_config: &SidesConfig,
+    schedules: &Schedules,
+    temp_overrides: &[TemperatureScheduleOverride; 2],
+    away: bool,
+    timezone: &TimeZone,
+    now: &Zoned,
+) -> FrozenTarget {
+    let suspension = match side {
+        BedSide::Left => &temp_overrides[0],
+        BedSide::Right => &temp_overrides[1],
+    };
+    if suspension.suspended_at(now.timestamp()) {
+        return FrozenTarget::default().delimiter_safe(side);
+    }
+    wanted_target(side, side_config, schedules, away, timezone, now)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn get_next_command(
     timers: &mut CommandTimers,
@@ -480,6 +537,7 @@ fn get_next_command(
     prime_enabled: bool,
     side_config: &SidesConfig,
     schedules: &Schedules,
+    temp_overrides: &[TemperatureScheduleOverride; 2],
     overrides: &mut ManualOverrides,
 ) -> Option<FrozenCommand> {
     let now = Instant::now();
@@ -495,10 +553,11 @@ fn get_next_command(
 
     // Per side: the schedule's target, unless a live manual override holds.
     let mut wanted_for = |side: BedSide| -> FrozenTarget {
-        let wanted = wanted_target(
+        let wanted = scheduled_target(
             side,
             side_config,
             schedules,
+            temp_overrides,
             away_mode.get(&side),
             timezone,
             &now_zoned,
@@ -936,6 +995,42 @@ mod tests {
         let c = cfg.get_side(&side);
         FrozenTarget::calc_wanted(&tz(), away, &c.temperatures, c.sleep, c.wake)
             .delimiter_safe(side)
+    }
+
+    #[test]
+    fn suspension_override_turns_the_schedule_off_until_expiry() {
+        let schedules = Schedules {
+            left: SideSchedule {
+                monday: row("21:00", "08:00", 82, &[]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let suspend_left = |expires_at: &str| {
+            let mut ovs = temp_overrides_from(&Settings::default());
+            ovs[0] = TemperatureScheduleOverride {
+                disabled: true,
+                expires_at: expires_at.to_string(),
+            };
+            ovs
+        };
+        let at = |ovs: &[TemperatureScheduleOverride; 2], side| {
+            scheduled_target(side, &profile(), &schedules, ovs, false, &tz(), &monday_at(22, 0))
+        };
+
+        // live suspension: the owned, in-window side reads as off
+        let ovs = suspend_left("2026-08-18T08:00:00-06:00");
+        assert!(!at(&ovs, BedSide::Left).enabled);
+        // the other side (profile path, always-on test profile) is untouched
+        assert!(at(&ovs, BedSide::Right).enabled);
+        // expired suspension: the schedule is back
+        let ovs = suspend_left("2026-08-17T20:00:00-06:00");
+        assert!(at(&ovs, BedSide::Left).enabled);
+        // no overrides at all: same as wanted_target
+        assert_eq!(
+            at(&temp_overrides_from(&Settings::default()), BedSide::Left),
+            wanted_target(BedSide::Left, &profile(), &schedules, false, &tz(), &monday_at(22, 0))
+        );
     }
 
     #[test]

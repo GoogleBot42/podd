@@ -15,7 +15,7 @@
 //! only for the settings.json-native fields.
 
 use jiff::civil::Time;
-use jiff::{SignedDuration, Span};
+use jiff::{SignedDuration, Span, Timestamp};
 use serde::{Deserialize, Serialize};
 
 use crate::schedule::HhMm;
@@ -75,6 +75,20 @@ pub struct TapsConfig {
 pub struct TemperatureScheduleOverride {
     pub disabled: bool,
     pub expires_at: String,
+}
+
+impl TemperatureScheduleOverride {
+    /// Is the side's temperature schedule suspended at `now`? True only while
+    /// `disabled` with a parseable, unexpired `expires_at` — a malformed
+    /// expiry deactivates the override, so a hand-edited settings.json can
+    /// never suspend a schedule forever by accident.
+    pub fn suspended_at(&self, now: Timestamp) -> bool {
+        self.disabled
+            && self
+                .expires_at
+                .parse::<Timestamp>()
+                .is_ok_and(|expires| now < expires)
+    }
 }
 
 /// One-shot alarm override: skip the next alarm (`disabled`) or move it to
@@ -248,6 +262,21 @@ mod tests {
             Time::new(23, 59, 45, 0).unwrap(),
             Time::new(0, 0, 10, 0).unwrap()
         ));
+    }
+
+    #[test]
+    fn temperature_suspension_needs_disabled_and_a_live_expiry() {
+        let ov = |disabled: bool, expires_at: &str| TemperatureScheduleOverride {
+            disabled,
+            expires_at: expires_at.to_string(),
+        };
+        let now: Timestamp = "2026-08-17T12:00:00-06:00".parse().unwrap();
+
+        assert!(ov(true, "2026-08-17T14:00:00-06:00").suspended_at(now));
+        assert!(!ov(true, "2026-08-17T11:00:00-06:00").suspended_at(now), "expired");
+        assert!(!ov(false, "2026-08-17T14:00:00-06:00").suspended_at(now), "not disabled");
+        assert!(!ov(true, "").suspended_at(now), "empty expiry");
+        assert!(!ov(true, "garbage").suspended_at(now), "malformed expiry");
     }
 
     #[test]
