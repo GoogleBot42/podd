@@ -5,7 +5,10 @@ name: release
 # tag, named so pod-updater's Gitea source resolves it:
 #   <host>/<owner>/<repo>/releases/download/<tag>/manifest.json (+ app-<v>.squashfs)
 #
-# Runner note: use an image with curl, git, and sudo (e.g. catthehacker/ubuntu).
+# Runner note: targets the self-hosted NixOS runner (label: nixos) — a bare
+# NixOS host with nix/git/curl in /run/current-system/sw/bin (see ci.yml).
+# On a Docker-image runner (e.g. catthehacker/ubuntu) the Install Nix step
+# takes over; on NixOS it no-ops because nix is already present.
 on:
   push:
     tags:
@@ -17,17 +20,27 @@ on:
         required: false
         default: ''
 
+env:
+  PATH: /run/current-system/sw/bin/
+  XDG_CONFIG_HOME: ${{ runner.temp }}/.config
+
 jobs:
   userland-bundle:
-    runs-on: ubuntu-latest
+    runs-on: nixos
+    timeout-minutes: 240
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v3
 
       # Gitea has no DeterminateSystems action available; install Nix with the
-      # official Determinate installer script and put it on PATH.
+      # official Determinate installer script and put it on PATH. Skipped on
+      # the NixOS runner, where nix is already in the system profile.
       - name: Install Nix
         run: |
           set -eu
+          if command -v nix >/dev/null; then
+            echo "nix already present: $(nix --version)"
+            exit 0
+          fi
           curl -fsSL https://install.determinate.systems/nix \
             | sh -s -- install linux --no-confirm --init none \
                 --extra-conf "experimental-features = nix-command flakes"
@@ -53,8 +66,8 @@ jobs:
   # Recovery-SD / L2 artifacts - gated off until the L2 rootfs exists (§5, §6b).
   recovery-sd:
     if: ${{ false }}
-    runs-on: ubuntu-latest
+    runs-on: nixos
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v3
       - name: Recovery-SD build plan (stub)
         run: ./scripts/build-recovery-sd.sh --plan
