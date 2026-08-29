@@ -14,8 +14,9 @@ anything on the actuation path as safety-critical.
   fire-and-forget. (Deliberate duplication with
   `.claude/rules/actuation-safety.md` — keep both copies.)
 - LSP framing has **no byte-stuffing**: a `0x7E` byte anywhere in a payload gets
-  the whole frame silently dropped by the frozen MCU. Setpoints go through
-  delimiter-safe nudging, not escaping.
+  the whole frame silently dropped by the MCUs. Setpoints and alarm frames go
+  through delimiter-safe nudging, not escaping — new variable-payload commands
+  need the same (see `.claude/rules/actuation-safety.md`).
 - Alarms must not arm before NTP sync — there is no RTC battery.
 - Config migrations and generated configs must never inject default alarm
   blocks. That exact bug fired a real alarm on a real bed (2026-07-20).

@@ -14,8 +14,11 @@ paths:
   tripwire — keep both copies.)
 - LSP framing has no byte-stuffing: a `0x7E` byte anywhere in a frame gets it
   silently dropped, no echo, no error. Setpoints must go through
-  `FrozenTarget::delimiter_safe` (`crates/pod-proto/src/frozen/command.rs`);
-  compare the MCU's echo against the nudged value, not the requested one.
+  `FrozenTarget::delimiter_safe` (`crates/pod-proto/src/frozen/command.rs`)
+  and alarm frames through `AlarmCommand::delimiter_safe`
+  (`crates/pod-proto/src/sensor/command.rs`); compare the MCU's echo against
+  the nudged value, not the requested one. Any NEW host→MCU command with
+  variable payload bytes needs the same treatment.
 - All MCU control writes must respect the `PODD_DRY_RUN` gate
   (`crates/podd/src/main.rs`); it defaults to dry-run (log, don't send).
 - Alarms must never arm before NTP sync; there is no RTC battery.
