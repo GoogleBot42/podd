@@ -5,7 +5,6 @@ import {
   Alert,
   Box,
   Button,
-  Tooltip,
 } from '@mui/material';
 
 import { useAppStore } from '@state/appStore.tsx';
@@ -15,12 +14,6 @@ import { useEffect, useState } from 'react';
 import { DayOfWeek } from '../../api/schemas/schedulesSchema';
 import AlarmOverride from './AlarmOverride.tsx';
 import AlarmDisabledDialog from './AlarmDisabledDialog.tsx';
-
-
-// The override dialogs write settings.<side>.scheduleOverrides, which no alarm
-// code on the pod reads — enabling them would tell the user an armed alarm is
-// off. Keep the state they display, disable the ways of changing it.
-const OVERRIDES_UNSUPPORTED = 'Alarm overrides aren\'t wired up yet';
 
 export default function AlarmNotification() {
   const { side } = useAppStore();
@@ -42,7 +35,10 @@ export default function AlarmNotification() {
     if (!settings || !schedules) return;
     const alarm = schedules[side][currentDay].alarm;
 
-    const hhMm = moment(alarm.time, 'HH:mm').format('hh:mm');
+    // 24-hour: this string seeds the override dialogs' <input type="time">
+    // and the expiry math — 'hh:mm' (12-hour, no AM/PM) folded 21:00 into
+    // 09:00 and stamped override expiries in the wrong half of the day.
+    const hhMm = moment(alarm.time, 'HH:mm').format('HH:mm');
     const amPm = moment(alarm.time, 'HH:mm').format('h:mm A');
     setScheduledAlarmTimeHhMm(hhMm);
     setScheduledAlarmTimeAmPm(amPm);
@@ -59,7 +55,7 @@ export default function AlarmNotification() {
         } else {
           setAlarmDisabled(false);
           setScheduledAlarmTimeAmPm(moment(alarmScheduleOverrides.timeOverride, 'HH:mm').format('h:mm A'));
-          setScheduledAlarmTimeHhMm(moment(alarmScheduleOverrides.timeOverride, 'HH:mm').format('hh:mm'));
+          setScheduledAlarmTimeHhMm(moment(alarmScheduleOverrides.timeOverride, 'HH:mm').format('HH:mm'));
         }
       }
     }
@@ -102,19 +98,14 @@ export default function AlarmNotification() {
                 Alarm is disabled
                 &nbsp;
                 </div>
-                <Tooltip title={ OVERRIDES_UNSUPPORTED }>
-                  <span>
-                    <Button
-                      variant="outlined"
-                      size="small"
-                      color="warning"
-                      disabled
-                      onClick={ () => setDisabledOpen(true) }
-                    >
-                      Enable
-                    </Button>
-                  </span>
-                </Tooltip>
+                <Button
+                  variant="outlined"
+                  size="small"
+                  color="warning"
+                  onClick={ () => setDisabledOpen(true) }
+                >
+                  Enable
+                </Button>
               </Box>
 
             )
@@ -123,35 +114,25 @@ export default function AlarmNotification() {
               <>
                 <div>
                   Alarm at &nbsp;
-                  <Tooltip title={ OVERRIDES_UNSUPPORTED }>
-                    <span>
-                      <Button
-                        variant="outlined"
-                        size="small"
-                        color="warning"
-                        disabled
-                        onClick={ () => setOverrideOpen(!overrideOpen) }
-                      >
-                        { scheduledAlarmTimeAmPm }
-                      </Button>
-                    </span>
-                  </Tooltip>
+                  <Button
+                    variant="outlined"
+                    size="small"
+                    color="warning"
+                    onClick={ () => setOverrideOpen(!overrideOpen) }
+                  >
+                    { scheduledAlarmTimeAmPm }
+                  </Button>
 
                 </div>
                 &nbsp;
-                <Tooltip title={ OVERRIDES_UNSUPPORTED }>
-                  <span>
-                    <Button
-                      variant="outlined"
-                      size="small"
-                      color="warning"
-                      disabled
-                      onClick={ () => setDisabledOpen(true) }
-                    >
-                      Disable
-                    </Button>
-                  </span>
-                </Tooltip>
+                <Button
+                  variant="outlined"
+                  size="small"
+                  color="warning"
+                  onClick={ () => setDisabledOpen(true) }
+                >
+                  Disable
+                </Button>
               </>
             )
         }

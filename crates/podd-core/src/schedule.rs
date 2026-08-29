@@ -13,8 +13,9 @@
 //! shipped default — callers fall back to the legacy `config.ron` profile, so
 //! existing installs see no behavior change until a day is turned on.
 //!
-//! Alarm fields are persisted but inert: the alarm path still derives its
-//! windows from the `config.ron` profile (issue #106).
+//! Alarm blocks are resolved by `crate::alarm`: an owned side's per-day alarms
+//! drive the sensor manager's vibration alarms; unowned sides keep the legacy
+//! `config.ron` profile alarm.
 
 use std::collections::BTreeMap;
 
@@ -277,8 +278,8 @@ fn step_temp(
 
 /// "HH:mm" → civil time. Unparseable keys are treated as absent: the API layer
 /// rejects them long before they land, but a hand-edited `schedules.json` must
-/// not panic the control core.
-fn parse_hhmm(s: &str) -> Option<Time> {
+/// not panic the control core. Shared with the alarm resolver (`crate::alarm`).
+pub(crate) fn parse_hhmm(s: &str) -> Option<Time> {
     Time::strptime("%H:%M", s).ok()
 }
 

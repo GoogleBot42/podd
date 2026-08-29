@@ -81,8 +81,13 @@ local-web WiFi bring-up) and the L2 OS-image release artifact
    document (free-sleep schema, persisted by `api`, step temps) into targets.
    Ownership rule: a side follows its weekly schedule iff any weekday row has
    `power.enabled`, else the `config.ron` profile — see the `schedule` module
-   docs. Per-weekday alarm fields are persisted but inert (issue #106): the
-   alarm path still derives its windows from the `config.ron` profile.
+   docs. Alarms follow the same rule (`podd_core::alarm`): an owned side's
+   per-day alarm blocks drive the sensor manager's vibration alarms, an
+   unowned side keeps the profile alarm (wake − offset), and the per-side
+   one-shot overrides in `settings.json` (`scheduleOverrides`: skip/move the
+   next alarm, suspend a temperature schedule) apply on top. The daemon also
+   reads `settings.json` (boot + `Command::SetSettings`) for those overrides
+   and the daily-reboot flag (reboot at prime − 1 h, NTP-gated).
 3. **Web API** — opensleep is MQTT-only. `api` is all-new (axum), serving the
    forked free-sleep SPA and the compat endpoints.
 
@@ -97,7 +102,8 @@ return 204, others return the merged doc.
 
 Endpoints whose backing subsystem doesn't exist yet answer **501**, never a
 no-op 204 (#32, #107): `POST /jobs` for the biometrics jobs (and, through
-`PoddControl`, for `reboot`/`update` until the updater is wired),
+`PoddControl`, for `update` until the updater is wired; `reboot` is real,
+dry-run-gated),
 `POST /services` (nothing to configure — the only service in the document is
 biometrics), `POST /execute`, and `settings` inside `POST /deviceStatus`.
 `GET /services` still serves the free-sleep document shape, with every

@@ -199,6 +199,13 @@ pub async fn post_settings(
             merged.time_zone
         )]);
     }
+    // The whole merged document, like the schedules endpoint: what lands in
+    // settings.json now drives the alarm/temperature override resolvers, so
+    // it has to stay parseable on every future boot (#106).
+    let errs = validate_schedule_overrides(&merged);
+    if !errs.is_empty() {
+        return invalid_request_data(errs);
+    }
     if let Err(e) = app.store.set_settings(merged.clone()) {
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
@@ -236,6 +243,40 @@ pub async fn post_settings(
 /// Strict `HH:MM` (the format `config.ron` stores prime times in).
 fn parse_hh_mm(s: &str) -> Option<jiff::civil::Time> {
     jiff::civil::Time::strptime("%H:%M", s).ok()
+}
+
+/// Validate both sides' `scheduleOverrides`: times must be `HH:MM` (or empty =
+/// none), expiries RFC 3339 (or empty). The daemon-side resolvers treat
+/// malformed fields as "no override", so garbage here would silently disarm
+/// the override a user thinks they set — reject it instead.
+fn validate_schedule_overrides(s: &Settings) -> Vec<String> {
+    fn bad_expiry(at: &str) -> bool {
+        !at.is_empty() && at.parse::<jiff::Timestamp>().is_err()
+    }
+    let mut errs = Vec::new();
+    for (key, side) in [("left", &s.left), ("right", &s.right)] {
+        let alarm = &side.schedule_overrides.alarm;
+        if !alarm.time_override.is_empty() && parse_hh_mm(&alarm.time_override).is_none() {
+            errs.push(format!(
+                "{key}.scheduleOverrides.alarm.timeOverride must be HH:MM or empty, got {:?}",
+                alarm.time_override
+            ));
+        }
+        if bad_expiry(&alarm.expires_at) {
+            errs.push(format!(
+                "{key}.scheduleOverrides.alarm.expiresAt must be RFC 3339 or empty, got {:?}",
+                alarm.expires_at
+            ));
+        }
+        let temps = &side.schedule_overrides.temperature_schedules;
+        if bad_expiry(&temps.expires_at) {
+            errs.push(format!(
+                "{key}.scheduleOverrides.temperatureSchedules.expiresAt must be RFC 3339 or empty, got {:?}",
+                temps.expires_at
+            ));
+        }
+    }
+    errs
 }
 
 // ---------------------------------------------------------------------------
@@ -324,9 +365,8 @@ fn validate_schedules(s: &Schedules) -> Vec<String> {
                 ));
             }
 
-            // Alarm fields are inert (the alarm path still reads config.ron,
-            // #106) but are validated anyway so garbage never lands in the
-            // file and becomes live the day they are wired up.
+            // Alarm fields drive the sensor manager's vibration alarms on
+            // owned sides (podd_core::alarm), so they must stay resolvable.
             if parse_hh_mm(&d.alarm.time).is_none() {
                 errs.push(format!("{at}.alarm.time is not HH:mm: {:?}", d.alarm.time));
             }

@@ -9,7 +9,7 @@ import {
   useMediaQuery,
   useTheme,
 } from '@mui/material';
-import moment from 'moment-timezone';
+import { overrideExpiry } from './alarmOverrideTarget.ts';
 import { postSettings, useSettings } from '@api/settings.ts';
 import { useAppStore } from '@state/appStore.tsx';
 
@@ -35,24 +35,9 @@ export default function AlarmDisabledDialog({
 
   const handleSave = () => {
     if (!settings) return null;
-    const now = moment.tz(settings.timeZone);
-    const noonToday = now.clone().hour(12).minute(0).second(0).millisecond(0);
-    const targetDay = now.isSameOrAfter(noonToday) ? now.clone().add(1, 'day') : now;
-
-
-    const [hour, minute] = scheduledAlarmTimeHhMm.split(':').map(Number);
-    const expiresAt = moment.tz(
-      {
-        year: targetDay.year(),
-        month: targetDay.month(),
-        date: targetDay.date(),
-        hour,
-        minute,
-        second: 0,
-        millisecond: 0,
-      },
-      settings.timeZone
-    ).add(2, 'minutes').format();
+    // Expiry two minutes past the alarm's next occurrence — the daemon skips
+    // every alarm starting before this, i.e. exactly the next one.
+    const expiresAt = overrideExpiry(scheduledAlarmTimeHhMm, settings.timeZone);
     setIsSaving(true);
     const disabled = !alarmDisabled;
     postSettings({
