@@ -70,8 +70,8 @@ pub struct TapsConfig {
 /// Suspend a side's temperature schedule until `expires_at` (RFC 3339; empty =
 /// no override). Persisted today, consumed by the control core with the alarm
 /// engine (#106).
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase", default)]
 pub struct TemperatureScheduleOverride {
     pub disabled: bool,
     pub expires_at: String,
@@ -79,23 +79,23 @@ pub struct TemperatureScheduleOverride {
 
 /// One-shot alarm override: skip the next alarm (`disabled`) or move it to
 /// `time_override` ("HH:mm"), until `expires_at` (RFC 3339; empty = none).
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase", default)]
 pub struct AlarmOverride {
     pub disabled: bool,
     pub time_override: String,
     pub expires_at: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase", default)]
 pub struct ScheduleOverrides {
     pub temperature_schedules: TemperatureScheduleOverride,
     pub alarm: AlarmOverride,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct SideSettings {
     pub name: String,
     pub away_mode: bool,
@@ -104,21 +104,36 @@ pub struct SideSettings {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct PrimePodDaily {
     pub enabled: bool,
     pub time: HhMm,
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+impl Default for PrimePodDaily {
+    fn default() -> Self {
+        PrimePodDaily {
+            enabled: false,
+            time: "14:00".to_string(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum TemperatureFormat {
     Celsius,
+    #[default]
     Fahrenheit,
 }
 
+/// Every level of the document carries `#[serde(default)]`: a settings.json
+/// from an older schema (or a partially-written one) parses with defaults for
+/// what it lacks instead of failing wholesale — a whole-document parse failure
+/// would silently revert *everything* to defaults, including a user's alarm
+/// override (#106 review).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct Settings {
     pub id: String,
     pub time_zone: String,
@@ -129,37 +144,35 @@ pub struct Settings {
     pub reboot_daily: bool,
 }
 
-impl SideSettings {
-    fn defaults(name: &str) -> Self {
+impl Default for TapsConfig {
+    fn default() -> Self {
+        TapsConfig {
+            double_tap: TapConfig::Temperature {
+                change: TempChange::Decrement,
+                amount: 1,
+            },
+            triple_tap: TapConfig::Temperature {
+                change: TempChange::Increment,
+                amount: 1,
+            },
+            quad_tap: TapConfig::Alarm {
+                behavior: AlarmBehavior::Dismiss,
+                snooze_duration: 540,
+                inactive_alarm_behavior: InactiveAlarmBehavior::None,
+            },
+        }
+    }
+}
+
+/// NB: the side-agnostic default name. [`Settings::default`] renames the right
+/// side; a present-but-nameless side object keeps this (cosmetic only).
+impl Default for SideSettings {
+    fn default() -> Self {
         SideSettings {
-            name: name.to_string(),
+            name: "Left".to_string(),
             away_mode: false,
-            schedule_overrides: ScheduleOverrides {
-                temperature_schedules: TemperatureScheduleOverride {
-                    disabled: false,
-                    expires_at: String::new(),
-                },
-                alarm: AlarmOverride {
-                    disabled: false,
-                    time_override: String::new(),
-                    expires_at: String::new(),
-                },
-            },
-            taps: TapsConfig {
-                double_tap: TapConfig::Temperature {
-                    change: TempChange::Decrement,
-                    amount: 1,
-                },
-                triple_tap: TapConfig::Temperature {
-                    change: TempChange::Increment,
-                    amount: 1,
-                },
-                quad_tap: TapConfig::Alarm {
-                    behavior: AlarmBehavior::Dismiss,
-                    snooze_duration: 540,
-                    inactive_alarm_behavior: InactiveAlarmBehavior::None,
-                },
-            },
+            schedule_overrides: ScheduleOverrides::default(),
+            taps: TapsConfig::default(),
         }
     }
 }
@@ -169,17 +182,19 @@ impl Default for Settings {
         Settings {
             id: "1".to_string(),
             time_zone: "UTC".to_string(),
-            left: SideSettings::defaults("Left"),
-            right: SideSettings::defaults("Right"),
-            prime_pod_daily: PrimePodDaily {
-                enabled: false,
-                time: "14:00".to_string(),
+            left: SideSettings::default(),
+            right: SideSettings {
+                name: "Right".to_string(),
+                ..SideSettings::default()
             },
+            prime_pod_daily: PrimePodDaily::default(),
             temperature_format: TemperatureFormat::Fahrenheit,
-            // free-sleep's default. The daemon-side reboot scheduler and the
-            // api's `GET /settings` must agree on what a missing file means,
-            // or the UI would show a toggle state the bed doesn't follow.
-            reboot_daily: true,
+            // Deliberately NOT free-sleep's `true`: podd installs have never
+            // rebooted on a schedule (the scheduler is new), so the default
+            // that preserves existing behavior is off. A file that says
+            // `true` — restored from free-sleep, or via the (now working) UI
+            // toggle — is an explicit opt-in and is honored.
+            reboot_daily: false,
         }
     }
 }
@@ -239,13 +254,37 @@ mod tests {
     fn the_default_document_round_trips_as_camel_case() {
         let s = Settings::default();
         let v = serde_json::to_value(&s).unwrap();
-        assert_eq!(v["rebootDaily"], serde_json::json!(true));
+        // Opt-in only: podd never rebooted on a schedule before this existed.
+        assert_eq!(v["rebootDaily"], serde_json::json!(false));
         assert_eq!(v["primePodDaily"]["time"], serde_json::json!("14:00"));
         assert_eq!(
             v["left"]["scheduleOverrides"]["alarm"]["timeOverride"],
             serde_json::json!("")
         );
+        assert_eq!(v["right"]["name"], serde_json::json!("Right"));
         let back: Settings = serde_json::from_value(v).unwrap();
-        assert_eq!(back.reboot_daily, s.reboot_daily);
+        assert_eq!(back, s);
+    }
+
+    /// A document from an older schema (fields missing at any level) must
+    /// parse with defaults for what it lacks — a whole-document failure would
+    /// silently discard a user's alarm override and reboot opt-in (#106).
+    #[test]
+    fn partial_documents_parse_with_defaults() {
+        let partial = serde_json::json!({
+            "rebootDaily": true,
+            "left": { "name": "Cris", "scheduleOverrides": { "alarm": { "disabled": true } } },
+        });
+        let s: Settings = serde_json::from_value(partial).unwrap();
+        assert!(s.reboot_daily, "explicit opt-in honored");
+        assert_eq!(s.left.name, "Cris");
+        assert!(s.left.schedule_overrides.alarm.disabled);
+        assert_eq!(s.left.schedule_overrides.alarm.expires_at, "");
+        assert!(!s.right.away_mode);
+        assert_eq!(s.time_zone, "UTC");
+
+        // and the empty document is exactly the defaults
+        let empty: Settings = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(empty, Settings::default());
     }
 }

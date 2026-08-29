@@ -802,6 +802,57 @@ mod schedules_load_tests {
     }
 }
 
+/// `settings.json` shares `schedules.json`'s ownership (api writes, podd-core
+/// reads) and must fail the same safe direction: missing or corrupt means
+/// no schedule overrides and — critically — no daily reboots.
+#[cfg(test)]
+mod settings_load_tests {
+    use super::*;
+
+    #[test]
+    fn path_sits_next_to_the_config() {
+        assert_eq!(
+            settings_path(Path::new("/data/podd/config.ron")),
+            PathBuf::from("/data/podd/settings.json")
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_or_corrupt_falls_back_to_the_safe_defaults() {
+        let dir = std::env::temp_dir().join(format!("podd-settings-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let missing = dir.join("nope.json");
+        let corrupt = dir.join("corrupt.json");
+        std::fs::write(&corrupt, b"{ not json").unwrap();
+
+        for path in [&missing, &corrupt] {
+            let got = load_settings(path).await;
+            assert_eq!(got, settings::Settings::default());
+            // the safe direction: no scheduled reboots, no live overrides
+            assert!(!got.reboot_daily);
+            assert_eq!(got.left.schedule_overrides, Default::default());
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_real_document_round_trips() {
+        let dir = std::env::temp_dir().join(format!("podd-settings-ok-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+
+        let mut want = settings::Settings::default();
+        want.reboot_daily = true;
+        want.left.schedule_overrides.alarm.disabled = true;
+        std::fs::write(&path, serde_json::to_vec(&want).unwrap()).unwrap();
+
+        assert_eq!(load_settings(&path).await, want);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 #[cfg(test)]
 mod device_label_tests {
     use super::detect_device_label;
