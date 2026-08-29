@@ -10,6 +10,7 @@
 //!
 //! Upstream's `src/main.rs` startup has been converted into [`run`].
 
+pub mod alarm;
 pub mod bus;
 pub mod config;
 pub mod frozen;
@@ -578,7 +579,7 @@ async fn run_inner(
 
     tokio::spawn(run_reboot_scheduler(
         config_rx.clone(),
-        settings_rx,
+        settings_rx.clone(),
         dry_run,
     ));
 
@@ -602,7 +603,7 @@ async fn run_inner(
             &device.frozen_port,
             device.frozen_baud,
             config_rx.clone(),
-            schedules_rx,
+            schedules_rx.clone(),
             led,
             mqtt_man.client.clone(),
             status_tx.clone(),
@@ -625,6 +626,8 @@ async fn run_inner(
             device.sensor_firmware_baud,
             config_tx,
             config_rx,
+            schedules_rx.clone(),
+            settings_rx,
             config_path_arc,
             calibrate_rx,
             mqtt_man.client.clone(),

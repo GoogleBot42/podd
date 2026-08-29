@@ -1,9 +1,12 @@
 use std::io::ErrorKind;
 use std::time::Duration;
 
+use crate::alarm::{self, ResolvedAlarm};
 use crate::bus::{Command, DeviceSnapshot, StatusTx};
-use crate::config::{AwayMode, Config, SideConfig, SidesConfig};
+use crate::config::{AwayMode, Config, SidesConfig};
 use crate::health::{self, Health, HealthRegistry};
+use crate::schedule::{Schedules, SideSchedule};
+use crate::settings::{AlarmOverride, Settings};
 use crate::sensor::presence::PresenseManager;
 use crate::sensor::state::{PIEZO_FREQ, PIEZO_GAIN, SensorState};
 use crate::sensor::tap::{Tap, TapDetector};
@@ -14,8 +17,7 @@ use pod_proto::sensor::{SensorCommand, SensorPacket};
 use pod_proto::serial::{DeviceMode, SerialError, create_framed_port};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
-use jiff::civil::Time;
-use jiff::{Span, Timestamp};
+use jiff::{Timestamp, Zoned};
 use rumqttc::AsyncClient;
 use thiserror::Error;
 use tokio::sync::{mpsc, watch};
@@ -33,12 +35,64 @@ const SETTLE: Duration = Duration::from_secs(60);
 
 type Reader = SplitStream<Framed<SerialStream, PacketCodec<SensorPacket>>>;
 type Writer = SplitSink<Framed<SerialStream, PacketCodec<SensorPacket>>, SensorCommand>;
-type CommandCheck = fn(&SensorState, &Time, &AwayMode, &SidesConfig) -> Option<SensorCommand>;
+type CommandCheck = fn(&SensorState, &Zoned, &AlarmSources) -> Option<SensorCommand>;
+
+/// Everything the scheduled-alarm decision needs besides sensor state: both
+/// alarm sources (weekly document + legacy profile), away mode, and the
+/// per-side one-shot overrides. Kept fresh from the config/schedules/settings
+/// watches by `run`'s select arms.
+struct AlarmSources {
+    away_mode: AwayMode,
+    profile: SidesConfig,
+    schedules: Schedules,
+    /// `[left, right]` (settings.json `scheduleOverrides.alarm`).
+    overrides: [AlarmOverride; 2],
+}
+
+impl AlarmSources {
+    fn override_for(&self, side: &BedSide) -> &AlarmOverride {
+        match side {
+            BedSide::Left => &self.overrides[0],
+            BedSide::Right => &self.overrides[1],
+        }
+    }
+
+    /// The weekly document side for `side`. Solo profiles have no per-side
+    /// split — both bed sides map to `left`, exactly as the frozen manager's
+    /// `wanted_target` does.
+    fn weekly_for(&self, side: &BedSide) -> &SideSchedule {
+        match (&self.profile, side) {
+            (SidesConfig::Solo(_), _) | (SidesConfig::Couples { .. }, BedSide::Left) => {
+                &self.schedules.left
+            }
+            (SidesConfig::Couples { .. }, BedSide::Right) => &self.schedules.right,
+        }
+    }
+
+    /// The scheduled alarm whose window contains `now`, if any. Away mode and
+    /// dismissals are *not* considered — callers gate on them separately so
+    /// the cancel path stays reachable.
+    fn resolve(&self, side: &BedSide, now: &Zoned) -> Option<ResolvedAlarm> {
+        alarm::resolve_alarm(
+            self.weekly_for(side),
+            self.profile.get_side(side),
+            self.override_for(side),
+            now,
+        )
+    }
+}
+
+/// The two per-side alarm overrides out of a settings document.
+fn overrides_from(settings: &Settings) -> [AlarmOverride; 2] {
+    [
+        settings.left.schedule_overrides.alarm.clone(),
+        settings.right.schedule_overrides.alarm.clone(),
+    ]
+}
 
 struct CommandScheduler {
     cmds: Vec<RegisteredCommand>,
-    away_mode: AwayMode,
-    sides_config: SidesConfig,
+    sources: AlarmSources,
     writer: Writer,
     /// A manually fired alarm (API test) we haven't seen start yet. The G0
     /// eats writes early in a connection, so resend until the FW confirms.
@@ -90,6 +144,8 @@ pub async fn supervise(
     firmware_baud: u32,
     config_tx: watch::Sender<Config>,
     config_rx: watch::Receiver<Config>,
+    schedules_rx: watch::Receiver<Schedules>,
+    settings_rx: watch::Receiver<Settings>,
     config_path: std::sync::Arc<str>,
     mut calibrate_rx: mpsc::Receiver<()>,
     client: AsyncClient,
@@ -122,6 +178,8 @@ pub async fn supervise(
             firmware_baud,
             config_tx.clone(),
             config_rx.clone(),
+            schedules_rx.clone(),
+            settings_rx.clone(),
             config_path.clone(),
             &mut calibrate_rx,
             client.clone(),
@@ -180,6 +238,8 @@ pub async fn run(
     firmware_baud: u32,
     config_tx: watch::Sender<Config>,
     mut config_rx: watch::Receiver<Config>,
+    mut schedules_rx: watch::Receiver<Schedules>,
+    mut settings_rx: watch::Receiver<Settings>,
     config_path: std::sync::Arc<str>,
     calibrate_rx: &mut mpsc::Receiver<()>,
     mut client: AsyncClient,
@@ -218,8 +278,13 @@ pub async fn run(
 
     let cfg = config_rx.borrow_and_update();
     let mut timezone = cfg.timezone.clone();
-    let mut scheduler =
-        CommandScheduler::new(cfg.away_mode, cfg.profile.clone(), writer, health.clone());
+    let sources = AlarmSources {
+        away_mode: cfg.away_mode,
+        profile: cfg.profile.clone(),
+        schedules: schedules_rx.borrow_and_update().clone(),
+        overrides: overrides_from(&settings_rx.borrow_and_update()),
+    };
+    let mut scheduler = CommandScheduler::new(sources, writer, health.clone());
     drop(cfg);
 
     // Defensive: we may have (re)started mid-alarm with no memory of starting
@@ -320,7 +385,7 @@ pub async fn run(
                 }
 
                 // this is not expensive so its fine to do at 20hz
-                let now = Timestamp::now().to_zoned(timezone.clone()).time();
+                let now = Timestamp::now().to_zoned(timezone.clone());
                 let _ = scheduler.update(&mut state, &now, dry_run).await?;
                 dismissed[0] = state.alarm_left_dismissed;
                 dismissed[1] = state.alarm_right_dismissed;
@@ -335,8 +400,17 @@ pub async fn run(
             Ok(_) = config_rx.changed() => {
                 let cfg = config_rx.borrow();
                 timezone = cfg.timezone.clone();
-                scheduler.away_mode = cfg.away_mode;
-                scheduler.sides_config = cfg.profile.clone();
+                scheduler.sources.away_mode = cfg.away_mode;
+                scheduler.sources.profile = cfg.profile.clone();
+            }
+
+            // Weekly schedule / settings edits (Schedule page, override
+            // dialogs): refresh the alarm sources.
+            Ok(_) = schedules_rx.changed() => {
+                scheduler.sources.schedules = schedules_rx.borrow().clone();
+            }
+            Ok(_) = settings_rx.changed() => {
+                scheduler.sources.overrides = overrides_from(&settings_rx.borrow());
             }
 
             // api / scheduler commands routed to the Sensor subsystem.
@@ -397,17 +471,11 @@ fn publish_sensor(status: &StatusTx, state: &SensorState, presence: &crate::sens
 }
 
 impl CommandScheduler {
-    fn new(
-        away_mode: AwayMode,
-        sides_config: SidesConfig,
-        writer: Writer,
-        health: HealthRegistry,
-    ) -> Self {
+    fn new(sources: AlarmSources, writer: Writer, health: HealthRegistry) -> Self {
         let now = Instant::now();
         const CONFIG_RES_TIME: Duration = Duration::from_millis(800);
         Self {
-            away_mode,
-            sides_config,
+            sources,
             writer,
             pending_fire: None,
             health,
@@ -418,7 +486,7 @@ impl CommandScheduler {
                     attempts: 0,
                     interval: Duration::from_secs(4),
                     last_run: now,
-                    can_run: |_, _, _, _| Some(SensorCommand::Ping),
+                    can_run: |_, _, _| Some(SensorCommand::Ping),
                 },
                 RegisteredCommand {
                     name: "probe_temperature",
@@ -429,7 +497,7 @@ impl CommandScheduler {
                     interval: Duration::from_secs(4),
                     // stagger
                     last_run: now + Duration::from_millis(2500),
-                    can_run: |_, _, _, _| Some(SensorCommand::ProbeTemperature),
+                    can_run: |_, _, _| Some(SensorCommand::ProbeTemperature),
                 },
                 RegisteredCommand {
                     name: "hwinfo",
@@ -437,7 +505,7 @@ impl CommandScheduler {
                     attempts: 0,
                     interval: CONFIG_RES_TIME,
                     last_run: now,
-                    can_run: |state, _, _, _| {
+                    can_run: |state, _, _| {
                         if state.hardware_info.is_none() {
                             Some(SensorCommand::GetHardwareInfo)
                         } else {
@@ -451,7 +519,7 @@ impl CommandScheduler {
                     attempts: 0,
                     interval: CONFIG_RES_TIME,
                     last_run: now,
-                    can_run: |s, _, _, _| {
+                    can_run: |s, _, _| {
                         if !s.vibration_enabled {
                             Some(SensorCommand::EnableVibration)
                         } else {
@@ -465,7 +533,7 @@ impl CommandScheduler {
                     attempts: 0,
                     interval: CONFIG_RES_TIME,
                     last_run: now,
-                    can_run: |state, _, _, _| {
+                    can_run: |state, _, _| {
                         if !state.piezo_gain_ok() {
                             Some(SensorCommand::SetPiezoGain(PIEZO_GAIN, PIEZO_GAIN))
                         } else {
@@ -479,7 +547,7 @@ impl CommandScheduler {
                     attempts: 0,
                     interval: CONFIG_RES_TIME,
                     last_run: now,
-                    can_run: |state, _, _, _| {
+                    can_run: |state, _, _| {
                         if state.piezo_enabled && !state.piezo_freq_ok() {
                             Some(SensorCommand::SetPiezoFreq(PIEZO_FREQ))
                         } else {
@@ -493,7 +561,7 @@ impl CommandScheduler {
                     attempts: 0,
                     interval: CONFIG_RES_TIME,
                     last_run: now,
-                    can_run: |s, _, _, _| {
+                    can_run: |s, _, _| {
                         if !s.piezo_enabled {
                             Some(SensorCommand::EnablePiezo)
                         } else {
@@ -507,9 +575,9 @@ impl CommandScheduler {
                     attempts: 0,
                     interval: Duration::from_secs(5),
                     last_run: now,
-                    can_run: |state, now, away, sides_cfg| {
+                    can_run: |state, now, sources| {
                         if state.vibration_enabled {
-                            get_alarm_cmd(state, now, away.get(&BedSide::Left), sides_cfg, &BedSide::Left)
+                            get_alarm_cmd(state, now, sources, &BedSide::Left)
                         } else {
                             None
                         }
@@ -521,9 +589,9 @@ impl CommandScheduler {
                     attempts: 0,
                     interval: Duration::from_secs(5),
                     last_run: now,
-                    can_run: |state, now, away, sides_cfg| {
+                    can_run: |state, now, sources| {
                         if state.vibration_enabled {
-                            get_alarm_cmd(state, now, away.get(&BedSide::Right), sides_cfg, &BedSide::Right)
+                            get_alarm_cmd(state, now, sources, &BedSide::Right)
                         } else {
                             None
                         }
@@ -538,16 +606,14 @@ impl CommandScheduler {
     async fn update(
         &mut self,
         state: &mut SensorState,
-        time: &Time,
+        time: &Zoned,
         dry_run: bool,
     ) -> Result<bool, SensorError> {
         let now = Instant::now();
 
         // A dismissal holds for the rest of its alarm window; re-arm afterwards.
         for side in [BedSide::Left, BedSide::Right] {
-            if state.get_dismissed(&side)
-                && !in_alarm_window(self.sides_config.get_side(&side), time)
-            {
+            if state.get_dismissed(&side) && self.sources.resolve(&side, time).is_none() {
                 state.set_dismissed(&side, false);
             }
         }
@@ -606,8 +672,7 @@ impl CommandScheduler {
         // find command to send
         for reg_cmd in &mut self.cmds {
             if now.duration_since(reg_cmd.last_run) > reg_cmd.interval
-                && let Some(sen_cmd) =
-                    (reg_cmd.can_run)(&*state, time, &self.away_mode, &self.sides_config)
+                && let Some(sen_cmd) = (reg_cmd.can_run)(&*state, time, &self.sources)
             {
                 if let Some(max) = reg_cmd.max_attempts
                     && reg_cmd.attempts >= max
@@ -744,40 +809,24 @@ impl CommandScheduler {
     }
 }
 
-/// alarm runs from (wake - alarm_offset) to ((wake - alarm_offset) + alarm_duration)
-fn in_alarm_window(cfg: &SideConfig, now: &Time) -> bool {
-    let Some(alarm_cfg) = cfg.alarm.as_ref() else {
-        return false;
-    };
-    let alarm_start = cfg.wake - Span::new().seconds(alarm_cfg.offset);
-    let alarm_end = alarm_start + Span::new().seconds(alarm_cfg.duration);
-    if alarm_start <= alarm_end {
-        *now > alarm_start && *now < alarm_end
-    } else {
-        // Civil-time arithmetic wraps at midnight (e.g. wake 00:10 with a
-        // 20-min offset -> start 23:50, end 00:10), leaving start > end; the
-        // window is then the union of both sides of 00:00.
-        *now > alarm_start || *now < alarm_end
-    }
-}
-
 fn get_alarm_cmd(
     state: &SensorState,
-    now: &Time,
-    away: bool,
-    sides_config: &SidesConfig,
+    now: &Zoned,
+    sources: &AlarmSources,
     side: &BedSide,
 ) -> Option<SensorCommand> {
-    let cfg = sides_config.get_side(side);
     let alarm_running = state.get_alarm_for_side(side);
-    // Away mode and a missing alarm config must only suppress *starting* an
-    // alarm. The cancel branch below has to stay reachable, or toggling away
-    // on (or deleting the alarm block) mid-alarm leaves the bed vibrating
-    // until the firmware's max-duration timeout (issue #28).
-    let should_run = !away && in_alarm_window(cfg, now) && !state.get_dismissed(side);
+    // Away mode, a dismissal, a skip-override, or a deleted alarm block must
+    // only suppress *starting* an alarm. The cancel branch below has to stay
+    // reachable, or toggling away on (or removing the alarm) mid-alarm leaves
+    // the bed vibrating until the firmware's max-duration timeout (issue #28).
+    let due = if sources.away_mode.get(side) || state.get_dismissed(side) {
+        None
+    } else {
+        sources.resolve(side, now)
+    };
 
-    if should_run {
-        let alarm_cfg = cfg.alarm.as_ref()?;
+    if let Some(due) = due {
         if !alarm_running {
             if !state.clock_synced {
                 log::warn!(
@@ -789,9 +838,9 @@ fn get_alarm_cmd(
             log::info!("Alarm[{side}] requesting to start");
             return Some(SensorCommand::SetAlarm(AlarmCommand {
                 side: *side,
-                intensity: alarm_cfg.intensity,
-                duration: alarm_cfg.duration,
-                pattern: alarm_cfg.pattern.clone(),
+                intensity: due.intensity,
+                duration: due.duration_s,
+                pattern: due.pattern,
             }));
         }
     } else if alarm_running && !state.manual_alarm_active(side) {
@@ -908,15 +957,19 @@ async fn wait_for_mode(
     Ok(())
 }
 
+/// Window/attribution math lives in `crate::alarm`'s own tests; here we cover
+/// the actuation *decision* around it: away mode, dismissals, cancels, and the
+/// weekly-vs-profile source selection.
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::AlarmConfig;
-    use jiff::civil::time;
+    use crate::config::{AlarmConfig, SideConfig};
+    use jiff::civil::{date, time};
+    use jiff::tz::TimeZone;
 
     /// wake / offset / duration -> a SideConfig whose only relevant fields are
     /// the alarm window ones.
-    fn side(wake: Time, offset: u32, duration: u32) -> SideConfig {
+    fn side(wake: jiff::civil::Time, offset: u32, duration: u32) -> SideConfig {
         SideConfig {
             temperatures: vec![27.0],
             sleep: time(21, 0, 0, 0),
@@ -930,64 +983,29 @@ mod tests {
         }
     }
 
-    #[test]
-    fn no_alarm_config_is_never_in_window() {
-        let mut cfg = side(time(7, 0, 0, 0), 0, 600);
-        cfg.alarm = None;
-        assert!(!in_alarm_window(&cfg, &time(7, 5, 0, 0)));
-    }
-
-    #[test]
-    fn plain_window() {
-        // wake 07:00, offset 10 min -> 06:50..07:10
-        let cfg = side(time(7, 0, 0, 0), 600, 1200);
-        assert!(!in_alarm_window(&cfg, &time(6, 49, 59, 0)));
-        assert!(in_alarm_window(&cfg, &time(6, 50, 1, 0)));
-        assert!(in_alarm_window(&cfg, &time(7, 0, 0, 0)));
-        assert!(in_alarm_window(&cfg, &time(7, 9, 59, 0)));
-        assert!(!in_alarm_window(&cfg, &time(7, 10, 1, 0)));
-        // bounds are exclusive
-        assert!(!in_alarm_window(&cfg, &time(6, 50, 0, 0)));
-        assert!(!in_alarm_window(&cfg, &time(7, 10, 0, 0)));
-    }
-
-    #[test]
-    fn window_crossing_midnight_start_side() {
-        // wake 00:10, offset 20 min -> 23:50..00:10 (issue #29: this never
-        // fired with the single-interval AND comparison)
-        let cfg = side(time(0, 10, 0, 0), 1200, 1200);
-        assert!(in_alarm_window(&cfg, &time(23, 55, 0, 0)));
-        assert!(in_alarm_window(&cfg, &time(0, 0, 0, 0)));
-        assert!(in_alarm_window(&cfg, &time(0, 5, 0, 0)));
-        assert!(!in_alarm_window(&cfg, &time(0, 15, 0, 0)));
-        assert!(!in_alarm_window(&cfg, &time(23, 45, 0, 0)));
-        assert!(!in_alarm_window(&cfg, &time(12, 0, 0, 0)));
-    }
-
-    #[test]
-    fn window_crossing_midnight_end_side() {
-        // wake 23:55, offset 0, duration 20 min -> 23:55..00:15
-        let cfg = side(time(23, 55, 0, 0), 0, 1200);
-        assert!(in_alarm_window(&cfg, &time(23, 59, 0, 0)));
-        assert!(in_alarm_window(&cfg, &time(0, 10, 0, 0)));
-        assert!(!in_alarm_window(&cfg, &time(0, 20, 0, 0)));
-        assert!(!in_alarm_window(&cfg, &time(23, 50, 0, 0)));
-    }
-
-    #[test]
-    fn zero_duration_never_fires() {
-        let cfg = side(time(7, 0, 0, 0), 0, 0);
-        assert!(!in_alarm_window(&cfg, &time(7, 0, 0, 0)));
-        assert!(!in_alarm_window(&cfg, &time(6, 59, 59, 0)));
-    }
-
-    /// SidesConfig with the same alarm window (07:00 wake, 06:50..07:10) on
-    /// both sides.
-    fn sides() -> SidesConfig {
-        SidesConfig::Couples {
-            left: side(time(7, 0, 0, 0), 600, 1200),
-            right: side(time(7, 0, 0, 0), 600, 1200),
+    /// Sources with the same profile alarm window (07:00 wake, 06:50..07:10)
+    /// on both sides, an unowned weekly schedule, and away as given.
+    fn sources(left_away: bool) -> AlarmSources {
+        AlarmSources {
+            away_mode: AwayMode {
+                left: left_away,
+                right: false,
+            },
+            profile: SidesConfig::Couples {
+                left: side(time(7, 0, 0, 0), 600, 1200),
+                right: side(time(7, 0, 0, 0), 600, 1200),
+            },
+            schedules: Schedules::default(),
+            overrides: overrides_from(&Settings::default()),
         }
+    }
+
+    /// A fixed non-UTC zoned "now". 2026-08-17 is a Monday.
+    fn at(hh: i8, mm: i8) -> Zoned {
+        date(2026, 8, 17)
+            .at(hh, mm, 0, 0)
+            .to_zoned(TimeZone::get("America/Denver").unwrap())
+            .unwrap()
     }
 
     fn synced_state() -> SensorState {
@@ -1008,13 +1026,13 @@ mod tests {
     #[test]
     fn away_suppresses_alarm_start() {
         let state = synced_state();
-        let in_window = time(7, 0, 0, 0);
+        let in_window = at(7, 0);
         assert!(matches!(
-            get_alarm_cmd(&state, &in_window, false, &sides(), &BedSide::Left),
+            get_alarm_cmd(&state, &in_window, &sources(false), &BedSide::Left),
             Some(SensorCommand::SetAlarm(AlarmCommand { intensity: 50, .. }))
         ));
         assert_eq!(
-            get_alarm_cmd(&state, &in_window, true, &sides(), &BedSide::Left),
+            get_alarm_cmd(&state, &in_window, &sources(true), &BedSide::Left),
             None
         );
     }
@@ -1025,12 +1043,10 @@ mod tests {
         // mid-window — the cancel must still be issued.
         let mut state = synced_state();
         state.alarm_left_running = true;
-        let in_window = time(7, 0, 0, 0);
         assert!(is_cancel(get_alarm_cmd(
             &state,
-            &in_window,
-            true,
-            &sides(),
+            &at(7, 0),
+            &sources(true),
             &BedSide::Left
         )));
     }
@@ -1039,17 +1055,15 @@ mod tests {
     fn missing_alarm_config_still_cancels_running_alarm() {
         let mut state = synced_state();
         state.alarm_right_running = true;
-        let mut no_alarm = side(time(7, 0, 0, 0), 600, 1200);
-        no_alarm.alarm = None;
-        let cfg = SidesConfig::Couples {
-            left: side(time(7, 0, 0, 0), 600, 1200),
-            right: no_alarm,
+        let mut src = sources(false);
+        let SidesConfig::Couples { right, .. } = &mut src.profile else {
+            unreachable!()
         };
+        right.alarm = None;
         assert!(is_cancel(get_alarm_cmd(
             &state,
-            &time(7, 0, 0, 0),
-            false,
-            &cfg,
+            &at(7, 0),
+            &src,
             &BedSide::Right
         )));
     }
@@ -1063,7 +1077,7 @@ mod tests {
             Some(std::time::Instant::now() + Duration::from_secs(60)),
         );
         assert_eq!(
-            get_alarm_cmd(&state, &time(7, 0, 0, 0), true, &sides(), &BedSide::Left),
+            get_alarm_cmd(&state, &at(7, 0), &sources(true), &BedSide::Left),
             None
         );
     }
@@ -1072,8 +1086,69 @@ mod tests {
     fn out_of_window_cancels_regardless_of_away() {
         let mut state = synced_state();
         state.alarm_left_running = true;
-        let out = time(12, 0, 0, 0);
-        assert!(is_cancel(get_alarm_cmd(&state, &out, false, &sides(), &BedSide::Left)));
-        assert!(is_cancel(get_alarm_cmd(&state, &out, true, &sides(), &BedSide::Left)));
+        let out = at(12, 0);
+        assert!(is_cancel(get_alarm_cmd(
+            &state,
+            &out,
+            &sources(false),
+            &BedSide::Left
+        )));
+        assert!(is_cancel(get_alarm_cmd(
+            &state,
+            &out,
+            &sources(true),
+            &BedSide::Left
+        )));
+    }
+
+    #[test]
+    fn unsynced_clock_suppresses_alarm_start() {
+        let mut state = synced_state();
+        state.clock_synced = false;
+        assert_eq!(
+            get_alarm_cmd(&state, &at(7, 0), &sources(false), &BedSide::Left),
+            None
+        );
+    }
+
+    #[test]
+    fn owned_weekly_side_fires_from_the_weekly_alarm_not_the_profile() {
+        let state = synced_state();
+        let mut src = sources(false);
+        // Sunday's row owns the side; its 07:00 alarm rings Monday morning.
+        src.schedules.left.sunday.power.enabled = true;
+        src.schedules.left.sunday.alarm.enabled = true;
+        src.schedules.left.sunday.alarm.time = "07:00".to_string();
+        src.schedules.left.sunday.alarm.vibration_intensity = 80;
+        src.schedules.left.sunday.alarm.duration = 600;
+
+        // Weekly alarm (intensity 80) instead of the profile's (50).
+        assert!(matches!(
+            get_alarm_cmd(&state, &at(7, 1), &src, &BedSide::Left),
+            Some(SensorCommand::SetAlarm(AlarmCommand { intensity: 80, .. }))
+        ));
+        // The profile's 06:50 start must NOT fire on an owned side.
+        assert_eq!(get_alarm_cmd(&state, &at(6, 51), &src, &BedSide::Left), None);
+    }
+
+    #[test]
+    fn skip_override_cancels_a_ringing_alarm() {
+        // The user hits "skip alarm" while it rings: the resolver drops the
+        // window, so the cancel branch must fire.
+        let mut state = synced_state();
+        state.alarm_left_running = true;
+        let mut src = sources(false);
+        src.overrides[0] = AlarmOverride {
+            disabled: true,
+            time_override: String::new(),
+            // covers the whole 06:50 window (2026-08-17 is in MDT, -06:00)
+            expires_at: "2026-08-17T07:12:00-06:00".to_string(),
+        };
+        assert!(is_cancel(get_alarm_cmd(
+            &state,
+            &at(7, 0),
+            &src,
+            &BedSide::Left
+        )));
     }
 }
