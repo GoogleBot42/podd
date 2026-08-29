@@ -372,7 +372,7 @@ fn publish_clock_health(health: &HealthRegistry, synced: bool) {
     }
 }
 
-fn clock_is_synced() -> bool {
+pub(crate) fn clock_is_synced() -> bool {
     if matches!(
         std::env::var("PODD_ASSUME_CLOCK_SYNC").ok().as_deref(),
         Some("1") | Some("true")

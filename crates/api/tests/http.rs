@@ -122,15 +122,16 @@ async fn settings_get_then_merge_persists() {
 async fn settings_prime_pod_daily_reaches_the_config() {
     let (app, control, _s) = build();
 
-    // a partial patch (time inherited from the stored settings) still applies
+    // a partial patch (time inherited from the stored settings) still applies;
+    // every save also hands the daemon the whole document first (#106)
     let patch = json!({ "primePodDaily": { "enabled": true } });
     let resp = app.clone().oneshot(post_json("/api/settings", &patch)).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     match control.calls().as_slice() {
-        [Call::SetPrimeDaily(true, t)] => {
+        [Call::SetSettings(_), Call::SetPrimeDaily(true, t)] => {
             assert_eq!(t.to_string(), "14:00:00"); // the default settings time
         }
-        other => panic!("expected one SetPrimeDaily, got {other:?}"),
+        other => panic!("expected SetSettings + SetPrimeDaily, got {other:?}"),
     }
 
     // turning it off, with a new time, propagates both fields
@@ -138,22 +139,28 @@ async fn settings_prime_pod_daily_reaches_the_config() {
     let resp = app.clone().oneshot(post_json("/api/settings", &patch)).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     match control.calls().as_slice() {
-        [_, Call::SetPrimeDaily(false, t)] => assert_eq!(t.to_string(), "03:30:00"),
+        [_, _, Call::SetSettings(_), Call::SetPrimeDaily(false, t)] => {
+            assert_eq!(t.to_string(), "03:30:00")
+        }
         other => panic!("expected a second SetPrimeDaily, got {other:?}"),
     }
 }
 
 #[tokio::test]
-async fn settings_without_bridged_fields_touch_nothing() {
+async fn settings_without_bridged_fields_push_only_the_document() {
     let (app, control, _s) = build();
     let patch = json!({ "rebootDaily": false, "left": { "name": "Bedroom" } });
     let resp = app.oneshot(post_json("/api/settings", &patch)).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    assert!(
-        control.calls().is_empty(),
-        "unrelated settings must not touch the config: {:?}",
-        control.calls()
-    );
+    // The daemon must see the new document (rebootDaily drives its reboot
+    // scheduler), but none of the config.ron bridges may fire.
+    match control.calls().as_slice() {
+        [Call::SetSettings(s)] => {
+            assert!(!s.reboot_daily);
+            assert_eq!(s.left.name, "Bedroom");
+        }
+        other => panic!("expected exactly one SetSettings, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -165,7 +172,7 @@ async fn settings_away_mode_reaches_the_config() {
     let resp = app.clone().oneshot(post_json("/api/settings", &patch)).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     match control.calls().as_slice() {
-        [Call::SetAwayMode(true, false)] => {}
+        [Call::SetSettings(_), Call::SetAwayMode(true, false)] => {}
         other => panic!("expected SetAwayMode(true, false), got {other:?}"),
     }
 
@@ -174,7 +181,7 @@ async fn settings_away_mode_reaches_the_config() {
     let resp = app.clone().oneshot(post_json("/api/settings", &patch)).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     match control.calls().as_slice() {
-        [_, Call::SetAwayMode(true, true)] => {}
+        [_, _, Call::SetSettings(_), Call::SetAwayMode(true, true)] => {}
         other => panic!("expected a second SetAwayMode(true, true), got {other:?}"),
     }
 }
@@ -186,8 +193,8 @@ async fn settings_timezone_reaches_the_config() {
     let resp = app.oneshot(post_json("/api/settings", &patch)).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     match control.calls().as_slice() {
-        [Call::SetTimezone(tz)] => assert_eq!(tz, "America/Denver"),
-        other => panic!("expected one SetTimezone, got {other:?}"),
+        [Call::SetSettings(_), Call::SetTimezone(tz)] => assert_eq!(tz, "America/Denver"),
+        other => panic!("expected SetSettings + SetTimezone, got {other:?}"),
     }
 }
 
@@ -875,10 +882,11 @@ async fn poddcontrol_maps_calls_to_commands() {
         })
     );
 
-    // Reboot / execute / settings are not wired to the hardware yet; they must
+    control.reboot().await.unwrap();
+    assert_eq!(rx.recv().await.unwrap(), Command::Reboot);
+
+    // Execute / device settings are not wired to the hardware yet; they must
     // fail with NotImplemented instead of queueing into the void (#32).
-    let err = control.reboot().await.unwrap_err();
-    assert!(err.downcast_ref::<api::NotImplemented>().is_some());
     let err = control.execute("reboot", None).await.unwrap_err();
     assert!(err.downcast_ref::<api::NotImplemented>().is_some());
     let err = control
@@ -916,8 +924,10 @@ async fn post_device_status_through_poddcontrol_reaches_channel() {
 }
 
 #[tokio::test]
-async fn jobs_reboot_through_poddcontrol_is_501() {
-    let (tx, _rx) = tokio::sync::mpsc::channel(8);
+async fn jobs_reboot_through_poddcontrol_queues_a_reboot() {
+    use podd_core::bus::Command;
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
     let control = Arc::new(api::PoddControl::new(tx)) as Arc<dyn PodControl>;
     let store = Arc::new(StateStore::in_memory());
     let app = router(store, control, None);
@@ -926,7 +936,8 @@ async fn jobs_reboot_through_poddcontrol_is_501() {
         .oneshot(post_json("/api/jobs", &json!(["reboot"])))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    assert_eq!(rx.recv().await.unwrap(), Command::Reboot);
 }
 
 #[tokio::test]

@@ -202,6 +202,11 @@ pub async fn post_settings(
     if let Err(e) = app.store.set_settings(merged.clone()) {
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
+    // Hand the daemon the whole document (daily reboot + schedule overrides
+    // live only here); the config.ron-backed fields follow field-by-field.
+    if let Err(e) = app.control.set_settings(merged.clone()).await {
+        return control_error(e);
+    }
     if let Some(time) = prime_time {
         if let Err(e) = app
             .control

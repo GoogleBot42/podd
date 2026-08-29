@@ -5,7 +5,7 @@
 //! scheduler. [`MockControl`] records calls for tests and the example server so
 //! the whole API is exercisable without any hardware.
 
-use crate::wire::{AlarmJob, Schedules, Side, VibrationPattern};
+use crate::wire::{AlarmJob, Schedules, Settings, Side, VibrationPattern};
 use async_trait::async_trait;
 use jiff::civil::Time;
 use podd_core::bus::{AlarmSpec, Command};
@@ -62,6 +62,12 @@ pub trait PodControl: Send + Sync {
     /// only refreshes what the control core resolves targets from.
     async fn set_schedules(&self, schedules: Schedules) -> anyhow::Result<()>;
 
+    /// Hand the daemon the whole user-settings document (the UI's Settings
+    /// page). Already validated *and* persisted by the caller; refreshes the
+    /// settings.json-native fields the daemon acts on (daily reboot, schedule
+    /// overrides) — prime/away/timezone still travel via their own methods.
+    async fn set_settings(&self, settings: Settings) -> anyhow::Result<()>;
+
     /// Fire an alarm immediately (the `POST /api/alarm` "test alarm" path).
     async fn fire_alarm(&self, job: AlarmJob) -> anyhow::Result<()>;
 
@@ -92,6 +98,7 @@ pub enum Call {
     SetTimezone(String),
     /// Boxed: the whole weekly document dwarfs every other variant.
     SetSchedules(Box<Schedules>),
+    SetSettings(Box<Settings>),
     FireAlarm(AlarmJob),
     ApplyDeviceSettings(serde_json::Value),
     Reboot,
@@ -180,6 +187,11 @@ impl PodControl for MockControl {
 
     async fn set_schedules(&self, schedules: Schedules) -> anyhow::Result<()> {
         self.record(Call::SetSchedules(Box::new(schedules)));
+        Ok(())
+    }
+
+    async fn set_settings(&self, settings: Settings) -> anyhow::Result<()> {
+        self.record(Call::SetSettings(Box::new(settings)));
         Ok(())
     }
 
@@ -305,6 +317,10 @@ impl PodControl for PoddControl {
         self.send(Command::SetSchedules(Box::new(schedules))).await
     }
 
+    async fn set_settings(&self, settings: Settings) -> anyhow::Result<()> {
+        self.send(Command::SetSettings(Box::new(settings))).await
+    }
+
     async fn fire_alarm(&self, job: AlarmJob) -> anyhow::Result<()> {
         self.send(Command::FireAlarm(AlarmSpec {
             side: to_bed_side(job.side),
@@ -323,7 +339,7 @@ impl PodControl for PoddControl {
     }
 
     async fn reboot(&self) -> anyhow::Result<()> {
-        Err(NotImplemented("reboot").into())
+        self.send(Command::Reboot).await
     }
 
     // Queued `Command::Update`s are only logged by podd-core's dispatcher —
