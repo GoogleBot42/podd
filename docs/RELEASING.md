@@ -120,9 +120,13 @@ enforced).
 If you publish to a self-hosted Gitea/Forgejo, the runner needs a bit more than the
 GitHub one (which uses the DeterminateSystems Nix action):
 
-- **A runner image with `curl`, `git`, and `sudo`** — e.g.
-  `catthehacker/ubuntu`. The Gitea workflow installs Nix itself with the official
-  Determinate installer script and adds it to `PATH`, which needs those tools.
+- **A runner with Nix, or an image the installer works in.** The canonical
+  setup (`runs-on: nixos`, same as `.gitea/workflows/ci.yml`) is a bare NixOS
+  host with `nix`, `git`, and `curl` in `/run/current-system/sw/bin`; the
+  workflow's Install Nix step no-ops there. On a Docker-image runner instead,
+  use an image with `curl`, `git`, and `sudo` (e.g. `catthehacker/ubuntu`) and
+  relabel the jobs — the step then installs Nix with the official Determinate
+  installer script.
 - **The auto-injected `GITHUB_TOKEN`** (Gitea provides `GITHUB_*` for
   compatibility). `scripts/upload-release-gitea.sh` uses it to create/find the
   release and upload assets via the Gitea API — no external actions required.

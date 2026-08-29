@@ -1,0 +1,62 @@
+name: CI
+
+# Per-PR CI (#19) on the self-hosted NixOS Gitea runner (label: nixos).
+# The runner is a bare NixOS host: without an explicit PATH the steps find no
+# binaries at all — /run/current-system/sw/bin is the system profile (nix,
+# git, bash). Everything project-specific runs through the flake, never off
+# this PATH directly.
+#
+# Lanes:
+#   test  — cargo test --workspace in the dev shell (the unit suite).
+#   build — the two artifacts we actually deploy: the static aarch64-musl
+#           daemon and the UI bundle. Catches cross-build and npmDepsHash
+#           breakage that a host-arch `cargo test` can't see.
+#
+# Intentionally absent: `cargo fmt --check` and `npm run lint` (the tree is
+# not clean under either today — add them once it is), and hardware e2e
+# (needs a real Pod; covered by the dry-run deploy flow, not CI).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  PATH: /run/current-system/sw/bin/
+  XDG_CONFIG_HOME: ${{ runner.temp }}/.config
+
+jobs:
+  test:
+    runs-on: nixos
+    # Cold runs build the dev-shell toolchain from cache.nixos.org first.
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
+
+      - name: cargo test
+        run: |
+          set -euo pipefail
+          nix develop -c cargo test --workspace
+
+  build:
+    runs-on: nixos
+    # The aarch64 cross toolchain is the big cold-cache item; give it room.
+    timeout-minutes: 240
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
+
+      - name: nix build .#podd-aarch64
+        run: |
+          set -euo pipefail
+          nix build .#podd-aarch64 --print-build-logs
+
+      - name: nix build .#ui
+        run: |
+          set -euo pipefail
+          nix build .#ui --print-build-logs
