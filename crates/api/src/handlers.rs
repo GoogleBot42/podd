@@ -365,9 +365,8 @@ fn validate_schedules(s: &Schedules) -> Vec<String> {
                 ));
             }
 
-            // Alarm fields are inert (the alarm path still reads config.ron,
-            // #106) but are validated anyway so garbage never lands in the
-            // file and becomes live the day they are wired up.
+            // Alarm fields drive the sensor manager's vibration alarms on
+            // owned sides (podd_core::alarm), so they must stay resolvable.
             if parse_hh_mm(&d.alarm.time).is_none() {
                 errs.push(format!("{at}.alarm.time is not HH:mm: {:?}", d.alarm.time));
             }

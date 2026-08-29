@@ -132,7 +132,6 @@ pub enum Command {
     /// update (manual overrides are dropped). Boxed: [`schedule::Schedules`]
     /// is by far the largest variant and would otherwise bloat every command.
     ///
-    /// Alarm fields inside are persisted but inert (#106).
     ///
     /// [`schedule::Schedules`]: crate::schedule::Schedules
     SetSchedules(Box<crate::schedule::Schedules>),
