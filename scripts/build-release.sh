@@ -8,6 +8,7 @@
 #     dist/manifest.json            (signed if a key is available, else unsigned)
 #     dist/app-<version>.squashfs   (podd + UI + configs, packed by `podup`)
 #     dist/signing.pub              (public key, ONLY when signing)
+#     dist/os-<version>.ext4.zst    (OS slot image; ONLY when OS_IMAGE is set)
 #
 # These names are exactly what pod-updater's GitHub/Gitea sources resolve:
 #   GitHub latest:  https://github.com/<o>/<r>/releases/latest/download/manifest.json
@@ -28,6 +29,12 @@
 #   PODD_SIGNING_PUB   base64 ed25519 verifying key (optional; see key resolution)
 #   OUT_DIR            output dir, default "dist"
 #   VARIANTS           space-separated config variants to bundle, default "pod4 pod3"
+#   OS_IMAGE           path to the OS slot artifact to include (optional):
+#                      either the zstd-compressed podd-os.ext4.zst that
+#                      os/scripts/build.sh emits, or a raw rootfs.ext2 (it is
+#                      zstd-compressed here). Absent => app-only release,
+#                      byte-identical behavior to before this input existed.
+#   OS_VERSION         version for the OS component (default: APP_VERSION)
 #
 # Requires on PATH: nix (flakes), plus coreutils/openssl/base64 for key handling.
 set -euo pipefail
@@ -160,8 +167,32 @@ fi
 echo "==> signing mode: $SIGN_MODE"
 
 # ---------------------------------------------------------------------------
-# 4. Pack + (optionally) sign via podup. Produces dist/app-<v>.squashfs and
-#    dist/manifest.json.
+# 4. Optional OS component. OS_IMAGE is the slot filesystem image the device's
+#    AbSlotWriter streams onto the inactive A/B partition. podup records the
+#    file under its basename, so stage it as os-<version>.ext4.zst first —
+#    that basename is the URL the device fetches. A raw (uncompressed) input
+#    is zstd-compressed here; the frame checksum (zstd default) is part of the
+#    on-device integrity chain, so always compress with checksums enabled.
+# ---------------------------------------------------------------------------
+OS_ARGS=()
+if [ -n "${OS_IMAGE:-}" ]; then
+  [ -f "$OS_IMAGE" ] || { echo "!! OS_IMAGE=$OS_IMAGE not found" >&2; exit 1; }
+  OS_VERSION="${OS_VERSION:-$APP_VERSION}"
+  OS_STAGE_DIR="$(mktemp -d)"
+  trap 'rm -rf "$PAYLOAD" "$OS_STAGE_DIR"' EXIT
+  OS_STAGED="$OS_STAGE_DIR/os-${OS_VERSION#v}.ext4.zst"
+  case "$OS_IMAGE" in
+    *.zst) cp "$OS_IMAGE" "$OS_STAGED" ;;
+    *)     zstd -T0 -19 -kf "$OS_IMAGE" -o "$OS_STAGED" ;;
+  esac
+  zstd -t "$OS_STAGED"   # decode test: catches a corrupt/checksum-less input
+  OS_ARGS=(--os "$OS_STAGED" --os-version "${OS_VERSION#v}")
+  echo "==> including OS component ${OS_VERSION#v} ($(basename "$OS_STAGED"))"
+fi
+
+# ---------------------------------------------------------------------------
+# 5. Pack + (optionally) sign via podup. Produces dist/app-<v>.squashfs,
+#    dist/os-<v>.ext4.zst (when OS_IMAGE is set) and dist/manifest.json.
 # ---------------------------------------------------------------------------
 echo "==> podup release"
 "$PODUP" release \
@@ -169,6 +200,7 @@ echo "==> podup release"
   --out-dir "$OUT_DIR" \
   --app-src "$PAYLOAD" \
   --app-version "$APP_VERSION" \
+  "${OS_ARGS[@]}" \
   "${KEY_ARGS[@]}"
 
 if [ -n "$KEYFILE" ]; then
@@ -176,7 +208,7 @@ if [ -n "$KEYFILE" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Self-verify the release exactly as the device would.
+# 6. Self-verify the release exactly as the device would.
 # ---------------------------------------------------------------------------
 echo "==> podup verify"
 if [ "$SIGN_MODE" = "signed" ] && [ -f "$OUT_DIR/signing.pub" ]; then

@@ -181,8 +181,9 @@ log "image ready: ${IMG}(.gz)"
 
 if [ -n "${OUTPUT_DIR}" ]; then
 	mkdir -p "${OUTPUT_DIR}"
-	# Copy the raw + gz images and the manifest emitted by the board post-image.
-	for f in podd-sd.img podd-sd.img.gz podd-sd.manifest.txt; do
+	# Copy the raw + gz images, the manifest, and the OTA slot artifact
+	# emitted by the board post-image.
+	for f in podd-sd.img podd-sd.img.gz podd-sd.manifest.txt podd-os.ext4.zst; do
 		[ -f "${IMAGES_DIR}/${f}" ] && cp -v "${IMAGES_DIR}/${f}" "${OUTPUT_DIR}/"
 	done
 	log "copied image(s) to ${OUTPUT_DIR}"
