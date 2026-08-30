@@ -98,6 +98,22 @@ async fn test_prime_enabled_defaults_true_when_absent() {
     assert!(config.prime_enabled);
 }
 
+#[tokio::test]
+async fn test_mqtt_enabled_defaults_true_when_absent() {
+    // Configs written before `mqtt.enabled` existed (every live unit) must
+    // keep their broker link — a default-off would silently drop Home
+    // Assistant on upgrade.
+    let config = Config::load("example_solo.ron").await.unwrap();
+    assert!(config.mqtt.enabled);
+    // and the field round-trips through what `Config::save` writes
+    let opts = ron::Options::default().with_default_extension(Extensions::IMPLICIT_SOME);
+    let mut mqtt = config.mqtt.clone();
+    mqtt.enabled = false;
+    let ron_str = ron::ser::to_string(&mqtt).unwrap();
+    let parsed: MqttConfig = opts.from_str(&ron_str).unwrap();
+    assert_eq!(parsed, mqtt);
+}
+
 fn parse_away(src: &str) -> AwayMode {
     let opts = ron::Options::default().with_default_extension(Extensions::IMPLICIT_SOME);
     opts.from_str(src).unwrap()

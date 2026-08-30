@@ -6,9 +6,10 @@
 //! by `podd-core`'s live state bus; for now they are seeded with sane defaults.
 
 use crate::wire::{
-    c_to_f, f_to_level, DeviceStatus, PresenceState, Schedules, Settings, SidePresence, SideStatus,
+    c_to_f, f_to_level, DeviceStatus, MqttSettings, PresenceState, Schedules, Settings,
+    SidePresence, SideStatus,
 };
-use podd_core::bus::{DeviceSnapshot, SideSnapshot};
+use podd_core::bus::{DeviceSnapshot, MqttSnapshot, SideSnapshot};
 use podd_core::health::HealthMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -33,6 +34,10 @@ pub struct StateStore {
     /// updater is attached (API-only mode / tests), which renders as
     /// "not started" rather than as a lie.
     health: RwLock<HealthMap>,
+    /// MQTT broker settings (#18). Owned by `config.ron` — podd-core mirrors
+    /// them here (password-free) via [`StateStore::spawn_mqtt_updater`], and
+    /// edits travel back out over the command bus, never through this file.
+    mqtt: RwLock<MqttSettings>,
 }
 
 fn load_or_default<T>(path: &Option<PathBuf>) -> T
@@ -81,6 +86,7 @@ impl StateStore {
             status: RwLock::new(DeviceStatus::default()),
             presence: RwLock::new(PresenceState::default()),
             health: RwLock::new(HealthMap::new()),
+            mqtt: RwLock::new(MqttSettings::default()),
         }
     }
 
@@ -126,6 +132,36 @@ impl StateStore {
             }
             log::info!("health watch closed; updater exiting");
         });
+    }
+
+    /// Mirror podd-core's MQTT-settings watch into the store, so `GET
+    /// /api/mqtt` is a plain read (#18). Same shape as
+    /// [`Self::spawn_health_updater`]; an API-only build never attaches it and
+    /// reports the "not configured" default.
+    pub fn spawn_mqtt_updater(self: &Arc<Self>, mut rx: watch::Receiver<MqttSnapshot>) {
+        self.set_mqtt(rx.borrow_and_update().clone().into());
+
+        let updater = self.clone();
+        tokio::spawn(async move {
+            while rx.changed().await.is_ok() {
+                let snap = rx.borrow_and_update().clone();
+                updater.set_mqtt(snap.into());
+            }
+            log::info!("mqtt-settings watch closed; updater exiting");
+        });
+    }
+
+    // ---- mqtt broker settings (in-memory; config.ron is the owner) ----
+
+    pub fn mqtt(&self) -> MqttSettings {
+        self.mqtt.read().unwrap().clone()
+    }
+
+    /// Replace the cached broker settings. Called by the watch updater, and by
+    /// the POST handler so a read straight after a write doesn't race the
+    /// command bus round-trip.
+    pub fn set_mqtt(&self, mqtt: MqttSettings) {
+        *self.mqtt.write().unwrap() = mqtt;
     }
 
     // ---- subsystem health (in-memory only) ----

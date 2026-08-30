@@ -1418,3 +1418,169 @@ async fn update_action_failures_are_surfaced() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CONFLICT);
 }
+
+// ---------------------------------------------------------------------------
+// mqtt (issue #18)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn mqtt_get_reports_the_mirrored_settings_without_the_password() {
+    let (app, _c, store) = build();
+
+    // API-only default: nothing configured, and no password field at all.
+    let resp = app.clone().oneshot(get("/api/mqtt")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = body_json(resp).await;
+    assert_eq!(v["enabled"], json!(false));
+    assert_eq!(v["server"], json!(""));
+    assert_eq!(v["port"], json!(1883));
+    assert_eq!(v["passwordSet"], json!(false));
+    assert!(
+        v.get("password").is_none(),
+        "the API must never echo the password"
+    );
+
+    // What podd-core's mirror hands us shows up verbatim (minus the secret).
+    store.set_mqtt(api::wire::MqttSettings {
+        enabled: true,
+        server: "broker.lan".to_string(),
+        port: 8883,
+        user: "podd".to_string(),
+        password_set: true,
+    });
+    let resp = app.oneshot(get("/api/mqtt")).await.unwrap();
+    let v = body_json(resp).await;
+    assert_eq!(v["server"], json!("broker.lan"));
+    assert_eq!(v["port"], json!(8883));
+    assert_eq!(v["user"], json!("podd"));
+    assert_eq!(v["passwordSet"], json!(true));
+    assert!(v.get("password").is_none());
+}
+
+#[tokio::test]
+async fn mqtt_post_merges_and_reaches_the_config() {
+    let (app, control, store) = build();
+    store.set_mqtt(api::wire::MqttSettings {
+        enabled: true,
+        server: "old.lan".to_string(),
+        port: 1883,
+        user: "podd".to_string(),
+        password_set: true,
+    });
+
+    // A partial patch: everything untouched is inherited, and an absent
+    // password means "keep the stored one" (None on the command).
+    let resp = app
+        .clone()
+        .oneshot(post_json("/api/mqtt", &json!({ "port": 8883 })))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = body_json(resp).await;
+    assert_eq!(v["server"], json!("old.lan"));
+    assert_eq!(v["port"], json!(8883));
+    assert_eq!(v["passwordSet"], json!(true));
+    match control.calls().as_slice() {
+        [Call::SetMqtt(u)] => {
+            assert_eq!(u.server, "old.lan");
+            assert_eq!(u.port, 8883);
+            assert_eq!(u.user, "podd");
+            assert!(u.enabled);
+            assert_eq!(u.password, None, "an absent password must not clear it");
+        }
+        other => panic!("expected one SetMqtt, got {other:?}"),
+    }
+    // GET reflects the edit straight away (no race with the daemon mirror).
+    let v = body_json(app.clone().oneshot(get("/api/mqtt")).await.unwrap()).await;
+    assert_eq!(v["port"], json!(8883));
+
+    // A new password is forwarded, and only ever reported as `passwordSet`.
+    let patch = json!({ "password": "hunter2", "user": "ha" });
+    let resp = app
+        .clone()
+        .oneshot(post_json("/api/mqtt", &patch))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body =
+        String::from_utf8(resp.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+    assert!(!body.contains("hunter2"), "{body}");
+    match control.calls().as_slice() {
+        [_, Call::SetMqtt(u)] => {
+            assert_eq!(u.password.as_deref(), Some("hunter2"));
+            assert_eq!(u.user, "ha");
+        }
+        other => panic!("expected a second SetMqtt, got {other:?}"),
+    }
+    // ... and the redacting Debug keeps it out of any log line.
+    assert!(!format!("{:?}", control.calls()).contains("hunter2"));
+
+    // An explicit empty password clears it.
+    let resp = app
+        .clone()
+        .oneshot(post_json("/api/mqtt", &json!({ "password": "" })))
+        .await
+        .unwrap();
+    let v = body_json(resp).await;
+    assert_eq!(v["passwordSet"], json!(false));
+}
+
+#[tokio::test]
+async fn mqtt_post_rejects_a_useless_broker_without_applying_anything() {
+    for patch in [
+        json!({ "enabled": true, "server": "" }),
+        json!({ "server": "mqtt://broker.lan" }),
+        json!({ "server": "broker lan" }),
+        json!({ "server": "broker.lan", "port": 0 }),
+    ] {
+        let (app, control, store) = build();
+        store.set_mqtt(api::wire::MqttSettings {
+            enabled: true,
+            server: "good.lan".to_string(),
+            port: 1883,
+            user: "podd".to_string(),
+            password_set: true,
+        });
+        let resp = app.oneshot(post_json("/api/mqtt", &patch)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{patch}");
+        let v = body_json(resp).await;
+        assert_eq!(v["error"], "Invalid request data");
+        assert!(
+            control.calls().is_empty(),
+            "{patch} must not reach the config"
+        );
+        assert_eq!(store.mqtt().server, "good.lan");
+    }
+}
+
+#[tokio::test]
+async fn mqtt_post_rejects_unknown_fields() {
+    let (app, control, _s) = build();
+    let resp = app
+        .oneshot(post_json("/api/mqtt", &json!({ "brokerHost": "broker.lan" })))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert!(control.calls().is_empty());
+}
+
+/// The document a client GETs must POST back cleanly (`passwordSet` is
+/// accepted and ignored, not a schema error).
+#[tokio::test]
+async fn mqtt_post_accepts_the_document_it_returned() {
+    let (app, control, _s) = build();
+    let v = body_json(app.clone().oneshot(get("/api/mqtt")).await.unwrap()).await;
+    let mut doc = v.clone();
+    doc["enabled"] = json!(true);
+    doc["server"] = json!("broker.lan");
+    let resp = app.oneshot(post_json("/api/mqtt", &doc)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    match control.calls().as_slice() {
+        [Call::SetMqtt(u)] => {
+            assert!(u.enabled);
+            assert_eq!(u.server, "broker.lan");
+            assert_eq!(u.password, None);
+        }
+        other => panic!("expected one SetMqtt, got {other:?}"),
+    }
+}

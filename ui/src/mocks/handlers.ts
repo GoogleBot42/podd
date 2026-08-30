@@ -1,6 +1,7 @@
 import { http, HttpResponse, delay } from 'msw';
 import type { SleepRecord } from '@api/sleepSchema.ts';
 import type { Jobs } from '@api/jobs.ts';
+import type { MqttSettingsPatch } from '@api/mqttSchema.ts';
 import { epochSecondsToMs } from '@lib/metricsTime.ts';
 import {
   getServices,
@@ -9,6 +10,8 @@ import {
   updateSchedules,
   getSettings,
   updateSettings,
+  getMqtt,
+  updateMqtt,
   getDeviceStatus,
   updateDeviceStatus,
   getServerStatus,
@@ -73,6 +76,16 @@ export const handlers = [
   http.post('/api/settings', async ({ request }) => {
     const body = (await request.json()) as Partial<ReturnType<typeof getSettings>>;
     const updated = updateSettings(body);
+    await delay(120);
+    return HttpResponse.json(deepClone(updated));
+  }),
+  http.get('/api/mqtt', async () => {
+    await delay(120);
+    return HttpResponse.json(deepClone(getMqtt()));
+  }),
+  http.post('/api/mqtt', async ({ request }) => {
+    const body = (await request.json()) as MqttSettingsPatch;
+    const updated = updateMqtt(body);
     await delay(120);
     return HttpResponse.json(deepClone(updated));
   }),

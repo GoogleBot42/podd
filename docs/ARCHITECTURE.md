@@ -97,8 +97,8 @@ All JSON under `/api`. Control endpoints (implemented):
 `GET/POST /deviceStatus`, `GET/POST /settings`, `GET/POST /schedules`,
 `POST /alarm`, `POST /execute`, `POST /jobs`, `GET /services`,
 `GET /serverStatus`, `GET /logs` + `GET /logs/:file` (SSE),
-`GET/POST /metrics/presence`. POST bodies are deep-merged; `deviceStatus`/`jobs`
-return 204, others return the merged doc.
+`GET/POST /metrics/presence`, plus the podd-only `GET/POST /mqtt`. POST bodies
+are deep-merged; `deviceStatus`/`jobs` return 204, others return the merged doc.
 
 Endpoints whose backing subsystem doesn't exist yet answer **501**, never a
 no-op 204 (#32, #107): `POST /jobs` for the biometrics jobs (and, through
@@ -125,6 +125,24 @@ available components, last error/apply), with `POST /api/updates/check` and
 Applying an update is not routed (issue #1's other half), and the channel is
 read-only because it is fixed at start-up from `PODD_UPDATER_CHANNEL`. The UI
 renders all of it in Settings → Updates.
+
+`GET/POST /mqtt` is podd-only (free-sleep has no MQTT): the broker link's
+settings — `enabled`, `server`, `port`, `user`, `passwordSet` — behind the UI's
+Settings → MQTT section (#18). Three rules shape it:
+
+* the **password never leaves podd-core**. `bus::MqttSnapshot` mirrors the live
+  config into the api layer without it, and a POST that omits `password` keeps
+  the stored one (`""` clears it), so the UI can change a port without ever
+  handling the secret;
+* the write path (`Command::SetMqtt` → `apply_mqtt`) touches **only** `cfg.mqtt`
+  and round-trips the rest of `config.ron` — alarm and profile blocks above all;
+* nothing is republished to MQTT. Broker credentials must not travel through the
+  broker they authenticate against.
+
+`enabled: false` means no broker link at all: no manager, no connect attempt, no
+reconnect backoff. The managers still take an `AsyncClient`, but a discarding
+one. The connection is built at startup, so an edit applies on the next restart
+— which the UI says out loud.
 
 `GET /serverStatus` keeps free-sleep's `StatusInfo` wire shape but **not** its
 key set: it reports podd's own subsystems (`sensor`, `coverControl`, `mqtt`,

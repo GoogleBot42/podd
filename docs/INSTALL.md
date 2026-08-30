@@ -188,6 +188,10 @@ journalctl -u podd -f
 Edit your settings in `/opt/podd/config.ron` (temperatures, schedule, LED, MQTT,
 etc.), then `systemctl restart podd` to apply.
 
+The MQTT broker link (host, port, credentials, on/off) is also editable from the
+web UI under **Settings → MQTT**; it writes the same `config.ron` block and
+takes effect on the next `systemctl restart podd`.
+
 ---
 
 ## Signatures: optional and owner-controlled

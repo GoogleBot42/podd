@@ -41,8 +41,15 @@ pub struct LEDConfig {
     pub band: CurrentBand,
 }
 
+/// Broker link settings (the UI's Settings → MQTT section, issue #18).
+///
+/// `enabled` defaults to **true** so every config written before the field
+/// existed keeps its broker link exactly as it was — a default-off would
+/// silently drop Home Assistant on the next upgrade.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MqttConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     pub server: String,
     pub port: u16,
     pub user: String,

@@ -32,7 +32,7 @@ use std::sync::Arc;
 use config::{Config, Cover};
 use tokio::sync::{mpsc, watch};
 
-use crate::bus::{Command, DeviceSnapshot, Shared, StatusTx};
+use crate::bus::{Command, DeviceSnapshot, MqttSnapshot, Shared, StatusTx};
 use crate::health::HealthRegistry;
 use crate::{led::IS31FL3194Controller, mqtt::MqttManager, reset::ResetController};
 
@@ -62,6 +62,10 @@ pub fn start(
     let (status_tx, status_rx) = watch::channel(DeviceSnapshot::default());
     let (cmd_tx, cmd_rx) = mpsc::channel(COMMAND_QUEUE);
     let (health, health_rx) = HealthRegistry::new();
+    // Broker settings for the api layer (#18). Seeded with the "not
+    // configured" placeholder and replaced by `run_inner` the moment
+    // `config.ron` is parsed.
+    let (mqtt_state_tx, mqtt_state_rx) = watch::channel(MqttSnapshot::default());
 
     // Biometrics history (vitals, sleep records, movement), next to the config
     // like settings/schedules.
@@ -70,6 +74,7 @@ pub fn start(
     let shared = Shared {
         status: status_rx,
         health: health_rx,
+        mqtt: mqtt_state_rx,
         commands: cmd_tx,
         biometrics: biometrics.clone(),
     };
@@ -79,6 +84,7 @@ pub fn start(
         Arc::new(status_tx),
         health,
         cmd_rx,
+        mqtt_state_tx,
         dry_run,
         biometrics,
     );
@@ -279,6 +285,84 @@ async fn apply_timezone(config_tx: &watch::Sender<Config>, config_path: &str, ia
     true
 }
 
+/// An [`rumqttc::AsyncClient`] whose requests are drained and thrown away.
+///
+/// Used when `mqtt.enabled` is false (#18): the frozen/sensor managers and the
+/// command dispatcher all take a client unconditionally, and the alternative —
+/// an `Option<AsyncClient>` threaded through every publish site — would touch
+/// the telemetry hot path for no behavioural gain. Draining (rather than
+/// dropping the receiver) matters: a dropped receiver makes every publish
+/// return an error, which `publish_guaranteed_wait` would log once per
+/// telemetry tick.
+fn discarding_mqtt_client() -> rumqttc::AsyncClient {
+    let (tx, rx) = flume::bounded::<rumqttc::Request>(16);
+    tokio::spawn(async move { while rx.recv_async().await.is_ok() {} });
+    rumqttc::AsyncClient::from_senders(tx)
+}
+
+/// Keep the bus's [`MqttSnapshot`] in step with the live config, so a settings
+/// save is reflected by `GET /api/mqtt` without the api layer ever reading
+/// `config.ron` (or the password) itself.
+async fn mirror_mqtt_state(
+    mut config_rx: watch::Receiver<Config>,
+    mqtt_state_tx: watch::Sender<MqttSnapshot>,
+) {
+    while config_rx.changed().await.is_ok() {
+        let snap = MqttSnapshot::from(&config_rx.borrow_and_update().mqtt);
+        if *mqtt_state_tx.borrow() != snap {
+            let _ = mqtt_state_tx.send(snap);
+        }
+    }
+    log::info!("config watch closed; mqtt-state mirror exiting");
+}
+
+/// Apply an MQTT broker-settings change (UI Settings → MQTT, #18) to the live
+/// config. Same shape as [`apply_timezone`], with two rules of its own:
+///
+/// * only `cfg.mqtt` is touched — the rest of `config.ron` (profile, alarm,
+///   presence, device) round-trips through load/save untouched, which
+///   `config_command_tests::mqtt_edit_leaves_the_rest_of_the_config_alone`
+///   pins;
+/// * `update.password == None` keeps the stored password, so the UI can change
+///   a port without ever handling the secret. Nothing here logs it.
+///
+/// The broker *connection* is built once at startup, so a change only takes
+/// effect on the next podd restart — said plainly in the log line and in the
+/// UI copy rather than pretended away.
+async fn apply_mqtt(
+    config_tx: &watch::Sender<Config>,
+    config_path: &str,
+    update: bus::MqttUpdate,
+) -> bool {
+    let mut cfg = config_tx.borrow().clone();
+    let next = config::MqttConfig {
+        enabled: update.enabled,
+        server: update.server,
+        port: update.port,
+        user: update.user,
+        password: update.password.unwrap_or_else(|| cfg.mqtt.password.clone()),
+    };
+    if cfg.mqtt == next {
+        return false;
+    }
+    log::info!(
+        "Set MQTT broker to {}:{} (user {:?}, enabled={}); restart podd to reconnect",
+        next.server,
+        next.port,
+        next.user,
+        next.enabled,
+    );
+    cfg.mqtt = next;
+    if let Err(e) = config_tx.send(cfg.clone()) {
+        log::error!("Error sending to config watch channel: {e}");
+        return false;
+    }
+    if let Err(e) = cfg.save(config_path).await {
+        log::error!("Failed to save config: {e}");
+    }
+    true
+}
+
 /// Republish the retained MQTT config-state topics a command just invalidated.
 ///
 /// Config changes arriving over MQTT republish inline in
@@ -447,6 +531,13 @@ async fn dispatch_commands(
                     republish_config_state(&mqtt, &[ConfigStateTopic::Timezone], &config_tx);
                 }
             }
+            // Broker settings (#18). Deliberately NOT republished to MQTT:
+            // there is no retained `state/config/mqtt/...` topic, and pushing
+            // broker credentials through the broker they authenticate against
+            // would be a gift to anyone subscribed to `opensleep/#`.
+            Command::SetMqtt(update) => {
+                apply_mqtt(&config_tx, &config_path, update.clone()).await;
+            }
             // Per-weekday schedule edits: in-memory only. `schedules.json` was
             // already written by the api layer's StateStore (it owns that
             // file), and schedules have no retained MQTT config topic, so
@@ -493,6 +584,7 @@ async fn run_inner(
     status_tx: StatusTx,
     health: HealthRegistry,
     cmd_rx: mpsc::Receiver<Command>,
+    mqtt_state_tx: watch::Sender<MqttSnapshot>,
     dry_run: bool,
     biometrics: biometrics::Stores,
 ) -> anyhow::Result<()> {
@@ -531,6 +623,11 @@ async fn run_inner(
         device.i2c_bus,
     );
     let (config_tx, config_rx) = watch::channel(config.clone());
+
+    // Mirror the broker settings (password-free) onto the bus for the api
+    // layer's Settings → MQTT section (#18).
+    mqtt_state_tx.send_replace(MqttSnapshot::from(&config.mqtt));
+    tokio::spawn(mirror_mqtt_state(config_rx.clone(), mqtt_state_tx));
 
     // The per-weekday schedule (`schedules.json`, written by the api layer).
     // Read once here; later edits arrive as `Command::SetSchedules`.
@@ -604,14 +701,31 @@ async fn run_inner(
 
     let (calibrate_tx, calibrate_rx) = mpsc::channel(32);
 
-    let mut mqtt_man = MqttManager::new(
-        config_tx.clone(),
-        config_rx.clone(),
-        calibrate_tx,
-        device_label,
-        config_path_arc.clone(),
-        health.clone(),
-    );
+    // `mqtt.enabled: false` (Settings → MQTT, #18) means no broker link at
+    // all: no connection attempt, no reconnect backoff, no log spam. The
+    // managers still get an `AsyncClient` — threading an `Option` through
+    // every publish site would be a far larger change on the telemetry hot
+    // path — but it is a discarding one (see [`discarding_mqtt_client`]).
+    let (mut mqtt_man, mqtt_client) = if config.mqtt.enabled {
+        let man = MqttManager::new(
+            config_tx.clone(),
+            config_rx.clone(),
+            calibrate_tx,
+            device_label,
+            config_path_arc.clone(),
+            health.clone(),
+        );
+        let client = man.client.clone();
+        (Some(man), client)
+    } else {
+        log::warn!("MQTT disabled in config (mqtt.enabled: false); not connecting to a broker");
+        health.report(
+            crate::health::MQTT,
+            crate::health::Health::NotStarted,
+            "disabled in config (mqtt.enabled: false)",
+        );
+        (None, discarding_mqtt_client())
+    };
 
     tokio::spawn(dispatch_commands(
         cmd_rx,
@@ -621,7 +735,7 @@ async fn run_inner(
         config_path_arc.clone(),
         schedules_tx,
         settings_tx,
-        mqtt_man.client.clone(),
+        mqtt_client.clone(),
         dry_run,
     ));
 
@@ -636,10 +750,14 @@ async fn run_inner(
     // connect, but do not block the frozen/sensor managers if it is unreachable
     // — it keeps retrying concurrently via `mqtt_man.run()` in the select! below,
     // and telemetry to the api/StateBus flows regardless of MQTT.
-    match tokio::time::timeout(std::time::Duration::from_secs(3), mqtt_man.wait_for_conn()).await {
-        Ok(Ok(())) => log::info!("MQTT connected"),
-        Ok(Err(())) => log::warn!("MQTT connect failed (continuing without it)"),
-        Err(_) => log::warn!("MQTT not connected within 3s (continuing; retrying in background)"),
+    if let Some(man) = mqtt_man.as_mut() {
+        match tokio::time::timeout(std::time::Duration::from_secs(3), man.wait_for_conn()).await {
+            Ok(Ok(())) => log::info!("MQTT connected"),
+            Ok(Err(())) => log::warn!("MQTT connect failed (continuing without it)"),
+            Err(_) => {
+                log::warn!("MQTT not connected within 3s (continuing; retrying in background)")
+            }
+        }
     }
 
     // Any manager ending — Ok or Err — means the control core is no longer
@@ -655,7 +773,7 @@ async fn run_inner(
             schedules_rx.clone(),
             settings_rx.clone(),
             led,
-            mqtt_man.client.clone(),
+            mqtt_client.clone(),
             status_tx.clone(),
             frozen_cmd_rx,
             health.clone(),
@@ -680,7 +798,7 @@ async fn run_inner(
             settings_rx,
             config_path_arc,
             calibrate_rx,
-            mqtt_man.client.clone(),
+            mqtt_client.clone(),
             status_tx.clone(),
             sensor_cmd_rx,
             health.clone(),
@@ -693,7 +811,14 @@ async fn run_inner(
             }
         }
 
-        _ = mqtt_man.run() => {
+        // Disabled (`mqtt.enabled: false`): there is no manager to run, so
+        // this arm simply never completes.
+        _ = async {
+            match mqtt_man.as_mut() {
+                Some(man) => man.run().await,
+                None => std::future::pending().await,
+            }
+        } => {
             anyhow::anyhow!("MQTT manager unexpectedly exited")
         }
     };
@@ -764,6 +889,100 @@ mod config_command_tests {
         assert!(apply_away_mode(&tx, &path, left_only).await);
         assert_eq!(ConfigStateTopic::AwayMode.payload(&tx.borrow()), "false");
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// The write path behind Settings → MQTT (#18) must round-trip the rest of
+    /// `config.ron` untouched. A config write that invented or dropped an
+    /// alarm block is exactly the bug that fired a real alarm on a real bed
+    /// (2026-07-20), so this asserts the whole document, and the alarm blocks
+    /// by name.
+    #[tokio::test]
+    async fn mqtt_edit_leaves_the_rest_of_the_config_alone() {
+        // example_couples.ron has an alarm block on the left side and none on
+        // the right — precisely the state a careless write would mangle.
+        let cfg = Config::load("example_couples.ron").await.unwrap();
+        let (tx, _rx) = watch::channel(cfg.clone());
+        let path = scratch_path("mqtt");
+
+        let update = bus::MqttUpdate {
+            enabled: true,
+            server: "broker.lan".to_string(),
+            port: 8883,
+            user: "podd".to_string(),
+            password: Some("hunter2".to_string()),
+        };
+        assert!(apply_mqtt(&tx, &path, update.clone()).await);
+
+        // What actually landed on disk, not just what the watch says.
+        let saved = Config::load(&path).await.unwrap();
+        assert!(saved.mqtt.enabled);
+        assert_eq!(saved.mqtt.server, "broker.lan");
+        assert_eq!(saved.mqtt.port, 8883);
+        assert_eq!(saved.mqtt.user, "podd");
+        assert_eq!(saved.mqtt.password, "hunter2");
+
+        // Everything outside the mqtt block is identical to what we loaded.
+        let mut without_mqtt = saved.clone();
+        without_mqtt.mqtt = cfg.mqtt.clone();
+        assert_eq!(
+            without_mqtt, cfg,
+            "an MQTT edit changed something outside the mqtt block"
+        );
+        match (&saved.profile, &cfg.profile) {
+            (
+                config::SidesConfig::Couples { left, right },
+                config::SidesConfig::Couples {
+                    left: was_left,
+                    right: was_right,
+                },
+            ) => {
+                assert_eq!(left.alarm, was_left.alarm);
+                assert!(left.alarm.is_some(), "the fixture's alarm must survive");
+                assert_eq!(right.alarm, was_right.alarm);
+                assert!(right.alarm.is_none(), "no alarm may be invented");
+            }
+            _ => panic!("expected a couples profile"),
+        }
+
+        // An omitted password keeps the stored one: the UI changes a port
+        // without ever round-tripping the secret.
+        let keep_password = bus::MqttUpdate {
+            enabled: false,
+            password: None,
+            ..update.clone()
+        };
+        assert!(apply_mqtt(&tx, &path, keep_password.clone()).await);
+        let saved = Config::load(&path).await.unwrap();
+        assert_eq!(saved.mqtt.password, "hunter2");
+        assert!(!saved.mqtt.enabled);
+
+        // Re-applying the same values is a no-op (no watch send, so no
+        // gratuitous reset of the frozen manager's manual overrides).
+        assert!(!apply_mqtt(&tx, &path, keep_password).await);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The bus snapshot the api layer reads must never carry the password.
+    #[tokio::test]
+    async fn mqtt_snapshot_is_password_free() {
+        let cfg = Config::load("example_couples.ron").await.unwrap();
+        let snap = MqttSnapshot::from(&cfg.mqtt);
+        assert_eq!(snap.server, cfg.mqtt.server);
+        assert!(snap.password_set);
+        assert!(!format!("{snap:?}").contains(&cfg.mqtt.password));
+
+        // ... and neither may the command that carries an edit, whose Debug
+        // is hand-written for exactly that reason.
+        let update = bus::MqttUpdate {
+            enabled: true,
+            server: "broker.lan".to_string(),
+            port: 1883,
+            user: "podd".to_string(),
+            password: Some("hunter2".to_string()),
+        };
+        let rendered = format!("{:?}", Command::SetMqtt(update));
+        assert!(!rendered.contains("hunter2"), "{rendered}");
+        assert!(rendered.contains("<redacted>"), "{rendered}");
     }
 
     #[tokio::test]
