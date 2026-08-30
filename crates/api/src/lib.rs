@@ -91,33 +91,33 @@ pub fn router(
     control: Arc<dyn PodControl>,
     spa_dir: Option<PathBuf>,
 ) -> Router {
-    router_with_vitals(store, control, spa_dir, None)
+    router_with_biometrics(store, control, spa_dir, Default::default())
 }
 
-/// [`router`] plus a vitals history store backing `/metrics/vitals*`.
-pub fn router_with_vitals(
+/// [`router`] plus the biometrics history stores backing `/metrics/*`.
+pub fn router_with_biometrics(
     store: Arc<StateStore>,
     control: Arc<dyn PodControl>,
     spa_dir: Option<PathBuf>,
-    vitals: Option<Arc<podd_core::biometrics::VitalsStore>>,
+    biometrics: podd_core::biometrics::Stores,
 ) -> Router {
-    router_full(store, control, spa_dir, vitals, None)
+    router_full(store, control, spa_dir, biometrics, None)
 }
 
-/// [`router_with_vitals`] plus the update agent backing `/updates*`
+/// [`router_with_biometrics`] plus the update agent backing `/updates*`
 /// (`REPLACEMENT_PLAN` §9). `updates: None` leaves those routes reporting
 /// "no update agent is running" rather than a fabricated status.
 pub fn router_full(
     store: Arc<StateStore>,
     control: Arc<dyn PodControl>,
     spa_dir: Option<PathBuf>,
-    vitals: Option<Arc<podd_core::biometrics::VitalsStore>>,
+    biometrics: podd_core::biometrics::Stores,
     updates: Option<Arc<dyn UpdateOps>>,
 ) -> Router {
     let app_state = AppState {
         store,
         control,
-        vitals,
+        biometrics,
         updates,
     };
 
@@ -154,9 +154,9 @@ pub fn router_full(
             "/metrics/presence",
             get(handlers::get_presence).post(handlers::post_presence),
         )
-        // biometrics: vitals are real (#12, backed by the store passed to
-        // router_with_vitals); sleep/movement remain UI-friendly empties that
-        // still honour ?startTime/?endTime/?side (#108)
+        // biometrics: vitals (#12) and sleep/movement (#141) are all served
+        // from the stores passed to router_with_biometrics — empty without
+        // them — and honour ?startTime/?endTime/?side (#108)
         .route("/metrics/sleep", get(handlers::get_sleep_records))
         .route(
             "/metrics/sleep/{id}",
@@ -252,30 +252,30 @@ pub async fn serve(
     control: Arc<dyn PodControl>,
     spa_dir: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    serve_with_vitals(addr, store, control, spa_dir, None).await
+    serve_with_biometrics(addr, store, control, spa_dir, Default::default()).await
 }
 
-/// [`serve`] plus a vitals history store backing `/metrics/vitals*`.
-pub async fn serve_with_vitals(
+/// [`serve`] plus the biometrics history stores backing `/metrics/*`.
+pub async fn serve_with_biometrics(
     addr: SocketAddr,
     store: Arc<StateStore>,
     control: Arc<dyn PodControl>,
     spa_dir: Option<PathBuf>,
-    vitals: Option<Arc<podd_core::biometrics::VitalsStore>>,
+    biometrics: podd_core::biometrics::Stores,
 ) -> anyhow::Result<()> {
-    serve_full(addr, store, control, spa_dir, vitals, None).await
+    serve_full(addr, store, control, spa_dir, biometrics, None).await
 }
 
-/// [`serve_with_vitals`] plus the update agent backing `/updates*`.
+/// [`serve_with_biometrics`] plus the update agent backing `/updates*`.
 pub async fn serve_full(
     addr: SocketAddr,
     store: Arc<StateStore>,
     control: Arc<dyn PodControl>,
     spa_dir: Option<PathBuf>,
-    vitals: Option<Arc<podd_core::biometrics::VitalsStore>>,
+    biometrics: podd_core::biometrics::Stores,
     updates: Option<Arc<dyn UpdateOps>>,
 ) -> anyhow::Result<()> {
-    let app = router_full(store, control, spa_dir, vitals, updates);
+    let app = router_full(store, control, spa_dir, biometrics, updates);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     log::info!("api listening on {addr}");
     axum::serve(listener, app).await?;

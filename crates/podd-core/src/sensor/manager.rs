@@ -121,7 +121,7 @@ pub async fn supervise(
     mut cmd_rx: mpsc::Receiver<Command>,
     health: HealthRegistry,
     dry_run: bool,
-    vitals: Option<std::sync::Arc<crate::biometrics::VitalsStore>>,
+    biometrics: crate::biometrics::Stores,
 ) -> Result<(), SensorError> {
     const RETRY_DELAY: Duration = Duration::from_secs(10);
     // A sensor MCU that answers nothing at either baud is usually hard-wedged:
@@ -157,7 +157,7 @@ pub async fn supervise(
             health.clone(),
             dry_run,
             &mut dismissed,
-            vitals.clone(),
+            biometrics.clone(),
         )
         .await;
         match res {
@@ -218,7 +218,7 @@ pub async fn run(
     health: HealthRegistry,
     dry_run: bool,
     dismissed: &mut [bool; 2],
-    vitals: Option<std::sync::Arc<crate::biometrics::VitalsStore>>,
+    biometrics: crate::biometrics::Stores,
 ) -> Result<(), SensorError> {
     log::info!("Initializing Sensor Subsystem...");
     health.report(health::SENSOR, Health::Started, "discovering the sensor MCU");
@@ -274,9 +274,20 @@ pub async fn run(
     // Rebuilt per attempt like SensorState: after an MCU dropout the signal
     // history is stale anyway. Inert while the bed is empty (presence gate)
     // and on Pod 3 streams (see `biometrics::processor`).
-    let mut biometrics = [
+    let mut vitals_procs = [
         crate::biometrics::processor::SideProcessor::new(BedSide::Left),
         crate::biometrics::processor::SideProcessor::new(BedSide::Right),
+    ];
+
+    // Per-side sleep/movement trackers (#141): piezo + the calibrated
+    // capacitance presence become sleep sessions, capacitance deltas become
+    // 2-minute movement buckets. Also rebuilt per attempt, so a session in
+    // progress is lost across an MCU dropout. Inert until presence is
+    // calibrated (`sensor::presence`), since the capacitance half of the
+    // presence rule can never be satisfied without it.
+    let mut sleep_trackers = [
+        crate::biometrics::SideTracker::new(BedSide::Left),
+        crate::biometrics::SideTracker::new(BedSide::Right),
     ];
 
     let mut taps = TapDetector::default();
@@ -290,6 +301,30 @@ pub async fn run(
                 Ok(packet) => {
                     if let SensorPacket::Capacitance(data) = &packet {
                         presense_man.update(data).await;
+
+                        // Movement (#141): per-side capacitance deltas,
+                        // max-pooled into 2-minute buckets while occupied.
+                        // The debounced presence verdict is also the
+                        // capacitance half of the sleep-detection rule.
+                        let presence = presense_man.presence_state();
+                        let now = jiff::Timestamp::now().as_second();
+                        let v = data.values;
+                        for (tracker, (channels, present)) in sleep_trackers.iter_mut().zip([
+                            ([v[0], v[1], v[2]], presence.left),
+                            ([v[3], v[4], v[5]], presence.right),
+                        ]) {
+                            let Some(rec) = tracker.push_cap(channels, present, now) else {
+                                continue;
+                            };
+                            let Some(store) = &biometrics.movement else { continue };
+                            if !state.clock_synced {
+                                log::debug!("movement record dropped (clock not NTP-synced yet)");
+                                continue;
+                            }
+                            if let Err(e) = store.append(&rec) {
+                                log::warn!("movement append failed: {e}");
+                            }
+                        }
                     }
 
                     // Double tap on a side's piezo while its alarm vibrates =
@@ -328,53 +363,68 @@ pub async fn run(
                         }
                     }
 
-                    // Vitals: feed the piezo stream to the per-side processors
-                    // and persist whatever they emit (~1 record/side/minute).
+                    // Biometrics from the piezo stream: vitals (~1 record per
+                    // side per minute, #12) and the piezo half of sleep
+                    // detection (a record when a session closes, #141).
                     // Records are only persisted once the clock is NTP-synced —
                     // a 1970 timestamp would poison the history.
-                    if let Some(store) = &vitals {
+                    let piezo_samples: Option<[Vec<f64>; 2]> = match &packet {
+                        SensorPacket::Pod4Piezo(d) => Some([
+                            d.left.iter().map(|&s| s as f64).collect(),
+                            d.right.iter().map(|&s| s as f64).collect(),
+                        ]),
+                        SensorPacket::Piezo(d) => Some([
+                            d.left_samples.iter().map(|&s| s as f64).collect(),
+                            d.right_samples.iter().map(|&s| s as f64).collect(),
+                        ]),
+                        _ => None,
+                    };
+                    if let Some(per_side) = piezo_samples {
                         let now = jiff::Timestamp::now().as_second();
-                        let mut emitted = Vec::new();
-                        match &packet {
-                            SensorPacket::Pod4Piezo(d) => {
-                                for (proc_, samples) in
-                                    biometrics.iter_mut().zip([&d.left, &d.right])
-                                {
-                                    if let Some(rec) = proc_
-                                        .push_samples(samples.iter().map(|&s| s as f64), now)
-                                    {
-                                        emitted.push(rec);
+                        for (ix, samples) in per_side.iter().enumerate() {
+                            if let Some(rec) =
+                                vitals_procs[ix].push_samples(samples.iter().copied(), now)
+                            {
+                                log::debug!(
+                                    "vitals: {} hr={} hrv={} br={}",
+                                    rec.side,
+                                    rec.heart_rate,
+                                    rec.hrv,
+                                    rec.breathing_rate
+                                );
+                                match (&biometrics.vitals, state.clock_synced) {
+                                    (Some(store), true) => {
+                                        if let Err(e) = store.append(&rec) {
+                                            log::warn!("vitals append failed: {e}");
+                                        }
                                     }
+                                    (Some(_), false) => log::debug!(
+                                        "vitals record dropped (clock not NTP-synced yet)"
+                                    ),
+                                    (None, _) => {}
                                 }
                             }
-                            SensorPacket::Piezo(d) => {
-                                for (proc_, samples) in biometrics
-                                    .iter_mut()
-                                    .zip([&d.left_samples, &d.right_samples])
-                                {
-                                    if let Some(rec) = proc_
-                                        .push_samples(samples.iter().map(|&s| s as f64), now)
-                                    {
-                                        emitted.push(rec);
+
+                            for rec in sleep_trackers[ix].push_piezo(samples.iter().copied(), now) {
+                                log::info!(
+                                    "sleep: {} session {} -> {} ({}s in bed, {} exits)",
+                                    rec.side,
+                                    rec.entered_bed_at,
+                                    rec.left_bed_at,
+                                    rec.sleep_period_seconds,
+                                    rec.times_exited_bed
+                                );
+                                match (&biometrics.sleep, state.clock_synced) {
+                                    (Some(store), true) => {
+                                        if let Err(e) = store.append(&rec) {
+                                            log::warn!("sleep append failed: {e}");
+                                        }
                                     }
+                                    (Some(_), false) => log::debug!(
+                                        "sleep record dropped (clock not NTP-synced yet)"
+                                    ),
+                                    (None, _) => {}
                                 }
-                            }
-                            _ => {}
-                        }
-                        for rec in emitted {
-                            if !state.clock_synced {
-                                log::debug!("vitals record dropped (clock not NTP-synced yet)");
-                                continue;
-                            }
-                            log::debug!(
-                                "vitals: {} hr={} hrv={} br={}",
-                                rec.side,
-                                rec.heart_rate,
-                                rec.hrv,
-                                rec.breathing_rate
-                            );
-                            if let Err(e) = store.append(&rec) {
-                                log::warn!("vitals append failed: {e}");
                             }
                         }
                     }

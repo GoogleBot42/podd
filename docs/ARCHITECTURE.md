@@ -57,7 +57,7 @@ The eight workspace members and how the earlier planned split maps onto them:
 |---|---|---|
 | `pod-proto` | LSP framing/codec/CRC, both subsystems' packet+command tables, `profile.rs` thermostat math | extracted from opensleep `common/` + `frozen/profile.rs` |
 | `podd-core` | `frozen`, `sensor`, `led`, `reset`, `config`, `mqtt`, `bus` kept ~1:1 with upstream for cherry-picks. (Absorbs the planned `pod-hal`: reset via PCAL6416A + IS31FL3194 LED.) | opensleep |
-| `api` | axum REST + SSE + embedded SPA; free-sleep-compatible endpoints (biometrics deferred). Holds schedule/settings persistence + endpoints | new |
+| `api` | axum REST + SSE + embedded SPA; free-sleep-compatible endpoints. Holds schedule/settings persistence + endpoints | new |
 | `pod-update` | shared, host+device update core: manifest schema, SHA-256 digests, Ed25519 sign/verify, `TrustPolicy` | new |
 | `podup` | host release CLI: `keygen` / `pack` / `release` / `verify` | new (on `pod-update`) |
 | `pod-updater` | on-device OTA agent: fetch manifest → verify (`pod-update`) → atomic release swap → health-gate → rollback; Tier-1 OS + Tier-3 MCU `.bbin` flash plumbing (dry-run-gated). Absorbs the planned `mcu-flash` and `update` crates | new (on `pod-update`) |
@@ -133,15 +133,38 @@ publish into at transitions they already detect. free-sleep's twelve Node
 service keys (`express`, `database`, `franken`, …) described a server that
 doesn't exist here and were hardcoded healthy.
 
-Biometrics endpoints (`/metrics/sleep|vitals|movement`) are **deferred** — they
-were free-sleep's Python/SQLite layer; we'll reimplement the piezo HR/HRV/breathing
-DSP in Rust later (opensleep parses piezo samples but discards them; `rustfft` is
-already a dependency). They answer empty arrays for now, but the
-`?startTime=&endTime=&side=` query the UI sends is parsed and applied by
-`api::metrics` (the UI does no client-side filtering, so ignoring it would plot
-every record for both sides once real data lands). Record timestamps follow the
-UI's zod schemas: sleep records carry ISO-8601 strings (`entered_bed_at`), vitals
-and movement samples carry **epoch seconds**.
+### Biometrics
+
+free-sleep's Python/pandas/SQLite biometrics layer is reimplemented in Rust
+under `podd_core::biometrics`, running **streaming** off the live MCU streams
+rather than post-hoc over raw dumps (podd keeps no raw sensor files):
+
+- `processor.rs` — per-side vitals (HR / HRV / breathing) from the piezo
+  stream, presence-gated, ~1 record/side/minute (#12).
+- `sleep.rs` — per-side sleep sessions and movement (#141). Presence is the
+  piezo 10 s rolling range (>= 20 000 counts for >= 70 % of the window) AND
+  the calibrated capacitance presence (>= 90 % of the window); runs under 60 s
+  are ignored, runs <= 15 min apart merge into one session (one "exited bed"
+  each), and a session is recorded once it exceeds 3 h in bed. Movement is the
+  per-sample sum of |Δ| over a side's three capacitance channels, max-pooled
+  into 2-minute buckets while occupied.
+- `store.rs` — one generic append-only JSONL store per history
+  (`vitals.jsonl`, `sleep.jsonl`, `movement.jsonl` next to `config.ron`),
+  torn-line tolerant, pruned to 90 days at startup.
+
+Nothing here touches actuation; it is analysis and recording only. Records are
+persisted only after NTP sync (a pre-sync 1970 timestamp would poison the
+history), and an in-progress session is lost across a podd/sensor restart.
+
+`/metrics/sleep|vitals|movement` serve those stores (empty arrays when a store
+could not be opened), and `PUT`/`DELETE /metrics/sleep/{id}` edit or delete a
+detected session — an edit reclips the stored intervals to the new window and
+recomputes the derived fields. The `?startTime=&endTime=&side=` query the UI
+sends is parsed and applied by `api::metrics` (the UI does no client-side
+filtering). Record timestamps follow the UI's zod schemas: sleep records carry
+ISO-8601 strings (`entered_bed_at`), vitals and movement samples carry **epoch
+seconds**. free-sleep's batch `analyzeSleep*` / calibration jobs stay 501:
+detection runs continuously instead.
 
 ## Update system
 
