@@ -18,18 +18,18 @@ pub enum SensorCommand {
     GetPiezoFreq,
     SetPiezoFreq(u32),
     EnablePiezo,
-    // TODO add resp packet + 0x80
+    /// Ack decoded as `SensorPacket::PiezoDisabled` (0xA9, unverified).
     #[allow(dead_code)]
     DisablePiezo,
     EnableVibration,
     #[allow(dead_code)]
     ProbeTemperature,
     SetAlarm(AlarmCommand),
-    // TODO add resp packet + 0x80
     /// UNVERIFIED probably doesn't actually exist or requires some payload, seems to be crashing the mcu, or maybe its just a constant vibration mode idk
+    /// Ack decoded as `SensorPacket::AlarmCleared` (0xAD, unverified).
     #[allow(dead_code)]
     ClearAlarm,
-    // TODO add resp packet + 0x80
+    /// Response decoded as `SensorPacket::HeaterOffset` (0xAA, raw payload, unverified).
     #[allow(dead_code)]
     GetHeaterOffset,
     #[allow(dead_code)]

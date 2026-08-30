@@ -29,6 +29,17 @@ pub enum SensorPacket {
     Temperature(TemperatureData),
     /// unknown value
     AlarmSet(u8),
+    /// DisablePiezo (0x29) ack. UNVERIFIED: never captured on hardware —
+    /// decoded leniently so a wired-up command's reply doesn't hit the
+    /// Unexpected error path (#44). Value is the status byte, 0 if absent.
+    PiezoDisabled(u8),
+    /// GetHeaterOffset (0x2A) response. UNVERIFIED: payload format unknown —
+    /// exposed as the raw bytes after the opcode (#44).
+    HeaterOffset(Vec<u8>),
+    /// ClearAlarm (0x2D) ack. UNVERIFIED — the command itself is suspected of
+    /// crashing the MCU (see `SensorCommand::ClearAlarm`); decoded leniently
+    /// like the other unverified acks (#44).
+    AlarmCleared(u8),
     /// Pod 4 (STM32G0) dual-channel ADS piezo stream, opcode 0x34
     Pod4Piezo(Pod4PiezoData),
     /// Pod 4 (STM32G0) 4-channel auxiliary stream, opcode 0x35
@@ -147,8 +158,11 @@ impl Packet for SensorPacket {
                 .map(SensorPacket::JumpingToFirmware),
             0xA1 => Self::parse_piezo_freq_set(buf),
             0xA8 => Self::parse_piezo_enabled(buf),
+            0xA9 => Self::parse_piezo_disabled(buf),
+            0xAA => Self::parse_heater_offset(buf),
             0xAB => Self::parse_piezo_gain_set(buf),
             0xAC => Self::parse_alarm_set(buf),
+            0xAD => Self::parse_alarm_cleared(buf),
             0xAE => Self::parse_vibration_enabled(buf),
             0xAF => Self::parse_temperature(buf),
             _ => Err(PacketError::Unexpected {
@@ -188,6 +202,31 @@ impl SensorPacket {
     fn parse_piezo_enabled(buf: BytesMut) -> Result<Self, PacketError> {
         validate_packet_size("Sensor/PiezoEnabled", &buf, 2)?;
         Ok(SensorPacket::PiezoEnabled(buf[1]))
+    }
+
+    // The three acks below have never been captured on hardware (their
+    // commands are unused so far), so ack length is unverified. Other acks
+    // differ between Pod 3 and Pod 4 firmwares (see parse_vibration_enabled /
+    // parse_alarm_set), so these accept any length >= 1 rather than guessing
+    // a strict size (#44).
+
+    fn parse_piezo_disabled(buf: BytesMut) -> Result<Self, PacketError> {
+        validate_packet_at_least("Sensor/PiezoDisabled", &buf, 1)?;
+        Ok(SensorPacket::PiezoDisabled(
+            buf.get(1).copied().unwrap_or(0),
+        ))
+    }
+
+    fn parse_heater_offset(buf: BytesMut) -> Result<Self, PacketError> {
+        validate_packet_at_least("Sensor/HeaterOffset", &buf, 1)?;
+        Ok(SensorPacket::HeaterOffset(buf[1..].to_vec()))
+    }
+
+    fn parse_alarm_cleared(buf: BytesMut) -> Result<Self, PacketError> {
+        validate_packet_at_least("Sensor/AlarmCleared", &buf, 1)?;
+        Ok(SensorPacket::AlarmCleared(
+            buf.get(1).copied().unwrap_or(0),
+        ))
     }
 
     fn parse_vibration_enabled(buf: BytesMut) -> Result<Self, PacketError> {
@@ -605,6 +644,36 @@ mod tests {
         // Truncated frame errors.
         assert!(
             SensorPacket::parse(BytesMut::from(&hex!("31 00 00 00 0b 00 00 1d 22")[..])).is_err()
+        );
+    }
+
+    #[test]
+    fn test_unverified_acks_decode_leniently() {
+        // 0xA9 / 0xAA / 0xAD have never been captured — any length >= 1 must
+        // decode instead of falling to the Unexpected error path (#44).
+        assert_eq!(
+            SensorPacket::parse(BytesMut::from(&[0xA9, 0x01][..])),
+            Ok(SensorPacket::PiezoDisabled(0x01))
+        );
+        assert_eq!(
+            SensorPacket::parse(BytesMut::from(&[0xA9][..])),
+            Ok(SensorPacket::PiezoDisabled(0))
+        );
+        assert_eq!(
+            SensorPacket::parse(BytesMut::from(&[0xAA, 0x00, 0x42][..])),
+            Ok(SensorPacket::HeaterOffset(vec![0x00, 0x42]))
+        );
+        assert_eq!(
+            SensorPacket::parse(BytesMut::from(&[0xAA][..])),
+            Ok(SensorPacket::HeaterOffset(vec![]))
+        );
+        assert_eq!(
+            SensorPacket::parse(BytesMut::from(&[0xAD, 0x00, 0x01][..])),
+            Ok(SensorPacket::AlarmCleared(0x00))
+        );
+        assert_eq!(
+            SensorPacket::parse(BytesMut::from(&[0xAD][..])),
+            Ok(SensorPacket::AlarmCleared(0))
         );
     }
 
