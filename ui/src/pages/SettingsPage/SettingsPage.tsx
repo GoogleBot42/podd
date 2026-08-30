@@ -16,6 +16,7 @@ import Divider from './Divider.tsx';
 import FeaturesSection from './FeaturesSection/FeaturesSection.tsx';
 import Section from './Section.tsx';
 import DeviceSettingsSection from './DeviceSettingsSection/DeviceSettingsSection.tsx';
+import UpdatesSection from './UpdatesSection/UpdatesSection.tsx';
 import ErrorBoundary from '@components/ErrorBoundary.tsx';
 
 
@@ -55,6 +56,10 @@ export default function SettingsPage() {
             </Typography>
           </Box>
         </Section>
+      </ErrorBoundary>
+
+      <ErrorBoundary componentName='Updates'>
+        <UpdatesSection/>
       </ErrorBoundary>
 
       <FeaturesSection/>

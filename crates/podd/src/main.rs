@@ -99,7 +99,11 @@ async fn main() -> anyhow::Result<()> {
     // environment (see `pod_updater::UpdaterConfig::from_env`); default is
     // enabled + manual + dry-run, so on a dev box (no sources, no release dir)
     // it simply idles and never tears the process down.
-    let updater_fut = pod_updater::run_from_env();
+    //
+    // The handle is shared with the API so `/api/updates` can report its status
+    // and drive "check now" / "roll back" (REPLACEMENT_PLAN §9).
+    let (updater, updater_fut) = pod_updater::from_env_shared();
+    let updates = updater.map(|u| u as Arc<dyn api::UpdateOps>);
 
     // Run the managers, the HTTP server, and the update agent together;
     // whichever fails first brings the process down (systemd restarts it). On a
@@ -107,7 +111,14 @@ async fn main() -> anyhow::Result<()> {
     // `updater_fut` only ever resolves on shutdown, never on a transient error.
     tokio::try_join!(
         core_fut,
-        api::serve_with_vitals(api_addr, store, control, spa_dir, shared.vitals.clone()),
+        api::serve_full(
+            api_addr,
+            store,
+            control,
+            spa_dir,
+            shared.vitals.clone(),
+            updates,
+        ),
         updater_fut,
     )?;
     Ok(())

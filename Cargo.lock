@@ -79,6 +79,7 @@ dependencies = [
  "jiff",
  "log",
  "pod-proto",
+ "pod-updater",
  "podd-core",
  "serde",
  "serde_json",
