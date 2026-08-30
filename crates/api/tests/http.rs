@@ -1088,3 +1088,72 @@ async fn get_log_stream_whitelisted_source_is_sse() {
         assert!(ct.starts_with("text/event-stream"), "name={name} ct={ct}");
     }
 }
+
+#[tokio::test]
+async fn vitals_endpoints_serve_the_store() {
+    use podd_core::biometrics::{VitalsRecord as StoreRecord, VitalsStore};
+
+    let dir = std::env::temp_dir().join(format!("podd-vitals-http-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let vitals = Arc::new(VitalsStore::open(dir.join("vitals.jsonl")).unwrap());
+    for (side, ts, hr) in [
+        (pod_proto::packet::BedSide::Left, 100i64, 60i64),
+        (pod_proto::packet::BedSide::Right, 200, 70),
+        (pod_proto::packet::BedSide::Left, 300, 64),
+    ] {
+        vitals
+            .append(&StoreRecord {
+                side,
+                timestamp: ts,
+                heart_rate: hr,
+                hrv: 40,
+                breathing_rate: 14,
+            })
+            .unwrap();
+    }
+
+    let store = Arc::new(StateStore::in_memory());
+    let control = Arc::new(MockControl::new());
+    let app = api::router_with_vitals(
+        store,
+        control as Arc<dyn PodControl>,
+        None,
+        Some(vitals),
+    );
+
+    // side filter + window filter both apply (timestamps are epoch seconds;
+    // the query params are ISO-8601)
+    let resp = app
+        .clone()
+        .oneshot(get("/api/metrics/vitals?side=left"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = body_json(resp).await;
+    let records = v.as_array().unwrap();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0]["side"], "left");
+    assert_eq!(records[0]["heart_rate"], 60);
+
+    let resp = app
+        .clone()
+        .oneshot(get(
+            "/api/metrics/vitals?startTime=1970-01-01T00:02:30Z&endTime=1970-01-01T00:06:00Z",
+        ))
+        .await
+        .unwrap();
+    let v = body_json(resp).await;
+    // window is 150s..360s -> ts=200 and ts=300, not ts=100
+    assert_eq!(v.as_array().unwrap().len(), 2);
+
+    let resp = app
+        .oneshot(get("/api/metrics/vitals/summary?side=left"))
+        .await
+        .unwrap();
+    let v = body_json(resp).await;
+    assert_eq!(v["avgHeartRate"], 62);
+    assert_eq!(v["minHeartRate"], 60);
+    assert_eq!(v["maxHeartRate"], 64);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
