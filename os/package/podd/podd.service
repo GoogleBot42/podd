@@ -13,8 +13,10 @@ RequiresMountsFor=/data
 Type=simple
 # Clean-room L2 image: podd is installed read-only in the active rootfs slot;
 # all mutable state (config, schedules, logs) lives on the persistent data
-# partition so it survives an A/B slot swap. OS updates are handled by RAUC, not
-# by podd's own updater — hence PODD_UPDATER_ENABLED=false here.
+# partition so it survives an A/B slot swap. OS + app updates are podd's own
+# updater (pod-updater); PODD_UPDATER_ENABLED=false leaves update *polling* an
+# owner opt-in (enable via drop-in + PODD_UPDATER_* sources). The A/B trial
+# resolution (mark-good/rollback) runs even while disabled.
 # Seed the persistent config from the baked default on first boot (the data
 # partition starts empty); after that the user's copy is authoritative.
 # No WorkingDirectory=/data/podd: systemd chdirs there before EVERY Exec line

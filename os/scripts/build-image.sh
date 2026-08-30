@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# build-image.sh - build the podd clean-room L2 OS image (Buildroot + RAUC A/B)
+# build-image.sh - build the podd clean-room L2 OS image (Buildroot, A/B slots)
 # for the Eight Sleep i.MX8M-Mini / Variscite DART-MX8M-MINI "SD" hub.
 #
 # WHAT IT PRODUCES
 #   <buildroot>/output/images/podd-sd.img(.gz) - a complete, from-source bootable
-#   SD image: imx-boot (SPL + ATF + U-Boot + NXP DDR/HDMI blobs) @0x8400, a RAUC
+#   SD image: imx-boot (SPL + ATF + U-Boot + NXP DDR/HDMI blobs) @0x8400, the
 #   U-Boot env @0x400000, and A/B rootfs slots + a persistent data partition. The
 #   whole thing is built from pinned upstream source (see os/README.md); `dd` it
 #   to a spare microSD and it boots without touching the stock eMMC.
@@ -44,7 +44,7 @@ set -euo pipefail
 # --- pinned Buildroot ---------------------------------------------------------
 # 2026.02 is the current Buildroot LTS; .3 is the latest point release. It ships
 # the imx8mm boot flow (freescale-imx / firmware-imx 8.27 / host imx-mkimage),
-# rauc, and the aarch64 toolchain the defconfig relies on. The canonical repo is
+# libubootenv, and the aarch64 toolchain the defconfig relies on. The canonical repo is
 # https://git.buildroot.net/buildroot ; we clone the GitHub mirror over https for
 # reliable CI fetches. Keep this in lockstep with os/README.md.
 BUILDROOT_VERSION="2026.02.3"
