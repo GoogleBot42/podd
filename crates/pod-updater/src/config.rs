@@ -194,6 +194,19 @@ impl UpdaterPaths {
     }
 }
 
+/// Which Tier-1 (OS) writer to wire up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OsWriterKind {
+    /// Pick [`crate::os_slot::AbSlotWriter`] iff the A/B hardware contract is
+    /// present (`/etc/fw_env.config` + the slot-2 block device), else the dry
+    /// writer. The right default everywhere.
+    Auto,
+    /// Always the plan-only [`crate::install::DryOsSlotWriter`].
+    Dry,
+    /// Always the live SD writer (still gated by `os_dry_run`).
+    Mmc,
+}
+
 /// The full updater configuration.
 #[derive(Clone, Debug)]
 pub struct UpdaterConfig {
@@ -214,6 +227,8 @@ pub struct UpdaterConfig {
     pub health_timeout: Duration,
     /// Gate destructive OS (Tier 1) writes. Default true.
     pub os_dry_run: bool,
+    /// Which OS slot writer to use (default [`OsWriterKind::Auto`]).
+    pub os_writer: OsWriterKind,
     /// Gate destructive MCU (Tier 3) flashes. Default true.
     pub mcu_dry_run: bool,
     /// Local API base used by the default HTTP health check (app canary).
@@ -234,6 +249,7 @@ impl Default for UpdaterConfig {
             keep_releases: 3,
             health_timeout: Duration::from_secs(20),
             os_dry_run: true,
+            os_writer: OsWriterKind::Auto,
             mcu_dry_run: true,
             health_url: "http://127.0.0.1:3000/api/serverStatus".into(),
         }
@@ -257,6 +273,7 @@ impl UpdaterConfig {
     /// - `PODD_UPDATER_RELEASE_ROOT` / `_CURRENT` / `_STAGING`
     /// - `PODD_UPDATER_KEEP` (default 3)
     /// - `PODD_UPDATER_OS_DRY_RUN` / `_MCU_DRY_RUN` (`false`/`0` arms live apply)
+    /// - `PODD_UPDATER_OS_WRITER` (`auto`/`dry`/`mmc`; default `auto`)
     /// - `PODD_UPDATER_HEALTH_URL`
     pub fn from_env() -> Self {
         let env = |k: &str| std::env::var(k).ok();
@@ -344,6 +361,13 @@ impl UpdaterConfig {
             env("PODD_UPDATER_MCU_DRY_RUN").as_deref(),
             Some("false") | Some("0")
         );
+        if let Some(w) = env("PODD_UPDATER_OS_WRITER") {
+            cfg.os_writer = match w.to_ascii_lowercase().as_str() {
+                "dry" => OsWriterKind::Dry,
+                "mmc" => OsWriterKind::Mmc,
+                _ => OsWriterKind::Auto,
+            };
+        }
         if let Some(u) = env("PODD_UPDATER_HEALTH_URL") {
             cfg.health_url = u;
         }

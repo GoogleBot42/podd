@@ -42,8 +42,9 @@ pub enum Error {
     #[error("bootloader (Tier 0) is never auto-updated; apply manually")]
     BootloaderRefused,
 
-    /// A destructive OS/MCU write was requested with dry-run off, but the live
-    /// cutover path is not implemented yet.
+    /// A destructive MCU flash was requested with dry-run off, but the live
+    /// cutover path is not implemented yet (the OS tier's live path is
+    /// `crate::os_slot::AbSlotWriter`).
     #[error("live apply for {0:?} is not implemented yet // TODO(live-cutover)")]
     LiveApplyNotImplemented(ComponentKind),
 
