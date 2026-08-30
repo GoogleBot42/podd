@@ -1,5 +1,4 @@
 use bytes::BytesMut;
-use hex_literal::hex;
 
 use crate::packet::{
     self, HardwareInfo, Packet, PacketError, invalid_structure, validate_packet_at_least,
@@ -202,12 +201,18 @@ impl SensorPacket {
         Ok(SensorPacket::VibrationEnabled(buf[1], buf[2]))
     }
 
-    // TODO FIXME new packet 31 00 00 00 0c 00 00 1d 22 00
-    /// 31 00 00 00 0b 00 00 XX XX 00
+    /// `31 00 00 00 SS 00 00 XX XX 00` — `SS` is a discriminator/subtype byte
+    /// observed as `0x0B` (common) and `0x0C` (real capture:
+    /// `31 00 00 00 0c 00 00 1d 22 00`) on live hardware; its meaning is
+    /// unknown (#42). Both parse identically; anything else still warns.
     fn parse_init(buf: BytesMut) -> Result<Self, PacketError> {
         validate_packet_size("Sensor/Init", &buf, 10)?;
 
-        if buf[1..=6] != hex!("00 00 00 0b 00 00") || buf[9] != 0 {
+        let expected_shape = buf[1..=3] == [0, 0, 0]
+            && matches!(buf[4], 0x0B | 0x0C)
+            && buf[5..=6] == [0, 0]
+            && buf[9] == 0;
+        if !expected_shape {
             log::warn!("Unexpected init packet: {buf:02X?}");
         }
 
@@ -583,6 +588,24 @@ mod tests {
         bad_index[32] = 0x99;
         let result = SensorPacket::parse(BytesMut::from(&bad_index[..]));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_init() {
+        // Common variant, discriminator 0x0B.
+        assert_eq!(
+            SensorPacket::parse(BytesMut::from(&hex!("31 00 00 00 0b 00 00 1d 22 00")[..])),
+            Ok(SensorPacket::Init(0x1D22))
+        );
+        // Second real captured variant (discriminator 0x0C) — parses the same.
+        assert_eq!(
+            SensorPacket::parse(BytesMut::from(&hex!("31 00 00 00 0c 00 00 1d 22 00")[..])),
+            Ok(SensorPacket::Init(0x1D22))
+        );
+        // Truncated frame errors.
+        assert!(
+            SensorPacket::parse(BytesMut::from(&hex!("31 00 00 00 0b 00 00 1d 22")[..])).is_err()
+        );
     }
 
     #[test]
