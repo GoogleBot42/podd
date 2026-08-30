@@ -28,6 +28,8 @@ use tokio_stream::StreamExt;
 pub struct AppState {
     pub store: Arc<StateStore>,
     pub control: Arc<dyn PodControl>,
+    /// Vitals history store; `None` = biometrics off (endpoints serve empty).
+    pub vitals: Option<Arc<podd_core::biometrics::VitalsStore>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -675,12 +677,53 @@ pub async fn get_sleep_records(Query(query): Query<MetricsQuery>) -> Response {
     Json(filter_records(records, &filter)).into_response()
 }
 
-pub async fn get_vitals_records(Query(query): Query<MetricsQuery>) -> Response {
+/// Read + convert the vitals history for a validated filter. The store also
+/// pre-filters by window/side; `filter_records` still runs afterwards so the
+/// endpoint honours exactly the same contract as the other metrics routes.
+fn vitals_from_store(app: &AppState, filter: &crate::metrics::MetricsFilter) -> Vec<VitalsRecord> {
+    use pod_proto::packet::BedSide;
+    let Some(store) = &app.vitals else {
+        return Vec::new();
+    };
+    let side = filter.side.map(|s| match s {
+        Side::Left => BedSide::Left,
+        Side::Right => BedSide::Right,
+    });
+    let records = match store.query(
+        filter.start.map(|t| t.as_second()),
+        filter.end.map(|t| t.as_second()),
+        side,
+    ) {
+        Ok(records) => records,
+        Err(e) => {
+            log::error!("vitals store read failed: {e}");
+            return Vec::new();
+        }
+    };
+    records
+        .into_iter()
+        .map(|r| VitalsRecord {
+            side: match r.side {
+                BedSide::Left => Side::Left,
+                BedSide::Right => Side::Right,
+            },
+            timestamp: r.timestamp,
+            heart_rate: r.heart_rate,
+            hrv: r.hrv,
+            breathing_rate: r.breathing_rate,
+        })
+        .collect()
+}
+
+pub async fn get_vitals_records(
+    State(app): State<AppState>,
+    Query(query): Query<MetricsQuery>,
+) -> Response {
     let filter = match metrics_filter(&query) {
         Ok(f) => f,
         Err(resp) => return resp,
     };
-    let records: Vec<VitalsRecord> = Vec::new();
+    let records = vitals_from_store(&app, &filter);
     Json(filter_records(records, &filter)).into_response()
 }
 
@@ -693,17 +736,29 @@ pub async fn get_movement_records(Query(query): Query<MetricsQuery>) -> Response
     Json(filter_records(records, &filter)).into_response()
 }
 
-pub async fn vitals_summary(Query(query): Query<MetricsQuery>) -> Response {
-    let _filter = match metrics_filter(&query) {
+pub async fn vitals_summary(
+    State(app): State<AppState>,
+    Query(query): Query<MetricsQuery>,
+) -> Response {
+    let filter = match metrics_filter(&query) {
         Ok(f) => f,
         Err(resp) => return resp,
     };
+    let records = filter_records(vitals_from_store(&app, &filter), &filter);
+    let n = records.len() as i64;
+    let avg = |f: fn(&VitalsRecord) -> i64| {
+        if n == 0 {
+            0
+        } else {
+            records.iter().map(f).sum::<i64>() / n
+        }
+    };
     Json(json!({
-        "avgHeartRate": 0,
-        "minHeartRate": 0,
-        "maxHeartRate": 0,
-        "avgHRV": 0,
-        "avgBreathingRate": 0,
+        "avgHeartRate": avg(|r| r.heart_rate),
+        "minHeartRate": records.iter().map(|r| r.heart_rate).min().unwrap_or(0),
+        "maxHeartRate": records.iter().map(|r| r.heart_rate).max().unwrap_or(0),
+        "avgHRV": avg(|r| r.hrv),
+        "avgBreathingRate": avg(|r| r.breathing_rate),
     }))
     .into_response()
 }

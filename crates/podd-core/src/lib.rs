@@ -11,6 +11,7 @@
 //! Upstream's `src/main.rs` startup has been converted into [`run`].
 
 pub mod alarm;
+pub mod biometrics;
 pub mod bus;
 pub mod config;
 pub mod frozen;

@@ -89,7 +89,21 @@ pub fn router(
     control: Arc<dyn PodControl>,
     spa_dir: Option<PathBuf>,
 ) -> Router {
-    let app_state = AppState { store, control };
+    router_with_vitals(store, control, spa_dir, None)
+}
+
+/// [`router`] plus a vitals history store backing `/metrics/vitals*`.
+pub fn router_with_vitals(
+    store: Arc<StateStore>,
+    control: Arc<dyn PodControl>,
+    spa_dir: Option<PathBuf>,
+    vitals: Option<Arc<podd_core::biometrics::VitalsStore>>,
+) -> Router {
+    let app_state = AppState {
+        store,
+        control,
+        vitals,
+    };
 
     let api = Router::new()
         .route(
