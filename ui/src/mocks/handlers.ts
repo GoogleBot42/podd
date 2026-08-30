@@ -12,6 +12,8 @@ import {
   getDeviceStatus,
   updateDeviceStatus,
   getServerStatus,
+  getUpdates,
+  checkUpdates,
   listSleepRecords,
   setSleepRecords,
   listMovementRecords,
@@ -87,6 +89,23 @@ export const handlers = [
   http.get('/api/serverStatus', async () => {
     await delay(150);
     return HttpResponse.json(deepClone(getServerStatus()));
+  }),
+  http.get('/api/updates', async () => {
+    await delay(150);
+    return HttpResponse.json(deepClone(getUpdates()));
+  }),
+  http.post('/api/updates/check', async () => {
+    await delay(400);
+    return HttpResponse.json(deepClone(checkUpdates()));
+  }),
+  http.post('/api/updates/rollback', async () => {
+    await delay(200);
+    // Demo mode has no previous release to return to — same 409 the daemon
+    // gives on a device that was only ever installed once.
+    return HttpResponse.json(
+      { message: 'rollback not possible: no previous release' },
+      { status: 409 },
+    );
   }),
   http.get('/api/metrics/sleep', async ({ request }) => {
     const filters = toFilters(request);
