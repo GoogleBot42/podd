@@ -5,9 +5,10 @@
 #
 # Assembles the final flashable SD image:
 #   1. build imx-boot (SPL + dual DDR fw + ATF + U-Boot FIT) Variscite-style
-#   2. bake the RAUC U-Boot env blob (mkenvimage from uboot-env.txt)
+#   2. bake the U-Boot env blob (mkenvimage from uboot-env.txt, incl. the A/B
+#      rollback state machine)
 #   3. lay out the A/B + data partitions (genimage) into podd-sd.img
-#   4. gzip + manifest
+#   4. gzip + manifest, plus the OTA slot artifact (podd-os.ext4.zst)
 #
 # $1 = $BINARIES_DIR (Buildroot output/images). $BR2_EXTERNAL_PODD_PATH,
 # $BUILD_DIR and the host tools ($HOST_DIR/bin) are exported by Buildroot.
@@ -117,11 +118,18 @@ genimage \
 	--outputpath "$BINARIES_DIR" \
 	--rootpath "$(mktemp -d)"
 
-# --- 4. compress + manifest --------------------------------------------------
+# --- 4. compress + manifest + OTA slot artifact ------------------------------
+# The OTA artifact is the bare slot filesystem (kernel+dtb in /boot included):
+# pod-updater streams it onto the inactive A/B partition. zstd's frame checksum
+# (on by default) gives decompressed-integrity verification for free; the
+# release pipeline renames this to os-<version>.ext4.zst (see
+# scripts/build-release.sh).
+zstd -T0 -19 -kf "$BINARIES_DIR/rootfs.ext2" -o "$BINARIES_DIR/podd-os.ext4.zst"
+
 IMG="$BINARIES_DIR/podd-sd.img"
 gzip -kf "$IMG"
 {
-	echo "podd clean-room SD image (Buildroot + RAUC A/B)"
+	echo "podd clean-room SD image (Buildroot, A/B slots)"
 	echo "raw sha256 : $(sha256sum "$IMG" | awk '{print $1}')"
 	echo "gz  sha256 : $(sha256sum "$IMG.gz" | awk '{print $1}')"
 	echo "layout     : imx-boot@0x8400 + env@0x400000 + rootfs_a + rootfs_b + data"
@@ -129,4 +137,4 @@ gzip -kf "$IMG"
 	echo "write      : sudo dd if=$(basename "$IMG") of=/dev/sdX bs=4M conv=fsync status=progress"
 } > "${IMG%.img}.manifest.txt"
 
-echo "post-image: $IMG(.gz) assembled (from-source imx-boot)"
+echo "post-image: $IMG(.gz) + podd-os.ext4.zst assembled (from-source imx-boot)"

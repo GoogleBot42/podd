@@ -14,10 +14,6 @@
 # our podd.dtb, no cma= override (our kernel reserves CMA itself; stock's
 # 640M@1376M was for the VPU/display we dropped), and factory_reset/bootscript
 # machinery removed (we already boot from SD).
-#
-# A/B: RAUC slot selection is NOT wired here yet — first prove a single-slot boot
-# (rootfs_a = p1). RAUC bootcount/altbootcmd integration comes after boot is
-# confirmed (see docs/CLEANROOM-OS.md).
 
 # --- load addresses (i.MX8MM; verbatim from the stock Variscite env) ----------
 loadaddr=0x40480000
@@ -31,17 +27,58 @@ fdt_file=podd.dtb
 boot_fdt=try
 
 # SD boot: this image is dd'd to a microSD = mmcblk1 (mmcdev 1 in U-Boot).
+# mmcpart selects the A/B slot: 1 = slot A (p1), 2 = slot B (p2). The kernel,
+# DTB and rootfs all live inside the selected slot, so flipping mmcpart flips
+# the whole OS atomically.
 mmcdev=1
 mmcblk=1
 mmcpart=1
+
+# --- A/B rollback state machine ----------------------------------------------
+# Hand-rolled in bootcmd script because this U-Boot is built WITHOUT
+# CONFIG_BOOTCOUNT_LIMIT (altbootcmd would be inert). The var scheme matches
+# install/podd-slot-install.sh and pod-updater's AbSlotWriter (1=A=p1, 2=B=p2):
+#
+#   steady state : upgrade_available=0 -> bootcmd NEVER calls saveenv (no env
+#                  wear and no power-loss corruption window on normal boots; a
+#                  fresh dd'd image boots forever without rewriting the env).
+#   arm (Linux)  : pod-updater (or podd-slot-install.sh) sets, in ONE batched
+#                  fw_setenv write: mmcpart=<new> next_mmcpart=<old>
+#                  upgrade_available=1 bootcount=0 ustate=1
+#   armed boot   : ab_tick increments bootcount and saveenvs BEFORE the boot
+#                  attempt, so a hanging kernel still consumed an attempt. If
+#                  the attempt returns (kernel unloadable etc.), ab_failed
+#                  resets — the next pass counts too, so the loop is bounded.
+#   exhausted    : bootcount > bootlimit -> ab_revert flips mmcpart back to
+#                  next_mmcpart, disarms, sets ustate=3 (FAILED), and the old
+#                  slot boots in the same power cycle.
+#   mark-good    : the healthy new slot's podd clears the arm state:
+#                  upgrade_available=0 bootcount=0 ustate=0.
+#
+# NUMERIC CARE: setexpr stores results in HEX and itest parses hex. Every value
+# here stays in 0..9 where hex == decimal — do NOT raise bootlimit past 9
+# without revisiting ab_tick.
+bootlimit=3
+bootcount=0
+upgrade_available=0
+next_mmcpart=2
+ustate=0
+ab_guard=if test "${upgrade_available}" = "1"; then run ab_tick; fi
+ab_tick=if test "${bootcount}" = ""; then setenv bootcount 0; fi; setexpr bootcount ${bootcount} + 1; if itest ${bootcount} -gt ${bootlimit}; then run ab_revert; else saveenv; fi
+ab_revert=echo A/B: boot attempts exhausted, reverting to slot ${next_mmcpart}; setenv mmcpart ${next_mmcpart}; setenv upgrade_available 0; setenv bootcount 0; setenv ustate 3; saveenv
+ab_failed=if test "${upgrade_available}" = "1"; then echo A/B: boot attempt failed, resetting; reset; fi
 
 # --- console (not broken out on this board; harmless) ------------------------
 console=undefined
 setconsole=if test $console = undefined; then setenv console ttymxc3,115200; fi;
 
 # --- boot flow (stock machinery: load gz -> unzip -> load fdt -> booti) -------
+# bootcmd additions vs the single-slot version: ab_guard first (count/revert
+# while armed), ab_failed last (a failed load while armed resets instead of
+# dead-ending at a prompt this console-less board can't show; disarmed behavior
+# is unchanged — a genuinely dead only-slot shouldn't hot-loop).
 mmcargs=run setconsole; setenv bootargs console=${console} root=/dev/mmcblk${mmcblk}p${mmcpart} rootwait rw
 loadfdt=echo fdt_file=${fdt_file}; load mmc ${mmcdev}:${mmcpart} ${fdt_addr} ${bootdir}/${fdt_file}
 loadimage=load mmc ${mmcdev}:${mmcpart} ${img_addr} ${bootdir}/${image}; unzip ${img_addr} ${loadaddr}
 mmcboot=echo Booting from mmc ${mmcdev}:${mmcpart} ...; run mmcargs; if run loadfdt; then booti ${loadaddr} - ${fdt_addr}; else echo WARN: cannot load DT; fi;
-bootcmd=echo podd bootcmd; mmc dev ${mmcdev}; if mmc rescan; then if run loadimage; then run mmcboot; else echo ERROR: cannot load ${bootdir}/${image}; fi; else echo ERROR: mmc ${mmcdev} rescan failed; fi;
+bootcmd=echo podd bootcmd; run ab_guard; mmc dev ${mmcdev}; if mmc rescan; then if run loadimage; then run mmcboot; else echo ERROR: cannot load ${bootdir}/${image}; fi; else echo ERROR: mmc ${mmcdev} rescan failed; fi; run ab_failed

@@ -3,8 +3,8 @@
 # Buildroot post-build hook (runs after the rootfs is assembled, before images).
 # Board: Eight Sleep i.MX8M-Mini Variscite "SD" hub.
 #
-# Wires the rootfs bits that aren't a package: the persistent-data mount, the
-# RAUC system config, and the read-only-rootfs expectations. $1 = $TARGET_DIR.
+# Wires the rootfs bits that aren't a package: the persistent-data mount and
+# the read-only-rootfs expectations. $1 = $TARGET_DIR.
 set -euo pipefail
 
 TARGET_DIR="$1"
@@ -13,7 +13,7 @@ BOARD_DIR="$(cd "$(dirname "$0")" && pwd)"
 BINARIES_DIR="${BINARIES_DIR:-$TARGET_DIR/../images}"
 
 # --- kernel + DTB into the slot's /boot --------------------------------------
-# Each RAUC rootfs slot is self-contained: U-Boot reads the kernel and DTB from
+# Each A/B rootfs slot is self-contained: U-Boot reads the kernel and DTB from
 # the active slot's ext4 /boot (see uboot-env.txt: `load mmc ... /boot/Image.gz`
 # and `/boot/podd.dtb`). Buildroot leaves them in output/images, so stage them
 # into the rootfs here, renaming the DTB to the name the env loads.
@@ -48,14 +48,6 @@ mkdir -p "$TARGET_DIR/data/podd"
 # first boot (see ExecStartPre) so the persistent copy is user-editable.
 install -D -m 0644 "$BOARD_DIR/../../../../config.pod4.example.ron" \
 	"$TARGET_DIR/etc/podd/config.ron"
-
-# --- RAUC --------------------------------------------------------------------
-install -D -m 0644 "$BOARD_DIR/rauc-system.conf" \
-	"$TARGET_DIR/etc/rauc/system.conf"
-# The verification keyring (public cert) must be provisioned per-owner at
-# release time; ship a placeholder path so a missing key fails loudly rather
-# than silently accepting unsigned bundles.
-# TODO(release): drop the real signing cert here (see docs/RELEASING.md).
 
 # --- reachability: services, sshd port, networkd conflict --------------------
 # The overlay dropped NetworkManager.conf, the muzzle rules + unit, and the sshd
@@ -164,4 +156,4 @@ if ! find "$TARGET_DIR/lib/modules" -name 'brcmfmac.ko*' 2>/dev/null | grep -q .
 fi
 echo "post-build: brcmfmac.ko present in /lib/modules"
 
-echo "post-build: reachability (sshd 8822, muzzle, NM) + data mount + RAUC staged"
+echo "post-build: reachability (sshd 8822, muzzle, NM) + data mount staged"

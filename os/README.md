@@ -2,7 +2,8 @@
 
 This is the `BR2_EXTERNAL` tree that builds podd's **clean-room L2 OS image**: a
 complete, from-source bootable system (bootloader + kernel + rootfs + podd) for
-the Eight Sleep i.MX8M-Mini Variscite "SD" hub, updated A/B via RAUC. It
+the Eight Sleep i.MX8M-Mini Variscite "SD" hub, with A/B slots + rollback
+driven by the U-Boot env and pod-updater. It
 replaces the L1 "bolt podd onto Eight's Yocto rootfs" approach
 (`scripts/build-podd-sd.sh`).
 
@@ -35,7 +36,7 @@ which is what the stock device was built from.
 
 | Component | Repo | Rev / tag | Notes |
 |---|---|---|---|
-| **Buildroot** | github.com/buildroot/buildroot | `2026.02.3` | current LTS; ships the imx8mm boot flow, `firmware-imx` 8.27, `rauc`, aarch64 toolchain |
+| **Buildroot** | github.com/buildroot/buildroot | `2026.02.3` | current LTS; ships the imx8mm boot flow, `firmware-imx` 8.27, `libubootenv`, aarch64 toolchain |
 | **U-Boot** | github.com/varigit/uboot-imx | `bbb07703` (branch `imx_v2020.04_5.4.70_2.3.0_var01`) | U-Boot v2020.04; board defconfig `imx8mm_var_dart_defconfig` |
 | **Linux** | github.com/varigit/linux-imx | `a397cce0` (branch `5.4-2.3.x-imx_var01`) | Linux 5.4.127; config + DTS supplied by this tree (below) |
 | **ARM Trusted Firmware** | github.com/varigit/imx-atf | `e5884084` (branch `imx_5.4.70_2.3.0_var01`) | BL31, platform `imx8mm`; the ATF that shipped in this BSP |
@@ -86,8 +87,9 @@ section):
    DTBs (SPL picks the config whose *description* matches the EEPROM-detected
    board); `mkimage_imx8 -fit -loader ... 0x7E1000 -second_loader ... 0x40200000
    0x60000` emits **`imx-boot`**.
-5. The same script places the container at `0x8400`, bakes the RAUC U-Boot env
-   at `0x400000`, and runs `genimage` to emit `podd-sd.img(.gz)`.
+5. The same script places the container at `0x8400`, bakes the U-Boot env
+   (incl. the A/B rollback state machine) at `0x400000`, and runs `genimage`
+   to emit `podd-sd.img(.gz)` plus the OTA slot artifact `podd-os.ext4.zst`.
 
 We deliberately do **not** use Buildroot's generic
 `board/freescale/common/imx/imx8-bootloader-prepare.sh`: it appends only the
@@ -132,8 +134,8 @@ gunzip -c dist/podd-sd.img.gz > /tmp/podd-sd.img
 sudo cmp -n "$(wc -c < /tmp/podd-sd.img)" /tmp/podd-sd.img /dev/sdX && echo OK
 ```
 
-CI wraps `build.sh` to publish `podd-sd-<version>.img.gz` + the RAUC bundle on
-tag releases (replacing the `recovery-sd` stub job).
+CI wraps `build.sh` to publish `podd-sd-<version>.img.gz` + the OS OTA
+artifact (`os-<version>.ext4.zst`, consumed by pod-updater) on tag releases.
 
 ### WiFi provisioning (no baked credentials needed)
 
@@ -197,8 +199,7 @@ os/
     linux-podd.config                       kernel config seed (sibling-authored)
     imx8mm-podd.dts                         clean-room DTS (sibling-authored)
     genimage.cfg                            A/B + data partition layout
-    rauc-system.conf                        RAUC slots (rootfs_a / rootfs_b)
-    uboot-env.txt                           BOOT_ORDER / bootcount A/B selection
-    post-build.sh                           /data mount + RAUC config + dtb rename
+    uboot-env.txt                           boot flow + A/B rollback state machine
+    post-build.sh                           /data mount + dtb rename + services
     post-image.sh                           imx-boot + env + genimage -> podd-sd.img
 ```

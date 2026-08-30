@@ -22,7 +22,8 @@
 #   * Our board post-image.sh assembles the whole boot container itself (the
 #     generic Buildroot imx8 prepare script packs lpddr4-only fw + one DTB,
 #     which is dead-on-arrival on this DDR4 VAR-SOM), places it at 0x8400,
-#     bakes the RAUC U-Boot env, and runs genimage to emit podd-sd.img(.gz).
+#     bakes the U-Boot env (incl. the A/B rollback state machine), and runs
+#     genimage to emit podd-sd.img(.gz).
 #
 # Build with (see os/scripts/build-image.sh which wraps this):
 #   make BR2_EXTERNAL=/abs/path/os -C <buildroot> podd_imx8mm_varsom_sd_defconfig
@@ -40,7 +41,7 @@ BR2_cortex_a53=y
 # silently falling back to uClibc (which would then break systemd). Declare the
 # headers series explicitly so HEADERS_AT_LEAST_5_4 is selected.
 BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_5_4=y
-# glibc + systemd (NetworkManager, RAUC, and the existing units expect systemd).
+# glibc + systemd (NetworkManager and the existing units expect systemd).
 BR2_TOOLCHAIN_BUILDROOT_GLIBC=y
 BR2_TOOLCHAIN_BUILDROOT_CXX=y
 BR2_INIT_SYSTEMD=y
@@ -144,8 +145,10 @@ BR2_LINUX_KERNEL_NEEDS_HOST_OPENSSL=y
 # renaming imx8mm-podd.dtb -> /boot/podd.dtb to match uboot-env.txt (resolved).
 
 # --- update engine -----------------------------------------------------------
-BR2_PACKAGE_RAUC=y
-BR2_PACKAGE_RAUC_NETWORK=y
+# OS A/B updates are hand-rolled in pod-updater (RAUC was dropped: #46-#48).
+# libubootenv provides fw_printenv/fw_setenv for the slot arm/mark-good env
+# writes; /etc/fw_env.config comes from the rootfs overlay.
+BR2_PACKAGE_LIBUBOOTENV=y
 
 # --- userland ----------------------------------------------------------------
 BR2_PACKAGE_PODD=y
@@ -195,7 +198,10 @@ BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_PODD_PATH)/board/eightsleep/imx8mm-varsom/roo
 # --- image tooling -----------------------------------------------------------
 BR2_TARGET_ROOTFS_EXT2=y
 BR2_TARGET_ROOTFS_EXT2_4=y
-BR2_TARGET_ROOTFS_EXT2_LABEL="rootfs_a"
+# Both A/B slots are seeded from this one image, so both carry this label.
+# Nothing mounts by it (fstab uses LABEL=podd_data; U-Boot boots by partition
+# number) — it's informational only, hence a slot-neutral name.
+BR2_TARGET_ROOTFS_EXT2_LABEL="podd_rootfs"
 # Sized to the A/B slot in genimage.cfg (512 MiB). Keep in sync with that file.
 BR2_TARGET_ROOTFS_EXT2_SIZE="512M"
 BR2_PACKAGE_HOST_GENIMAGE=y
