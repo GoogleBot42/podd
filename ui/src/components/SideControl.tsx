@@ -9,9 +9,13 @@ import { formatTemperature } from '@lib/temperatureConversions.ts';
 
 type SideControlProps = {
   showTemp?: boolean;
+  // When provided, side changes are routed through this instead of setSide
+  // directly — lets a page guard against discarding unsaved edits before
+  // actually switching sides.
+  onRequestSideChange?: (newSide: Side) => void;
 };
 
-export default function SideControl({ showTemp }: SideControlProps) {
+export default function SideControl({ showTemp, onRequestSideChange }: SideControlProps) {
   const { side, setSide } = useAppStore();
   const { data: settings } = useSettings();
   const { data: deviceStatus } = useDeviceStatus();
@@ -25,7 +29,12 @@ export default function SideControl({ showTemp }: SideControlProps) {
       onChange={ (_: React.MouseEvent<HTMLElement>, newSide: Side | null) => {
         // MUI passes null when the active button is re-clicked; keep the
         // current side rather than clearing the selection.
-        if (newSide !== null) setSide(newSide);
+        if (newSide === null) return;
+        if (onRequestSideChange) {
+          onRequestSideChange(newSide);
+        } else {
+          setSide(newSide);
+        }
       } }
       size="small"
     >
