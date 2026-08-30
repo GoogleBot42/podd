@@ -16,10 +16,11 @@ update it here, not in either skill.
 
 2. **README.md "Status" paragraph's "Remaining work" list.** Read the block
    under `> Status:` near the top of `README.md` — it names the current
-   remaining-work items in prose. As of 2026-08-29 that's: the hardware
-   verification pass for the OS A/B OTA cycle, decoding the Pod-4 sensor's
-   biometric packet payloads, and an open Pod-4 sensor MCU reliability item
-   (auto-recovers; see `docs/research/pod4-sensor-protocol.md` §5). Don't
+   remaining-work items in prose. As of 2026-08-30 that's: the hardware
+   verification pass for the OS A/B OTA cycle, the sleep-detection half of
+   biometrics (issue #141; vitals landed in PR #140), and an open Pod-4
+   sensor MCU reliability item (auto-recovers; see
+   `docs/research/pod4-sensor-protocol.md` §5). Don't
    trust this cached list — re-read the paragraph; it's the one place this is
    allowed to change.
 
@@ -35,7 +36,7 @@ update it here, not in either skill.
 
 5. **TODO/FIXME comments in the tree.**
    `grep -rn "TODO\|FIXME" crates/ ui/src/ os/ install/ scripts/` — currently
-   ~26 hits, concentrated in `pod-updater`/`podd-core` (`TODO(live-cutover)`
-   markers gating live MCU/OS-update writes behind dry-run), `pod-proto`
-   sensor packet/command decoding gaps, plus a few one-off UI and OS-build
-   TODOs.
+   ~20 hits, concentrated in `pod-updater`/`podd-core` (`TODO(live-cutover)`
+   markers gating live MCU/OS-update writes behind dry-run), plus a few
+   one-off UI and OS-build TODOs (the pod-proto sensor decoding TODOs were
+   closed by #42/#44).

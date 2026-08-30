@@ -56,8 +56,14 @@ still holds.
    **`nix build .#...` builds the working tree, not a branch** — if the main
    checkout is dirty (e.g. Jeremy's WIP) or behind origin, you'll silently
    ship the wrong code (happened 2026-08-15: a just-merged feature was
-   missing from the binary). Build from a clean worktree of origin/main
-   (`git worktree add <tmp> origin/main`) and **verify before deploying**:
+   missing from the binary; near-miss again 2026-08-30 building "main" from
+   a feature branch). Easiest exact-rev build, no worktree needed:
+   `nix build "git+file://$PWD?rev=$(git rev-parse origin/main)#podd-aarch64" -o result-...`
+   (works for `#ui` too; note the binary's version stamp bakes that rev, so
+   a branch-head rev with a tree identical to the merge commit reports the
+   branch rev). Or use a clean worktree
+   (`git worktree add <tmp> origin/main`). Either way **verify before
+   deploying**:
    `grep -a -c "<string only the new code contains>" result-.../bin/podd`.
    Also: parallel agent sessions have cross-deployed within minutes of each
    other (2026-08-16) — check `journalctl -u podd | grep "podd starting"`
