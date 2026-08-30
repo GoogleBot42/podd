@@ -18,9 +18,12 @@ projects get wrong — a **signed, atomic, reproducible update system**.
 > setpoints (live MCU writes, `PODD_DRY_RUN=false`), scheduler, API, and web UI
 > all exercised against hardware. The full userland is unit-tested throughout
 > (100+ tests) with reproducible Nix builds and static aarch64 binaries.
-> Remaining work: RAUC A/B OTA wiring, decoding the Pod-4 sensor's biometric
-> packet payloads, and an open reliability item on the Pod-4 sensor MCU
-> (auto-recovers; see `docs/research/pod4-sensor-protocol.md` §5). See
+> OS A/B OTA is wired end-to-end (updater writes + verifies the inactive SD
+> slot, U-Boot counts boot attempts and auto-reverts, podd marks-good —
+> hardware verification of the full cycle pending). Remaining work: that
+> hardware pass, decoding the Pod-4 sensor's biometric packet payloads, and an
+> open reliability item on the Pod-4 sensor MCU (auto-recovers; see
+> `docs/research/pod4-sensor-protocol.md` §5). See
 > [`docs/REPLACEMENT_PLAN.md`](docs/REPLACEMENT_PLAN.md) for the full design
 > and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the layout.
 
@@ -95,7 +98,7 @@ legacy stock-clone image ([docs/SD-BOOT.md](docs/SD-BOOT.md)) shipped.
 | `crates/pod-proto` | LSP UART protocol (framing/CRC, Frozen + Sensor packet/command tables, thermostat `profile.rs`), extracted from opensleep | ✅ implemented + tested; validated vs live Pod 4 |
 | `crates/podd-core` | opensleep control core: Frozen/Sensor subsystems, LED, reset, config, MQTT, state bus | ✅ implemented |
 | `crates/api` | free-sleep-compatible REST + SSE HTTP API and embedded-SPA server (biometrics endpoints deferred) | ✅ implemented |
-| `crates/pod-updater` | On-device OTA agent: Tier-2 app swaps are live; Tier-3 MCU apply is gated behind dry-run. Tier-1 OS A/B belongs to **RAUC** on the clean-room image (`docs/CLEANROOM-OS.md`) — pod-updater only fetches/verifies the OS bundle; that wiring is still in progress | ✅ implemented |
+| `crates/pod-updater` | On-device OTA agent: Tier-2 app swaps and Tier-1 OS A/B slot updates (write + readback-verify + U-Boot-armed trial with auto-rollback) are live, both behind dry-run gates; Tier-3 MCU apply is still gated | ✅ implemented |
 | `crates/pod-probe` | Read-only serial probe for validating `pod-proto` against live MCUs | ✅ implemented |
 | `crates/podd` | The control daemon: wires `podd-core` + `api` + `pod-updater` together; MCU writes gated behind `PODD_DRY_RUN` | ✅ implemented (live hardware cutover pending) |
 

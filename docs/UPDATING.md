@@ -102,7 +102,8 @@ Other knobs:
 | `PODD_UPDATER_POLL_SECS` | `3600` | Poll interval, seconds. |
 | `PODD_UPDATER_KEEP` | `3` | How many recent releases to retain for rollback (min 1). |
 | `PODD_UPDATER_TRUST` | `unsigned` | `unsigned`, or comma-separated pubkey file paths (see below). |
-| `PODD_UPDATER_OS_DRY_RUN` | `true` | `false`/`0` arms live OS-image writes. |
+| `PODD_UPDATER_OS_DRY_RUN` | `true` | `false`/`0` arms live OS-image writes to the inactive A/B slot. |
+| `PODD_UPDATER_OS_WRITER` | `auto` | `auto` (live writer only when `/etc/fw_env.config` + the slot devices exist), `dry`, or `mmc`. |
 | `PODD_UPDATER_MCU_DRY_RUN` | `true` | `false`/`0` arms live MCU firmware flashes. |
 | `PODD_UPDATER_HEALTH_URL` | `http://127.0.0.1:3000/api/serverStatus` | Health check for the canary. |
 
@@ -216,18 +217,23 @@ like U-Boot's `bootlimit`) before the same rollback happens. A rolled-back
 version is remembered and never auto-retried — apply it manually to try again.
 Nothing is lost either way — the old release directory is still there.
 
-**OS / slot updates (i.MX A/B).** When podd's own OS image is installed to a slot
-(see [INSTALL.md](INSTALL.md#advanced-ab-slot-install)), rollback happens in the
-bootloader itself:
+**OS / slot updates (i.MX A/B).** On the clean-room SD image, applying an OS
+update streams the release's `os-<version>.ext4.zst` onto the **inactive** slot,
+verifies the write by reading it back, and arms the U-Boot rollback state
+machine (`upgrade_available=1 bootcount=0 ustate=1` plus the slot flip) — then
+waits for a reboot; nothing reboots your bed on its own. From there rollback
+happens in the bootloader itself:
 
-- The install arms the U-Boot rollback state machine (`ustate=INSTALLED`,
-  `bootcount=0`).
-- On each boot U-Boot increments `bootcount`. If the new slot fails to boot
-  **3 times** (`bootlimit=3`), `altbootcmd` automatically flips the boot pointer
-  back to the previous, known-good slot — a hands-off rollback.
-- Once podd boots healthy it confirms the slot good
-  (`podd-slot-install.sh --confirm-good`, which sets `ustate=OK bootcount=0`),
-  disarming the rollback and making the new slot permanent.
+- On each armed boot U-Boot increments `bootcount` before trying the new slot.
+  If it fails to boot **3 times** (`bootlimit=3`), U-Boot flips the pointer
+  back to the previous, known-good slot in the same power cycle — a hands-off
+  rollback. (The exact env-var semantics are owned by the state-machine
+  comment block in `os/board/eightsleep/imx8mm-varsom/uboot-env.txt`.)
+- Once podd boots healthy on the new slot it **confirms the slot good
+  automatically** (disarms the env and records the new OS version) — this
+  works even when update polling is disabled. `podd-slot-install.sh
+  --confirm-good` remains as the manual equivalent for the stock-U-Boot eMMC
+  install path (see [INSTALL.md](INSTALL.md#advanced-ab-slot-install)).
 
 If you ever need to force a rollback manually, or an update leaves you unable to
 boot, see **[RECOVERY.md](RECOVERY.md)** — the shortest fix is usually a one-line
