@@ -132,8 +132,9 @@ pub fn router_with_vitals(
             "/metrics/presence",
             get(handlers::get_presence).post(handlers::post_presence),
         )
-        // biometrics — deferred, UI-friendly empties (still honour ?startTime/
-        // ?endTime/?side so the filtering contract is real, #108)
+        // biometrics: vitals are real (#12, backed by the store passed to
+        // router_with_vitals); sleep/movement remain UI-friendly empties that
+        // still honour ?startTime/?endTime/?side (#108)
         .route("/metrics/sleep", get(handlers::get_sleep_records))
         .route(
             "/metrics/sleep/{id}",

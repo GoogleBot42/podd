@@ -519,10 +519,14 @@ pub async fn post_jobs(
 // services / serverStatus
 // ---------------------------------------------------------------------------
 
-/// The static "no biometrics stack here" document (see [`Services::default`]).
-/// Kept as a real endpoint because the SPA's Features section reads it.
-pub async fn get_services() -> Json<Services> {
-    Json(Services::default())
+/// The services document (see [`Services::default`]). `biometrics.enabled`
+/// reflects whether the vitals pipeline is actually wired (#12); its per-job
+/// entries stay "not implemented" — sleep analysis and calibration jobs
+/// don't exist in podd (vitals run continuously, presence-gated, instead).
+pub async fn get_services(State(app): State<AppState>) -> Json<Services> {
+    let mut services = Services::default();
+    services.biometrics.enabled = app.vitals.is_some();
+    Json(services)
 }
 
 /// `501`. There is nothing to configure: the only service in the document is
@@ -655,12 +659,13 @@ pub async fn post_presence(
 }
 
 // ---------------------------------------------------------------------------
-// biometrics (deferred): UI-friendly empties
+// biometrics
 //
-// The biometrics pipeline doesn't exist yet (#12), so the record sources below
-// are empty. The `?startTime=&endTime=&side=` filtering the UI relies on runs
-// anyway: it is validated on every request, and once real records land they
-// only have to be handed to `filter_records` (#108).
+// Vitals are real (#12): served from the store handed to
+// `router_with_vitals` (empty without one). Sleep and movement records stay
+// UI-friendly empties until the sleep-detection half is ported. The
+// `?startTime=&endTime=&side=` filtering runs on every request either way
+// (#108).
 // ---------------------------------------------------------------------------
 
 /// Validate the shared metrics query, or answer 400 with the failure details.
