@@ -17,6 +17,7 @@ import FeaturesSection from './FeaturesSection/FeaturesSection.tsx';
 import Section from './Section.tsx';
 import DeviceSettingsSection from './DeviceSettingsSection/DeviceSettingsSection.tsx';
 import UpdatesSection from './UpdatesSection/UpdatesSection.tsx';
+import MqttSection from './MqttSection/MqttSection.tsx';
 import ErrorBoundary from '@components/ErrorBoundary.tsx';
 
 
@@ -63,6 +64,9 @@ export default function SettingsPage() {
       </ErrorBoundary>
 
       <FeaturesSection/>
+      <ErrorBoundary componentName='MQTT settings'>
+        <MqttSection/>
+      </ErrorBoundary>
       <ErrorBoundary componentName='Side settings'>
 
         <Section title="Side settings">

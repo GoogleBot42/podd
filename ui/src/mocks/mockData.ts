@@ -9,6 +9,7 @@ import type { VitalsRecord } from '@api/vitals.ts';
 import type { ServerStatus } from '@api/serverStatusSchema.ts';
 import type { UpdatesReport } from '@api/schemas/updatesSchema.ts';
 import type { Jobs } from '@api/jobs.ts';
+import type { MqttSettings, MqttSettingsPatch } from '@api/mqttSchema.ts';
 import { UI_VERSION } from '@lib/version.ts';
 
 type Side = 'left' | 'right';
@@ -429,6 +430,13 @@ const vitalsRecords = createVitalsRecords();
 let schedules = createSchedules();
 let settings = createSettings();
 let services = createServices();
+let mqtt: MqttSettings = {
+  enabled: true,
+  server: 'homeassistant.local',
+  port: 1883,
+  user: 'pod',
+  passwordSet: true,
+};
 let deviceStatus = createDeviceStatus();
 let serverStatus = createServerStatus();
 let updates = createUpdates();
@@ -472,6 +480,19 @@ export const updateSettings = (partial: Partial<Settings>) => {
   delete (partialCopy as { id?: string }).id;
   settings = mergeDeep(clone(settings), partialCopy) as Settings;
   return settings;
+};
+
+export const getMqtt = () => mqtt;
+/// Mirrors the real endpoint: the password is stored, never returned — an
+/// absent one keeps what is there, an empty one clears it.
+export const updateMqtt = (patch: MqttSettingsPatch) => {
+  const { password, ...rest } = patch;
+  mqtt = {
+    ...mqtt,
+    ...rest,
+    passwordSet: password === undefined ? mqtt.passwordSet : password !== '',
+  };
+  return mqtt;
 };
 
 export const getDeviceStatus = () => deviceStatus;
