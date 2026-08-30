@@ -89,7 +89,21 @@ pub fn router(
     control: Arc<dyn PodControl>,
     spa_dir: Option<PathBuf>,
 ) -> Router {
-    let app_state = AppState { store, control };
+    router_with_vitals(store, control, spa_dir, None)
+}
+
+/// [`router`] plus a vitals history store backing `/metrics/vitals*`.
+pub fn router_with_vitals(
+    store: Arc<StateStore>,
+    control: Arc<dyn PodControl>,
+    spa_dir: Option<PathBuf>,
+    vitals: Option<Arc<podd_core::biometrics::VitalsStore>>,
+) -> Router {
+    let app_state = AppState {
+        store,
+        control,
+        vitals,
+    };
 
     let api = Router::new()
         .route(
@@ -118,8 +132,9 @@ pub fn router(
             "/metrics/presence",
             get(handlers::get_presence).post(handlers::post_presence),
         )
-        // biometrics — deferred, UI-friendly empties (still honour ?startTime/
-        // ?endTime/?side so the filtering contract is real, #108)
+        // biometrics: vitals are real (#12, backed by the store passed to
+        // router_with_vitals); sleep/movement remain UI-friendly empties that
+        // still honour ?startTime/?endTime/?side (#108)
         .route("/metrics/sleep", get(handlers::get_sleep_records))
         .route(
             "/metrics/sleep/{id}",
@@ -215,7 +230,18 @@ pub async fn serve(
     control: Arc<dyn PodControl>,
     spa_dir: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    let app = router(store, control, spa_dir);
+    serve_with_vitals(addr, store, control, spa_dir, None).await
+}
+
+/// [`serve`] plus a vitals history store backing `/metrics/vitals*`.
+pub async fn serve_with_vitals(
+    addr: SocketAddr,
+    store: Arc<StateStore>,
+    control: Arc<dyn PodControl>,
+    spa_dir: Option<PathBuf>,
+    vitals: Option<Arc<podd_core::biometrics::VitalsStore>>,
+) -> anyhow::Result<()> {
+    let app = router_with_vitals(store, control, spa_dir, vitals);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     log::info!("api listening on {addr}");
     axum::serve(listener, app).await?;

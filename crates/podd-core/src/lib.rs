@@ -11,6 +11,7 @@
 //! Upstream's `src/main.rs` startup has been converted into [`run`].
 
 pub mod alarm;
+pub mod biometrics;
 pub mod bus;
 pub mod config;
 pub mod frozen;
@@ -62,13 +63,41 @@ pub fn start(
     let (cmd_tx, cmd_rx) = mpsc::channel(COMMAND_QUEUE);
     let (health, health_rx) = HealthRegistry::new();
 
+    // Vitals history store, next to the config like settings/schedules. A
+    // pre-NTP clock (epoch ~0) makes the prune cutoff negative — a no-op,
+    // never an over-prune.
+    let vitals = match biometrics::VitalsStore::open(sibling_path(&config_path, "vitals.jsonl")) {
+        Ok(store) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            if let Err(e) = store.prune(now, biometrics::RETENTION_DAYS) {
+                log::warn!("vitals store prune failed: {e}");
+            }
+            Some(Arc::new(store))
+        }
+        Err(e) => {
+            log::warn!("vitals store unavailable (biometrics disabled): {e}");
+            None
+        }
+    };
+
     let shared = Shared {
         status: status_rx,
         health: health_rx,
         commands: cmd_tx,
+        vitals: vitals.clone(),
     };
 
-    let fut = run_inner(config_path, Arc::new(status_tx), health, cmd_rx, dry_run);
+    let fut = run_inner(
+        config_path,
+        Arc::new(status_tx),
+        health,
+        cmd_rx,
+        dry_run,
+        vitals,
+    );
     (shared, fut)
 }
 
@@ -476,6 +505,7 @@ async fn run_inner(
     health: HealthRegistry,
     cmd_rx: mpsc::Receiver<Command>,
     dry_run: bool,
+    vitals: Option<Arc<biometrics::VitalsStore>>,
 ) -> anyhow::Result<()> {
     let config_path = config_path.as_path();
     log::info!("Starting {NAME} v{VERSION}...");
@@ -666,6 +696,7 @@ async fn run_inner(
             sensor_cmd_rx,
             health.clone(),
             dry_run,
+            vitals,
         ) => {
             match res {
                 Ok(_) => anyhow::anyhow!("Sensor supervisor unexpectedly exited"),
