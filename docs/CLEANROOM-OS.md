@@ -10,8 +10,10 @@
 > the L1 "bolt podd onto Eight's Yocto rootfs" model (`scripts/build-podd-sd.sh`,
 > kept as documentation — see [SD-BOOT.md](SD-BOOT.md)) and the interim
 > hand-derived "stockboot" image that borrowed Eight's bootloader region.
-> Remaining: RAUC A/B slot-device wiring (MBR has no partlabels — the
-> `rauc-system.conf` device paths need reconciling) and CI publishing. See
+> A/B slot switching + auto-rollback are wired (hand-rolled U-Boot env state
+> machine + pod-updater, replacing the originally planned RAUC — see "Install =
+> OTA" below; hardware verification of the full update cycle pending), and CI
+> publishes the OS OTA artifact + SD image on tag releases. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the userland (podd) and "Bring-up
 > field notes" below for the pitfalls hit on first boot.
 
@@ -39,7 +41,7 @@ can publish it.
 |---|---|---|
 | Clean-room scope | **OS image only** | Build bootloader + kernel + rootfs + podd from source. Eight's STM32 firmware keeps running *on the MCU chips* (it's on their own flash, not in the image; podd talks to it over UART). Rewriting the safety-critical STM32 thermal/sensor firmware is a separate, months-long, out-of-scope project. |
 | Rootfs builder | **Buildroot** (`BR2_EXTERNAL` tree under `os/`) | Minimal, reproducible, from-source appliance rootfs. Smallest surface for a headless device; strong i.MX8MM support. Nix stays a build tool for the `podd` binary only, not the on-device runtime. |
-| OTA engine | **RAUC** | Mature signed-bundle A/B framework with U-Boot bootcount integration and auto-rollback. Replaces the homegrown `/opt/podd` symlink-swap as the primary update path. |
+| OTA engine | **pod-updater** (hand-rolled A/B; RAUC dropped 2026-08-29, closing #46–#48) | RAUC as shipped could never resolve its slot devices (by-partlabel on MBR), never had a keyring, and would have added a second (X.509) signing system beside podup's ed25519 manifests. REPLACEMENT_PLAN §9 blesses a minimal hand-rolled writer: pod-updater streams the release's OS image onto the inactive slot with readback verification, and a bootcount state machine scripted in the U-Boot env (`uboot-env.txt` owns the semantics) provides trial boots + auto-rollback; podd marks-good after a healthy boot. One updater, one trust policy, for app and OS alike. |
 
 ## The clean-room boundary (read this)
 
@@ -76,20 +78,21 @@ Net: the OS **image** is 100% free of **Eight-authored** code and is publishable
   boot ROM (SoC, immutable)
     └─ SPL            ← U-Boot, from source
         └─ ATF (BL31) ← ARM Trusted Firmware, from source
-            └─ U-Boot ← from source; RAUC bootcount/BOOT_ORDER env
+            └─ U-Boot ← from source; A/B bootcount state machine in the env
                 └─ Linux kernel + our DTB ← from source (Variscite BSP 5.4.x or mainline i.MX8MM)
                     └─ Buildroot rootfs (systemd or minimal init)
                         ├─ podd  (static aarch64-musl, from the Cargo workspace)
                         ├─ podd web UI (from ui/)
-                        ├─ rauc  (update client)
+                        ├─ fw_printenv/fw_setenv (libubootenv; A/B env access)
                         └─ NetworkManager, sshd, iptables muzzle, …
 ```
 
 - **`imx-boot`** is assembled by `imx-mkimage` (open) from SPL + U-Boot + ATF +
   the NXP DDR/HDMI blobs. Written raw at offset `0x8400`. No secure boot is
   enforced on these units (unsigned SPL runs), so a from-source boot chain works.
-- **U-Boot env** at `0x400000` carries the RAUC A/B selection logic
-  (`BOOT_ORDER` + `BOOT_x_LEFT` bootcount) and `mmcdev` (SD=1 / eMMC=2).
+- **U-Boot env** at `0x400000` carries the A/B slot selection (`mmcpart`) and
+  the hand-rolled bootcount/rollback state machine — semantics owned by the
+  comment block in `os/board/eightsleep/imx8mm-varsom/uboot-env.txt`.
 - **SoM = Variscite VAR-SOM-MX8M-MINI (DDR4), *not* a DART** — despite the live
   DTB's `compatible = "variscite,dart-mx8mm"` (Variscite's single Yocto MACHINE
   covers both SoMs; the U-Boot env's `board_name=VAR-SOM-MX8M-MINI` and the SOM
@@ -105,22 +108,22 @@ Net: the OS **image** is 100% free of **Eight-authored** code and is publishable
 
 ## Slot & partition layout
 
-RAUC drives two rootfs slots plus a persistent data partition. Kernel + DTB live
-inside each rootfs (`/boot`), so each slot is self-contained and an update swaps
-one atomic image.
+Two rootfs slots plus a persistent data partition. Kernel + DTB live inside
+each rootfs (`/boot`) and U-Boot loads them from the selected slot, so each
+slot is self-contained and an update swaps one atomic image.
 
 **SD image (the publishable, first-class install):**
 
 | Region | Contents |
 |---|---|
 | `0x8400` (raw) | `imx-boot` |
-| `0x400000` (raw) | U-Boot env (`mmcdev=1`, RAUC `BOOT_ORDER`) |
+| `0x400000` (raw) | U-Boot env (`mmcdev=1`, `mmcpart` slot select + rollback state) |
 | p1 | rootfs **A** (ext4, incl. `/boot`) |
 | p2 | rootfs **B** (ext4, incl. `/boot`) |
 | p3 | persistent data (config, schedules, logs) |
 
 Boot from this SD leaves the eMMC **untouched** — swapping the stock card back is
-still an instant, total revert. RAUC updates the inactive SD slot.
+still an instant, total revert. OS updates write the inactive SD slot.
 
 **eMMC install (later):** same layout mapped onto the eMMC A/B slots
 (`rootfs_a`=p1 / `rootfs_b`=p2 / `cage`=p3), written to the inactive slot from a
@@ -134,25 +137,31 @@ flows write a complete signed image to an inactive slot:
 
 - **First install:** `dd` the published SD image to a card and boot it, **or**
   write the eMMC inactive slot from a running system and flip the pointer.
-- **Update:** RAUC fetches a signed bundle, writes it to the inactive slot,
-  verifies it, marks it primary with one boot attempt, reboots. On a failed
-  canary the U-Boot bootcount logic auto-falls-back to the previous slot.
+- **Update:** `pod-updater` fetches the release's `os-<version>.ext4.zst`
+  (manifest sha256 + optional ed25519, like every artifact), streams it onto
+  the inactive slot, verifies the write by readback, and arms the U-Boot trial
+  (`upgrade_available=1 bootcount=0 ustate=1` + the `mmcpart` flip). The next
+  reboot boots the new slot with U-Boot counting attempts — 3 failures
+  auto-revert to the old slot — and a healthy podd disarms the env
+  (mark-good). See [UPDATING.md](UPDATING.md) for the owner-facing flow.
 
-The `pod-update` crate's signing/manifest concepts still apply (offline Ed25519
-owner key, integrity-always / signature-optional trust policy); RAUC's bundle
-signing is the mechanism. The old `pod-updater` `/opt/podd` symlink-swap becomes
-obsolete for the OS, though it may survive as an optional fast app-only dev loop.
+One trust policy covers everything: the same `pod-update` manifest (offline
+Ed25519 owner key, integrity-always / signature-optional) carries the app
+squashfs and the OS image; there is no second bundle format or cert system.
+The `/opt/podd` symlink-swap remains the app tier's no-reboot update path.
 
 ## Build system & publishing
 
 - The Buildroot external tree lives under **`os/`** (`BR2_EXTERNAL`): board
-  defconfig, U-Boot/ATF/kernel config fragments, our DTB, the RAUC system config,
-  a `genimage` layout for the A/B partitions, and post-build/post-image scripts
-  that assemble `imx-boot` and the final `.img`.
-- **CI** (`.github/workflows/release.yml`): a new job builds the Buildroot SD
-  image and attaches `podd-sd-<version>.img.gz` (+ the slim variant) and the RAUC
-  update bundle to the tag's release. This replaces the currently-`if: false`
-  `recovery-sd` stub. The image is our own build, so publishing it is clean.
+  defconfig, U-Boot/ATF/kernel config fragments, our DTB, the U-Boot env
+  (incl. the A/B state machine), a `genimage` layout for the A/B partitions,
+  and post-build/post-image scripts that assemble `imx-boot`, the final
+  `.img`, and the OTA slot artifact (`podd-os.ext4.zst`).
+- **CI** (`.gitea/workflows/release.yml`): the `os-image` job builds the
+  Buildroot image on a `v*` tag and attaches `podd-sd-<tag>.img.gz` plus the
+  OS OTA artifact (`os-<version>.ext4.zst`, added to `manifest.json`) to the
+  tag's release — see [RELEASING.md](RELEASING.md). The image is our own
+  build, so publishing it is clean.
 
 ## Debug channels (no JTAG, no serial console)
 
@@ -229,9 +238,13 @@ of an already-proven upper stack:
 3. ✅ **From-source boot chain** (spare SD, stock card = recovery): SPL + ATF +
    U-Boot from the Variscite tree → `imx-boot`, validated byte-level against
    the stock dump, then live-booted (2026-07-20).
-4. **RAUC A/B**: two slots, signed bundle, install-to-inactive + boot flip +
-   bootcount rollback, proven by deliberately shipping a broken slot.
-5. **CI publish**: reproducible SD image + update bundle attached to a release.
+4. **A/B OTA** (code complete 2026-08-29, hand-rolled after dropping RAUC):
+   two slots, signed manifest, install-to-inactive + readback verify + boot
+   flip + bootcount rollback. Remaining: prove it on hardware by deliberately
+   shipping a broken slot (the staged bench protocol in the PR chain
+   #131–#133).
+5. ✅ **CI publish** (2026-08-29): reproducible SD image + OS OTA artifact
+   attached to tag releases.
 
 ## Bring-up field notes (pitfalls that cost real debugging time)
 

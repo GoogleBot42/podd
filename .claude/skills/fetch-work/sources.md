@@ -16,11 +16,12 @@ update it here, not in either skill.
 
 2. **README.md "Status" paragraph's "Remaining work" list.** Read the block
    under `> Status:` near the top of `README.md` — it names the current
-   remaining-work items in prose. As of 2026-08-15 that's: RAUC A/B OTA
-   wiring, decoding the Pod-4 sensor's biometric packet payloads, and an open
-   Pod-4 sensor MCU reliability item (auto-recovers; see
-   `docs/research/pod4-sensor-protocol.md` §5). Don't trust this cached list —
-   re-read the paragraph; it's the one place this is allowed to change.
+   remaining-work items in prose. As of 2026-08-29 that's: the hardware
+   verification pass for the OS A/B OTA cycle, decoding the Pod-4 sensor's
+   biometric packet payloads, and an open Pod-4 sensor MCU reliability item
+   (auto-recovers; see `docs/research/pod4-sensor-protocol.md` §5). Don't
+   trust this cached list — re-read the paragraph; it's the one place this is
+   allowed to change.
 
 3. **`docs/REPLACEMENT_PLAN.md` planned-vs-done gaps.** The plan (esp. §6
    "Staged roadmap" and §9 "Update architecture") describes phases/features

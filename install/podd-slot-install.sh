@@ -2,6 +2,14 @@
 #
 # podd-slot-install.sh - in-band A/B slot install (flashing-method.md §3c).
 #
+# SCOPE: this is the STOCK-U-Boot eMMC path (installing podd's rootfs onto a
+# rooted stock unit's inactive eMMC slot). The clean-room SD image uses the
+# same env-var scheme (mmcpart/next_mmcpart/upgrade_available/bootcount/
+# ustate, 1=A 2=B) but implements the bootcount logic in its own env script
+# (os/board/eightsleep/imx8mm-varsom/uboot-env.txt) and applies OS updates
+# through pod-updater, which also runs the --confirm-good step automatically
+# after a healthy boot.
+#
 # ****************************  DANGER: THIS WRITES eMMC  *******************
 # This is the robust, rollback-safe way to install podd's OWN rootfs: it
 # writes to the INACTIVE eMMC slot, keeping the currently-running (stock or

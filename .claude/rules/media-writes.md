@@ -7,6 +7,12 @@ paths:
 
 # Media writes
 
+- Sanctioned raw-write paths are exactly two: `install/podd-slot-install.sh`
+  (below) and pod-updater's `AbSlotWriter`
+  (`crates/pod-updater/src/os_slot.rs`), which writes ONLY the inactive SD
+  slot (`/dev/mmcblk1p1`/`p2`), readback-verifies every write, and
+  structurally refuses eMMC/mounted targets. Anything else writing raw media
+  is a bug.
 - eMMC (`mmcblk2` on-device) is never a write target. Safety model:
   SD-swap-to-revert — everything boots from a spare SD, stock card is a
   total, instant revert. `install/podd-slot-install.sh` is the sole

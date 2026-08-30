@@ -12,19 +12,24 @@ Related: **[UPDATING.md](UPDATING.md)** (how devices consume what you publish he
 
 ## What a release is
 
-A podd release is three files, named exactly how the on-device update agent
+A podd release is these files, named exactly how the on-device update agent
 resolves them:
 
 ```
-manifest.json          # the release manifest (signed if you have a key, else unsigned)
+manifest.json           # the release manifest (signed if you have a key, else unsigned)
 app-<version>.squashfs  # the podd binary + UI + default configs, packed by `podup`
 signing.pub             # the public verifying key — ONLY present when signing
+os-<version>.ext4.zst   # the OS slot image (Tier 1) — added by the slower os-image
+                        # CI job; a release is valid app-only until/unless it lands
+podd-sd-<tag>.img.gz    # full flashable SD image for fresh installs (not in the
+                        # manifest; humans dd it)
 ```
 
-The device fetches `manifest.json`, checks the artifact's SHA-256 (always), checks
-the signature (if the owner requires one), then activates the app squashfs. Those
-filenames are what `pod-updater`'s GitHub and Gitea sources expect, so **don't
-rename them.**
+The device fetches `manifest.json`, checks each artifact's SHA-256 (always),
+checks the signature (if the owner requires one), then activates the app
+squashfs; the OS image is applied to the inactive A/B slot only on an explicit
+apply (see [UPDATING.md](UPDATING.md)). The filenames are what `pod-updater`'s
+GitHub and Gitea sources expect, so **don't rename them.**
 
 ---
 
@@ -137,11 +142,28 @@ exactly as `pod-updater`'s Gitea source expects.
 
 ---
 
-## Full-firmware / recovery-SD artifacts (not built yet)
+## OS image lane (Gitea workflow)
 
-The `recovery-sd` job in both workflows is intentionally **gated off**
-(`if: false`). It depends on the L2 podd OS rootfs (`podd-rootfs.tar.gz`) and the
-bootable recovery-SD image, which **aren't built yet**. Until those inputs exist,
-CI produces only the userland bundle — which is the primary, recommended
-deliverable. See `scripts/build-recovery-sd.sh --plan` and the design in
-`docs/research/flashing-method.md` §5–§6 for what's still needed.
+The Gitea release workflow's `os-image` job runs after the fast app-only job on
+the same `v*` tag: it builds the clean-room image (`os/scripts/build.sh`,
+buildroot — hours on a cold runner, mostly cached after), then re-runs
+`scripts/build-release.sh` with `OS_IMAGE` set and re-uploads `dist/` — the
+upload script replaces same-named assets, so `manifest.json` atomically gains
+the Os component. If the lane fails, the release simply stays app-only (still
+fully valid). To build an OS-bearing release by hand:
+
+```sh
+os/scripts/build.sh                              # -> dist/podd-os.ext4.zst
+OS_IMAGE=dist/podd-os.ext4.zst VERSION=v0.1.0 scripts/build-release.sh
+```
+
+(`OS_VERSION` defaults to the app version; a raw `rootfs.ext2` input is
+zstd-compressed automatically.)
+
+## Recovery-SD artifacts (not built yet)
+
+The `recovery-sd` job is still intentionally **gated off** (`if: false`) — it
+depends on the L2 rootfs *tarball* (`podd-rootfs.tar.gz`) for the eMMC
+auto-installer, which isn't built yet (#52). See
+`scripts/build-recovery-sd.sh --plan` and `docs/research/flashing-method.md`
+§5–§6 for what's still needed.
