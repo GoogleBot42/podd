@@ -9,7 +9,9 @@
 //! 4. For a component being applied: download the artifact to staging and
 //!    `verify_artifact` (size+digest) **before** using it. A digest mismatch or
 //!    truncation is rejected and the next source (if any) is tried.
-//! 5. Dispatch by tier: App = atomic swap + canary; OS/MCU = gated plumbing.
+//! 5. Dispatch by tier: App = atomic swap with a post-restart canary +
+//!    automatic rollback (a two-phase trial — see [`crate::trial`]); OS/MCU =
+//!    gated plumbing.
 
 use crate::config::{UpdateMode, UpdaterConfig};
 use crate::error::{Error, Result};
@@ -20,10 +22,14 @@ use crate::install::{
 use crate::release::ReleaseLayout;
 use crate::source::{build_source, ReleaseSource};
 use crate::status::{now_unix, AvailableUpdate, UpdateStatus, VersionEntry};
+use crate::trial::{self, TrialOutcome};
 use pod_update::{Component, ComponentKind, Manifest, SignedManifest, TrustPolicy};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::watch;
+
+/// The systemd unit the app tier restarts after activation/rollback.
+const PODD_SERVICE: &str = "podd.service";
 
 /// The agent. Construct with [`Updater::from_config`] (real transports) or the
 /// field-wise [`Updater::new`] + `with_*` setters (tests/custom wiring).
@@ -244,11 +250,17 @@ impl Updater {
         Err(last_err)
     }
 
-    /// Apply the newest manifest's component of `kind`. App = atomic swap +
-    /// canary; OS/MCU = verified + gated plumbing; Bootloader is refused.
+    /// Apply the newest manifest's component of `kind`. App = atomic swap with
+    /// a post-restart canary trial (see [`crate::trial`]); OS/MCU = verified +
+    /// gated plumbing; Bootloader is refused.
     pub async fn apply(&self, kind: ComponentKind) -> Result<()> {
         if kind == ComponentKind::Bootloader {
             return Err(Error::BootloaderRefused);
+        }
+        if kind == ComponentKind::App {
+            // An explicit apply is consent to retry a previously rolled-back
+            // release; only the auto-apply loop honours the failure marker.
+            trial::clear_failure(&self.layout.paths);
         }
         let manifest = self.fetch_verified().await?;
         let component = manifest
@@ -259,16 +271,12 @@ impl Updater {
 
         let outcome = match kind {
             ComponentKind::App => {
+                // On-device the restart inside install_app kills this process;
+                // the new process resolves the trial (commit or rollback).
                 self.layout
-                    .install_app(
-                        &component,
-                        &staged,
-                        &*self.installer,
-                        &*self.health,
-                        self.keep_releases,
-                    )
+                    .install_app(&component, &staged, &*self.installer)
                     .await
-                    .map(|_| format!("app -> {}", component.version))
+                    .map(|_| format!("app -> {} (trial; canary after restart)", component.version))
             }
             ComponentKind::Os => self
                 .os_writer
@@ -329,6 +337,34 @@ impl Updater {
         }
     }
 
+    /// Resolve a pending app trial (see [`crate::trial`]): canary this
+    /// process's own API, then commit or roll back + restart. Returns `None`
+    /// when no trial is pending. Called at the start of [`Updater::run`]; also
+    /// callable directly from tests/custom wiring.
+    pub async fn resolve_pending_trial(&self) -> Option<TrialOutcome> {
+        let outcome =
+            trial::resolve_trial(&self.layout, &*self.installer, &*self.health, self.keep_releases)
+                .await?;
+        match &outcome {
+            TrialOutcome::Committed { version } => self.set_status(|s| {
+                s.last_applied = Some(format!("app -> {version} (committed)"));
+                s.last_error = None;
+            }),
+            TrialOutcome::RolledBack { version, restored } => self.set_status(|s| {
+                s.last_error = Some(format!(
+                    "app {version} rolled back after failed canary (restored {})",
+                    restored.as_deref().unwrap_or("?")
+                ));
+            }),
+            TrialOutcome::Abandoned { version } => self.set_status(|s| {
+                s.last_error = Some(format!(
+                    "app {version} failed its canary; no previous release to restore"
+                ));
+            }),
+        }
+        Some(outcome)
+    }
+
     /// Roll the app tier back to the previous release.
     pub fn rollback(&self) -> Result<String> {
         match self.layout.rollback(&*self.installer) {
@@ -353,6 +389,9 @@ impl Updater {
     /// automatically; OS/MCU updates are only *reported* (apply them explicitly,
     /// with dry-run gates honoured).
     pub async fn run(self) -> anyhow::Result<()> {
+        // A half-finished activation must be resolved before anything else —
+        // this process may itself be the new release on trial.
+        self.resolve_pending_trial().await;
         if !self.enabled {
             log::info!("pod-updater disabled; not polling");
             std::future::pending::<()>().await;
@@ -387,10 +426,25 @@ impl Updater {
                     );
                     if self.mode == UpdateMode::Auto {
                         // Auto-apply the App tier only; OS/MCU stay manual.
-                        if available.iter().any(|c| c.kind == ComponentKind::App) {
-                            match self.apply(ComponentKind::App).await {
-                                Ok(()) => log::info!("pod-updater: applied app update"),
-                                Err(e) => log::error!("pod-updater: app apply failed: {e}"),
+                        if let Some(app) =
+                            available.iter().find(|c| c.kind == ComponentKind::App)
+                        {
+                            // Never auto-retry a release that was rolled back:
+                            // each retry restarts podd twice, and every restart
+                            // opens the sensor MCU's ~60 s ignore-writes window.
+                            let failed = trial::last_failure(&self.layout.paths)
+                                .is_some_and(|f| f.version == app.version);
+                            if failed {
+                                log::warn!(
+                                    "pod-updater: skipping app {} — its last activation was \
+                                     rolled back; apply manually to retry",
+                                    app.version
+                                );
+                            } else {
+                                match self.apply(ComponentKind::App).await {
+                                    Ok(()) => log::info!("pod-updater: applied app update"),
+                                    Err(e) => log::error!("pod-updater: app apply failed: {e}"),
+                                }
                             }
                         }
                     }
@@ -417,7 +471,7 @@ impl Updater {
 
         let layout = ReleaseLayout::new(config.paths.clone());
         let installer: Box<dyn ReleaseInstaller> = Box::new(SystemInstaller {
-            service: "podd.service".into(),
+            service: PODD_SERVICE.into(),
         });
         let health: Box<dyn HealthCheck> = Box::new(HttpHealthCheck {
             client,
@@ -460,6 +514,9 @@ impl Updater {
 pub async fn run_from_env() -> anyhow::Result<()> {
     let config = UpdaterConfig::from_env();
     if !config.enabled {
+        // Even with polling disabled, a half-finished activation (this process
+        // may be a new release on trial) must be committed or rolled back.
+        resolve_trial_standalone(&config).await;
         log::info!("pod-updater disabled via config");
         std::future::pending::<()>().await;
         return Ok(());
@@ -467,11 +524,41 @@ pub async fn run_from_env() -> anyhow::Result<()> {
     match Updater::from_config(&config) {
         Ok(updater) => updater.run().await,
         Err(e) => {
+            resolve_trial_standalone(&config).await;
             log::error!("pod-updater: failed to build ({e}); idling");
             std::future::pending::<()>().await;
             Ok(())
         }
     }
+}
+
+/// Resolve a pending app trial without a full [`Updater`] (used when the
+/// updater is disabled or its config is broken — trial resolution must not
+/// depend on sources/trust being configured).
+async fn resolve_trial_standalone(config: &UpdaterConfig) {
+    if trial::load(&config.paths).is_none() {
+        return;
+    }
+    let layout = ReleaseLayout::new(config.paths.clone());
+    let installer = SystemInstaller {
+        service: PODD_SERVICE.into(),
+    };
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("pod-updater: cannot build health-check client ({e}); trial unresolved");
+            return;
+        }
+    };
+    let health = HttpHealthCheck {
+        client,
+        url: config.health_url.clone(),
+        timeout: config.health_timeout,
+    };
+    trial::resolve_trial(&layout, &installer, &health, config.keep_releases).await;
 }
 
 /// Helper for callers wanting a shared updater + its status receiver.

@@ -7,6 +7,7 @@
 //!     <version-A>/app.squashfs   (+ rootfs/ once staged)
 //!     <version-B>/app.squashfs
 //!     versions.json              (installed version per tier, for status/check)
+//!     trial.json                 (pending activation awaiting its canary; see `trial`)
 //!   current   -> releases/<version-B>   (atomic symlink; source of truth for app)
 //!   previous  -> releases/<version-A>   (rollback target)
 //! ```
@@ -18,7 +19,9 @@
 
 use crate::config::UpdaterPaths;
 use crate::error::{Error, Result};
-use crate::install::{HealthCheck, ReleaseInstaller};
+use crate::install::ReleaseInstaller;
+use crate::status::now_unix;
+use crate::trial::{self, TrialState};
 use pod_update::{Component, ComponentKind};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -93,20 +96,21 @@ impl ReleaseLayout {
         Ok(())
     }
 
-    /// Install a verified app squashfs and activate it iff the canary passes.
+    /// Install a verified app squashfs and activate it as a **trial**.
     ///
     /// Flow: place the artifact under `releases/<version>/app.squashfs`, stage
-    /// it (mount/extract), run the health check, and only then move `previous`
-    /// to the outgoing release and flip `current` to the new one + restart. On
-    /// a failed canary the new release directory is discarded and `current` is
-    /// left exactly as it was.
+    /// it (mount/extract), record a [`TrialState`], move `previous` to the
+    /// outgoing release, flip `current`, and restart the service. On-device
+    /// that restart tears down the process running this code — the NEW
+    /// process's [`trial::early_boot_guard`] + [`trial::resolve_trial`] then
+    /// commit the release (canary healthy) or roll `current` back (see the
+    /// `trial` module docs). A staging failure aborts before anything is
+    /// activated.
     pub async fn install_app(
         &self,
         component: &Component,
         staged_squashfs: &Path,
         installer: &dyn ReleaseInstaller,
-        health: &dyn HealthCheck,
-        keep: usize,
     ) -> Result<()> {
         let version = &component.version;
         let release_dir = self.paths.release_root.join(version);
@@ -114,32 +118,41 @@ impl ReleaseLayout {
         let dest = release_dir.join(APP_ARTIFACT);
         move_file(staged_squashfs, &dest)?;
 
-        // Prepare the release for execution, then exercise it.
-        installer.stage(&release_dir, &dest)?;
-        if !health.healthy().await {
-            // Discard: the canary failed, keep the current release untouched.
+        // Prepare the release for execution (mount/extract).
+        if let Err(e) = installer.stage(&release_dir, &dest) {
             let _ = std::fs::remove_dir_all(&release_dir);
-            return Err(Error::HealthCheckFailed {
-                version: version.clone(),
-            });
+            return Err(e);
         }
+
+        // Record the trial before flipping, so a crash between the two steps
+        // is resolved by the trial machinery on the next boot instead of the
+        // flip being trusted blindly.
+        let old = read_link_target(&self.paths.current_link);
+        trial::save(
+            &self.paths,
+            &TrialState {
+                new_version: version.clone(),
+                old_release: old.clone(),
+                boots: 0,
+                started_unix: now_unix(),
+            },
+        )?;
 
         // Point `previous` at the outgoing release (for rollback), then flip
         // `current`. Both are atomic symlink swaps.
-        if let Some(old) = read_link_target(&self.paths.current_link) {
+        if let Some(old) = old {
             atomic_symlink(&old, &self.previous())?;
         }
         atomic_symlink(&release_dir, &self.paths.current_link)?;
         installer.restart()?;
-
-        self.record_version(ComponentKind::App, version)?;
-        self.prune(keep)?;
         Ok(())
     }
 
     /// Roll `current` back to the `previous` release and restart. Returns the
     /// version rolled back to.
     pub fn rollback(&self, installer: &dyn ReleaseInstaller) -> Result<String> {
+        // A manual rollback supersedes any in-flight trial.
+        trial::clear(&self.paths);
         let prev = read_link_target(&self.previous()).ok_or(Error::NoPreviousRelease)?;
         if !prev.exists() {
             return Err(Error::ReleaseMissing(
@@ -250,7 +263,7 @@ fn move_file(from: &Path, to: &Path) -> Result<()> {
 
 /// Atomically point `link` at `target`: create a temp symlink then `rename`
 /// over `link` (atomic replace on POSIX).
-fn atomic_symlink(target: &Path, link: &Path) -> Result<()> {
+pub(crate) fn atomic_symlink(target: &Path, link: &Path) -> Result<()> {
     if let Some(parent) = link.parent() {
         std::fs::create_dir_all(parent)?;
     }

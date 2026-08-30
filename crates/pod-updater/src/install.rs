@@ -22,9 +22,10 @@ use std::path::Path;
 
 /// Make a staged app release runnable and (re)start the service.
 ///
-/// `stage` runs *before* the health check and the `current` flip: it mounts (or
-/// extracts) the read-only squashfs so the new release can be exercised.
-/// `restart` runs *after* a healthy `current` flip.
+/// `stage` runs *before* the `current` flip: it mounts (or extracts) the
+/// read-only squashfs so the new release can be executed. `restart` runs after
+/// the flip — on-device it tears down the process performing the update, and
+/// the NEW process then canaries itself (see [`crate::trial`]).
 pub trait ReleaseInstaller: Send + Sync {
     /// Prepare `squashfs` for execution under `release_dir` (mount/extract).
     fn stage(&self, release_dir: &Path, squashfs: &Path) -> Result<()>;
@@ -96,6 +97,10 @@ impl ReleaseInstaller for SystemInstaller {
 // ---------------------------------------------------------------------------
 
 /// The post-activation canary: does the new release look healthy?
+///
+/// Runs in the NEW process after the restart (see [`crate::trial`]) — the
+/// default HTTP impl polls this process's own API, so the verdict genuinely
+/// reflects the release under trial.
 #[async_trait]
 pub trait HealthCheck: Send + Sync {
     async fn healthy(&self) -> bool;

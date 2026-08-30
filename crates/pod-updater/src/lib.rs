@@ -20,7 +20,9 @@
 //!
 //! **Tiers** (`REPLACEMENT_PLAN` §9):
 //! - **Tier 2 (App)** — the main path. Atomic release-dir swap under
-//!   [`release::ReleaseLayout`] with a canary + instant rollback. Fully live.
+//!   [`release::ReleaseLayout`], activated as a two-phase **trial**: the new
+//!   release is canaried *after* the restart, by the new process itself, and
+//!   is committed or automatically rolled back (see [`trial`]). Fully live.
 //! - **Tier 1 (OS)** and **Tier 3 (MCU)** — detection + verification are live,
 //!   but the destructive eMMC A/B write (`fw_setenv`) and STM32 `.bbin` flash
 //!   are gated behind [`install::OsSlotWriter`] / [`install::McuFlasher`] with a
@@ -39,6 +41,7 @@ pub mod install;
 pub mod release;
 pub mod source;
 pub mod status;
+pub mod trial;
 
 pub use agent::{run_from_env, shared, Updater};
 pub use config::{
@@ -53,6 +56,10 @@ pub use install::{
 pub use release::ReleaseLayout;
 pub use source::{build_source, HttpSource, LocalDirSource, MemorySource, ReleaseSource};
 pub use status::{AvailableUpdate, UpdateStatus, VersionEntry};
+pub use trial::{
+    early_boot_guard, early_boot_guard_from_env, BootDecision, TrialOutcome, TrialState,
+    MAX_TRIAL_BOOTS,
+};
 
 #[cfg(test)]
 mod tests {
@@ -159,11 +166,20 @@ mod tests {
 
         up.apply(ComponentKind::App).await.unwrap();
 
-        // `current` now points at the new version dir.
+        // `current` now points at the new version dir, with a trial pending
+        // (on-device the restart inside apply() hands off to the new process).
         let cur = std::fs::read_link(root.join("current")).unwrap();
         assert_eq!(cur.file_name().unwrap().to_str().unwrap(), "0.0.1+aaa");
         assert!(root.join("releases/0.0.1+aaa/app.squashfs").exists());
-        // Status reflects the apply and no available updates after re-check.
+        assert!(trial::load(&paths_in(&root)).is_some(), "trial must be pending");
+
+        // The "new process" resolves the trial: canary healthy => committed.
+        assert!(matches!(
+            up.resolve_pending_trial().await,
+            Some(TrialOutcome::Committed { .. })
+        ));
+        assert!(trial::load(&paths_in(&root)).is_none());
+        // Status reflects the commit and no available updates after re-check.
         assert!(up.status().last_applied.unwrap().contains("0.0.1+aaa"));
         assert!(up.check().await.unwrap().is_empty());
 
@@ -229,9 +245,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failing_health_check_rolls_back_the_swap() {
+    async fn failing_canary_rolls_back_after_restart() {
         let root = tmp("canary");
-        // Install a healthy v1 first.
+        // Install and commit a healthy v1 first.
         let b1 = b"v1".to_vec();
         let sm1 =
             SignedManifest::unsigned(app_manifest("1.0", "app-1.0.squashfs", &b1));
@@ -243,18 +259,14 @@ mod tests {
             Arc::new(AtomicBool::new(true)),
         );
         up1.apply(ComponentKind::App).await.unwrap();
-        assert_eq!(
-            std::fs::read_link(root.join("current"))
-                .unwrap()
-                .file_name()
-                .unwrap()
-                .to_str()
-                .unwrap(),
-            "1.0"
-        );
+        assert!(matches!(
+            up1.resolve_pending_trial().await,
+            Some(TrialOutcome::Committed { .. })
+        ));
 
-        // Now attempt v2 whose canary fails => must NOT change current, and the
-        // discarded release dir must be gone.
+        // Now activate v2. The flip itself succeeds (the canary can only run
+        // after the restart) — then the "new process" resolves the trial with
+        // a failing canary and must roll back to v1.
         let b2 = b"v2".to_vec();
         let sm2 =
             SignedManifest::unsigned(app_manifest("2.0", "app-2.0.squashfs", &b2));
@@ -265,8 +277,25 @@ mod tests {
             TrustPolicy::AllowUnsigned,
             Arc::new(AtomicBool::new(false)), // canary fails
         );
-        let err = up2.apply(ComponentKind::App).await.unwrap_err();
-        assert!(matches!(err, Error::HealthCheckFailed { .. }));
+        up2.apply(ComponentKind::App).await.unwrap();
+        assert_eq!(
+            std::fs::read_link(root.join("current"))
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "2.0",
+            "the flip precedes the canary"
+        );
+
+        match up2.resolve_pending_trial().await {
+            Some(TrialOutcome::RolledBack { version, restored }) => {
+                assert_eq!(version, "2.0");
+                assert_eq!(restored.as_deref(), Some("1.0"));
+            }
+            other => panic!("expected RolledBack, got {other:?}"),
+        }
         assert_eq!(
             std::fs::read_link(root.join("current"))
                 .unwrap()
@@ -275,12 +304,69 @@ mod tests {
                 .to_str()
                 .unwrap(),
             "1.0",
-            "current must still point at v1 after a failed canary"
+            "current must point at v1 again after the rollback"
         );
         assert!(
             !root.join("releases/2.0").exists(),
             "failed release dir must be discarded"
         );
+        let paths = paths_in(&root);
+        assert!(trial::load(&paths).is_none(), "trial must be cleared");
+        assert_eq!(
+            trial::last_failure(&paths).unwrap().version,
+            "2.0",
+            "the failure marker must remember the rolled-back version"
+        );
+        assert!(up2.status().last_error.unwrap().contains("rolled back"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn boot_guard_counts_boots_and_rolls_back_when_exhausted() {
+        let root = tmp("guard");
+        let paths = paths_in(&root);
+        let old_dir = paths.release_root.join("1.0");
+        let new_dir = paths.release_root.join("2.0");
+        std::fs::create_dir_all(&old_dir).unwrap();
+        std::fs::create_dir_all(&new_dir).unwrap();
+        std::os::unix::fs::symlink(&new_dir, &paths.current_link).unwrap();
+
+        // No trial: the guard is a no-op.
+        assert!(matches!(early_boot_guard(&paths), BootDecision::NoTrial));
+
+        // Seed a trial as install_app leaves it, then simulate a release that
+        // crashes on every boot: each guard call counts one attempt.
+        trial::save(
+            &paths,
+            &TrialState {
+                new_version: "2.0".into(),
+                old_release: Some(old_dir.clone()),
+                boots: 0,
+                started_unix: 0,
+            },
+        )
+        .unwrap();
+        for i in 1..=MAX_TRIAL_BOOTS {
+            match early_boot_guard(&paths) {
+                BootDecision::TrialBoot(st) => assert_eq!(st.boots, i),
+                other => panic!("expected TrialBoot, got {other:?}"),
+            }
+        }
+
+        // Attempts exhausted: rolled back to the old release.
+        match early_boot_guard(&paths) {
+            BootDecision::RolledBack { failed_version } => {
+                assert_eq!(failed_version, "2.0")
+            }
+            other => panic!("expected RolledBack, got {other:?}"),
+        }
+        assert_eq!(std::fs::read_link(&paths.current_link).unwrap(), old_dir);
+        assert!(!new_dir.exists(), "failed release dir must be discarded");
+        assert!(trial::load(&paths).is_none());
+        assert_eq!(trial::last_failure(&paths).unwrap().version, "2.0");
+        // Subsequent boots are normal again.
+        assert!(matches!(early_boot_guard(&paths), BootDecision::NoTrial));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -291,27 +377,25 @@ mod tests {
         let paths = paths_in(&root);
         std::fs::create_dir_all(&paths.staging_dir).unwrap();
 
-        // Install v1 then v2, both healthy, through the layout directly.
+        // Install v1 then v2 through the layout directly.
         let layout = ReleaseLayout::new(paths.clone());
         let installer = NoopInstaller::default();
-        let ok = FnHealthCheck(|| true);
 
         for (ver, data) in [("1.0", b"one".to_vec()), ("2.0", b"two".to_vec())] {
             let m = app_manifest(ver, "app.squashfs", &data);
             let comp = m.component(ComponentKind::App).unwrap().clone();
             let staged = paths.staging_dir.join(format!("app-{ver}.squashfs"));
             std::fs::write(&staged, &data).unwrap();
-            layout
-                .install_app(&comp, &staged, &installer, &ok, 3)
-                .await
-                .unwrap();
+            layout.install_app(&comp, &staged, &installer).await.unwrap();
         }
         assert_eq!(layout.current_app_version().as_deref(), Some("2.0"));
 
-        // Roll back => current points at v1 again.
+        // A manual rollback => current points at v1 again, and any pending
+        // trial is superseded.
         let restored = layout.rollback(&installer).unwrap();
         assert_eq!(restored, "1.0");
         assert_eq!(layout.current_app_version().as_deref(), Some("1.0"));
+        assert!(trial::load(&paths).is_none());
 
         let _ = std::fs::remove_dir_all(&root);
     }
