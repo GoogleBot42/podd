@@ -247,7 +247,7 @@ impl SideTracker {
             self.bucket = None;
             return None;
         }
-        let Some(prev) = prev else { return None };
+        let prev = prev?;
         let delta: i64 = channels
             .iter()
             .zip(prev.iter())
@@ -312,14 +312,12 @@ impl SideTracker {
         // A session nobody has come back to within the merge window is over.
         // Checked before the current second opens a new run, so the record for
         // last night lands as soon as the evidence is in.
-        if self.run.is_none() {
-            if self
-                .session
-                .as_ref()
-                .is_some_and(|s| now_unix - s.end > MAX_GAP_S)
-            {
-                out.extend(self.close_session());
-            }
+        let session_timed_out = self
+            .session
+            .as_ref()
+            .is_some_and(|s| now_unix - s.end > MAX_GAP_S);
+        if self.run.is_none() && session_timed_out {
+            out.extend(self.close_session());
         }
 
         if occupied {
