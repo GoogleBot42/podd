@@ -71,6 +71,11 @@ const MOVEMENT_BUCKET_S: i64 = 120;
 /// converts them to the ISO-8601 strings the UI's schema expects.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SleepRecord {
+    /// Stable synthetic id, assigned once when the session closes: the UI
+    /// keys, edits and deletes records by a number. Derived from the detected
+    /// start and the side (two sessions on one side can't start in the same
+    /// second) and then never changed, so editing the bed times keeps it.
+    pub id: i64,
     pub side: BedSide,
     pub entered_bed_at: i64,
     pub left_bed_at: i64,
@@ -83,11 +88,9 @@ pub struct SleepRecord {
 }
 
 impl SleepRecord {
-    /// Stable synthetic id for the UI (which keys, edits and deletes records
-    /// by a number). Two sessions on one side can't start in the same second,
-    /// and the side bit keeps the two sides apart.
-    pub fn id(&self) -> i64 {
-        self.entered_bed_at * 2 + matches!(self.side, BedSide::Right) as i64
+    /// The id a session starting at `entered_bed_at` on `side` gets.
+    pub fn make_id(entered_bed_at: i64, side: BedSide) -> i64 {
+        entered_bed_at * 2 + matches!(side, BedSide::Right) as i64
     }
 
     /// Recompute the derived fields after `entered_bed_at` / `left_bed_at`
@@ -371,6 +374,7 @@ impl SideTracker {
             return None;
         }
         Some(SleepRecord {
+            id: SleepRecord::make_id(s.start, self.side),
             side: self.side,
             entered_bed_at: s.start,
             left_bed_at: s.end,
@@ -574,6 +578,7 @@ mod tests {
     #[test]
     fn reclip_recomputes_derived_fields() {
         let mut rec = SleepRecord {
+            id: SleepRecord::make_id(1000, BedSide::Left),
             side: BedSide::Left,
             entered_bed_at: 1000,
             left_bed_at: 5000,
@@ -593,16 +598,23 @@ mod tests {
 
     #[test]
     fn ids_are_stable_and_side_unique() {
-        let mk = |side| SleepRecord {
-            side,
+        let mk = |side| SleepRecord::make_id(1_800_000_000, side);
+        assert_ne!(mk(BedSide::Left), mk(BedSide::Right));
+        assert_eq!(mk(BedSide::Left), mk(BedSide::Left));
+
+        // an edit to the bed times must not renumber the record
+        let mut rec = SleepRecord {
+            id: mk(BedSide::Left),
+            side: BedSide::Left,
             entered_bed_at: 1_800_000_000,
             left_bed_at: 1_800_020_000,
             sleep_period_seconds: 20_000,
             times_exited_bed: 0,
-            present_intervals: vec![],
+            present_intervals: vec![(1_800_000_000, 1_800_020_000)],
             not_present_intervals: vec![],
         };
-        assert_ne!(mk(BedSide::Left).id(), mk(BedSide::Right).id());
-        assert_eq!(mk(BedSide::Left).id(), mk(BedSide::Left).id());
+        rec.entered_bed_at += 3600;
+        rec.reclip();
+        assert_eq!(rec.id, mk(BedSide::Left));
     }
 }

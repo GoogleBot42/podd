@@ -28,8 +28,8 @@ use tokio_stream::StreamExt;
 pub struct AppState {
     pub store: Arc<StateStore>,
     pub control: Arc<dyn PodControl>,
-    /// Vitals history store; `None` = biometrics off (endpoints serve empty).
-    pub vitals: Option<Arc<podd_core::biometrics::VitalsStore>>,
+    /// Biometrics history stores; a missing store serves empty results.
+    pub biometrics: podd_core::biometrics::Stores,
 }
 
 // ---------------------------------------------------------------------------
@@ -520,12 +520,13 @@ pub async fn post_jobs(
 // ---------------------------------------------------------------------------
 
 /// The services document (see [`Services::default`]). `biometrics.enabled`
-/// reflects whether the vitals pipeline is actually wired (#12); its per-job
-/// entries stay "not implemented" — sleep analysis and calibration jobs
-/// don't exist in podd (vitals run continuously, presence-gated, instead).
+/// reflects whether the biometrics pipeline is actually wired (#12, #141); its
+/// per-job entries stay "not implemented" — free-sleep's batch sleep-analysis
+/// and calibration jobs don't exist in podd, whose detection runs continuously
+/// off the live stream instead.
 pub async fn get_services(State(app): State<AppState>) -> Json<Services> {
     let mut services = Services::default();
-    services.biometrics.enabled = app.vitals.is_some();
+    services.biometrics.enabled = app.biometrics.vitals.is_some();
     Json(services)
 }
 
@@ -661,10 +662,9 @@ pub async fn post_presence(
 // ---------------------------------------------------------------------------
 // biometrics
 //
-// Vitals are real (#12): served from the store handed to
-// `router_with_vitals` (empty without one). Sleep and movement records stay
-// UI-friendly empties until the sleep-detection half is ported. The
-// `?startTime=&endTime=&side=` filtering runs on every request either way
+// All three histories are real now: vitals (#12) and sleep/movement (#141) are
+// served from the stores handed to `router_with_biometrics` (empty without
+// them). The `?startTime=&endTime=&side=` filtering runs on every request
 // (#108).
 // ---------------------------------------------------------------------------
 
@@ -673,51 +673,115 @@ fn metrics_filter(query: &MetricsQuery) -> Result<MetricsFilter, Response> {
     query.parse().map_err(invalid_request_data)
 }
 
-pub async fn get_sleep_records(Query(query): Query<MetricsQuery>) -> Response {
-    let filter = match metrics_filter(&query) {
-        Ok(f) => f,
-        Err(resp) => return resp,
-    };
-    let records: Vec<SleepRecord> = Vec::new();
-    Json(filter_records(records, &filter)).into_response()
+fn to_wire_side(side: pod_proto::packet::BedSide) -> Side {
+    match side {
+        pod_proto::packet::BedSide::Left => Side::Left,
+        pod_proto::packet::BedSide::Right => Side::Right,
+    }
 }
 
-/// Read + convert the vitals history for a validated filter. The store also
-/// pre-filters by window/side; `filter_records` still runs afterwards so the
-/// endpoint honours exactly the same contract as the other metrics routes.
-fn vitals_from_store(app: &AppState, filter: &crate::metrics::MetricsFilter) -> Vec<VitalsRecord> {
-    use pod_proto::packet::BedSide;
-    let Some(store) = &app.vitals else {
+fn to_store_side(side: Side) -> pod_proto::packet::BedSide {
+    match side {
+        Side::Left => pod_proto::packet::BedSide::Left,
+        Side::Right => pod_proto::packet::BedSide::Right,
+    }
+}
+
+/// Epoch seconds as the ISO-8601 instant the UI's zod schemas expect.
+fn to_iso(seconds: i64) -> String {
+    jiff::Timestamp::from_second(seconds)
+        .map(|t| t.to_string())
+        .unwrap_or_default()
+}
+
+/// Read one biometrics store for a validated filter. The store pre-filters by
+/// window/side; `filter_records` still runs on the converted records so every
+/// endpoint honours exactly the same contract.
+fn from_store<T: podd_core::biometrics::StoredRecord>(
+    store: Option<&Arc<podd_core::biometrics::JsonlStore<T>>>,
+    filter: &MetricsFilter,
+) -> Vec<T> {
+    let Some(store) = store else {
         return Vec::new();
     };
-    let side = filter.side.map(|s| match s {
-        Side::Left => BedSide::Left,
-        Side::Right => BedSide::Right,
-    });
-    let records = match store.query(
+    match store.query(
         filter.start.map(|t| t.as_second()),
         filter.end.map(|t| t.as_second()),
-        side,
+        filter.side.map(to_store_side),
     ) {
         Ok(records) => records,
         Err(e) => {
-            log::error!("vitals store read failed: {e}");
-            return Vec::new();
+            log::error!("{} store read failed: {e}", T::LABEL);
+            Vec::new()
         }
-    };
-    records
+    }
+}
+
+/// Read + convert the sleep history (epoch seconds in the store, ISO-8601 on
+/// the wire).
+fn sleep_from_store(app: &AppState, filter: &MetricsFilter) -> Vec<SleepRecord> {
+    from_store(app.biometrics.sleep.as_ref(), filter)
+        .into_iter()
+        .map(|r| SleepRecord {
+            id: r.id,
+            side: match to_wire_side(r.side) {
+                Side::Left => "left".to_string(),
+                Side::Right => "right".to_string(),
+            },
+            entered_bed_at: to_iso(r.entered_bed_at),
+            left_bed_at: to_iso(r.left_bed_at),
+            sleep_period_seconds: r.sleep_period_seconds,
+            times_exited_bed: r.times_exited_bed,
+            present_intervals: r
+                .present_intervals
+                .iter()
+                .map(|(s, e)| (to_iso(*s), to_iso(*e)))
+                .collect(),
+            not_present_intervals: r
+                .not_present_intervals
+                .iter()
+                .map(|(s, e)| (to_iso(*s), to_iso(*e)))
+                .collect(),
+        })
+        .collect()
+}
+
+fn vitals_from_store(app: &AppState, filter: &MetricsFilter) -> Vec<VitalsRecord> {
+    from_store(app.biometrics.vitals.as_ref(), filter)
         .into_iter()
         .map(|r| VitalsRecord {
-            side: match r.side {
-                BedSide::Left => Side::Left,
-                BedSide::Right => Side::Right,
-            },
+            side: to_wire_side(r.side),
             timestamp: r.timestamp,
             heart_rate: r.heart_rate,
             hrv: r.hrv,
             breathing_rate: r.breathing_rate,
         })
         .collect()
+}
+
+fn movement_from_store(app: &AppState, filter: &MetricsFilter) -> Vec<MovementRecord> {
+    from_store(app.biometrics.movement.as_ref(), filter)
+        .into_iter()
+        .map(|r| MovementRecord {
+            // The UI keys rows by id; bucket start + side is unique.
+            id: r.timestamp * 2 + matches!(r.side, pod_proto::packet::BedSide::Right) as i64,
+            side: to_wire_side(r.side),
+            timestamp: r.timestamp,
+            total_movement: r.total_movement,
+        })
+        .collect()
+}
+
+pub async fn get_sleep_records(
+    State(app): State<AppState>,
+    Query(query): Query<MetricsQuery>,
+) -> Response {
+    let filter = match metrics_filter(&query) {
+        Ok(f) => f,
+        Err(resp) => return resp,
+    };
+    let records = sleep_from_store(&app, &filter);
+    Json(filter_records(records, &filter)).into_response()
 }
 
 pub async fn get_vitals_records(
@@ -732,12 +796,15 @@ pub async fn get_vitals_records(
     Json(filter_records(records, &filter)).into_response()
 }
 
-pub async fn get_movement_records(Query(query): Query<MetricsQuery>) -> Response {
+pub async fn get_movement_records(
+    State(app): State<AppState>,
+    Query(query): Query<MetricsQuery>,
+) -> Response {
     let filter = match metrics_filter(&query) {
         Ok(f) => f,
         Err(resp) => return resp,
     };
-    let records: Vec<MovementRecord> = Vec::new();
+    let records = movement_from_store(&app, &filter);
     Json(filter_records(records, &filter)).into_response()
 }
 
@@ -768,11 +835,85 @@ pub async fn vitals_summary(
     .into_response()
 }
 
-pub async fn sleep_put() -> Response {
-    // free-sleep returns the updated record; we have none, so 204.
-    StatusCode::NO_CONTENT.into_response()
+/// Body of `PUT /metrics/sleep/{id}`: the UI's edit dialog sends the two
+/// timestamps as ISO-8601 (either may be omitted).
+#[derive(serde::Deserialize, Default)]
+pub struct SleepPatch {
+    pub entered_bed_at: Option<String>,
+    pub left_bed_at: Option<String>,
 }
 
-pub async fn sleep_delete() -> Response {
-    StatusCode::NO_CONTENT.into_response()
+/// Correct a detected session's bed times (the UI's edit dialog). The derived
+/// fields are recomputed from the stored intervals clipped to the new window,
+/// so an edit can't leave a record self-inconsistent.
+pub async fn sleep_put(
+    State(app): State<AppState>,
+    Path(id): Path<i64>,
+    ApiJson(patch): ApiJson<SleepPatch>,
+) -> Response {
+    let mut errors = Vec::new();
+    let entered = crate::metrics::parse_param(
+        "entered_bed_at",
+        patch.entered_bed_at.as_deref(),
+        &mut errors,
+    );
+    let left = crate::metrics::parse_param("left_bed_at", patch.left_bed_at.as_deref(), &mut errors);
+    if !errors.is_empty() {
+        return invalid_request_data(errors);
+    }
+    let Some(store) = app.biometrics.sleep.as_ref() else {
+        return crate::error::not_found();
+    };
+
+    let mut updated = None;
+    let res = store.rewrite(|mut rec| {
+        if rec.id == id {
+            if let Some(t) = entered {
+                rec.entered_bed_at = t.as_second();
+            }
+            if let Some(t) = left {
+                rec.left_bed_at = t.as_second();
+            }
+            rec.reclip();
+            updated = Some(rec.clone());
+        }
+        Some(rec)
+    });
+    if let Err(e) = res {
+        log::error!("sleep store update failed: {e}");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    match updated {
+        // Re-read through the normal conversion so the response is exactly
+        // what a subsequent GET would return.
+        Some(rec) => {
+            let filter = MetricsFilter {
+                start: jiff::Timestamp::from_second(rec.entered_bed_at).ok(),
+                end: jiff::Timestamp::from_second(rec.entered_bed_at).ok(),
+                side: None,
+            };
+            match sleep_from_store(&app, &filter)
+                .into_iter()
+                .find(|r| r.id == rec.id)
+            {
+                Some(wire) => Json(wire).into_response(),
+                None => StatusCode::NO_CONTENT.into_response(),
+            }
+        }
+        None => crate::error::not_found(),
+    }
+}
+
+pub async fn sleep_delete(State(app): State<AppState>, Path(id): Path<i64>) -> Response {
+    let Some(store) = app.biometrics.sleep.as_ref() else {
+        return crate::error::not_found();
+    };
+    match store.rewrite(|rec| (rec.id != id).then_some(rec)) {
+        Ok(0) => crate::error::not_found(),
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => {
+            log::error!("sleep store delete failed: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }

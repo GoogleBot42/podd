@@ -63,31 +63,15 @@ pub fn start(
     let (cmd_tx, cmd_rx) = mpsc::channel(COMMAND_QUEUE);
     let (health, health_rx) = HealthRegistry::new();
 
-    // Vitals history store, next to the config like settings/schedules. A
-    // pre-NTP clock (epoch ~0) makes the prune cutoff negative — a no-op,
-    // never an over-prune.
-    let vitals = match biometrics::VitalsStore::open(sibling_path(&config_path, "vitals.jsonl")) {
-        Ok(store) => {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
-            if let Err(e) = store.prune(now, biometrics::RETENTION_DAYS) {
-                log::warn!("vitals store prune failed: {e}");
-            }
-            Some(Arc::new(store))
-        }
-        Err(e) => {
-            log::warn!("vitals store unavailable (biometrics disabled): {e}");
-            None
-        }
-    };
+    // Biometrics history (vitals, sleep records, movement), next to the config
+    // like settings/schedules.
+    let biometrics = biometrics::Stores::open(&data_dir(&config_path));
 
     let shared = Shared {
         status: status_rx,
         health: health_rx,
         commands: cmd_tx,
-        vitals: vitals.clone(),
+        biometrics: biometrics.clone(),
     };
 
     let fut = run_inner(
@@ -96,7 +80,7 @@ pub fn start(
         health,
         cmd_rx,
         dry_run,
-        vitals,
+        biometrics,
     );
     (shared, fut)
 }
@@ -126,12 +110,17 @@ pub async fn run(config_path: &Path) -> anyhow::Result<()> {
 /// `StateStore` (`crates/podd/src/main.rs`) — the API owns writing these files,
 /// podd-core only ever reads them, and the two must agree on which file it is.
 fn sibling_path(config_path: &Path, name: &str) -> PathBuf {
+    data_dir(config_path).join(name)
+}
+
+/// The directory those documents live in (the config's parent, or `.` for a
+/// bare filename).
+fn data_dir(config_path: &Path) -> PathBuf {
     config_path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(name)
 }
 
 fn schedules_path(config_path: &Path) -> PathBuf {
@@ -505,7 +494,7 @@ async fn run_inner(
     health: HealthRegistry,
     cmd_rx: mpsc::Receiver<Command>,
     dry_run: bool,
-    vitals: Option<Arc<biometrics::VitalsStore>>,
+    biometrics: biometrics::Stores,
 ) -> anyhow::Result<()> {
     let config_path = config_path.as_path();
     log::info!("Starting {NAME} v{VERSION}...");
@@ -696,7 +685,7 @@ async fn run_inner(
             sensor_cmd_rx,
             health.clone(),
             dry_run,
-            vitals,
+            biometrics,
         ) => {
             match res {
                 Ok(_) => anyhow::anyhow!("Sensor supervisor unexpectedly exited"),

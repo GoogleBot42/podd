@@ -1114,11 +1114,14 @@ async fn vitals_endpoints_serve_the_store() {
 
     let store = Arc::new(StateStore::in_memory());
     let control = Arc::new(MockControl::new());
-    let app = api::router_with_vitals(
+    let app = api::router_with_biometrics(
         store,
         control as Arc<dyn PodControl>,
         None,
-        Some(vitals),
+        podd_core::biometrics::Stores {
+            vitals: Some(vitals),
+            ..Default::default()
+        },
     );
 
     // side filter + window filter both apply (timestamps are epoch seconds;
@@ -1156,4 +1159,160 @@ async fn vitals_endpoints_serve_the_store() {
     assert_eq!(v["maxHeartRate"], 64);
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn sleep_and_movement_endpoints_serve_the_stores() {
+    use pod_proto::packet::BedSide;
+    use podd_core::biometrics::{MovementRecord, MovementStore, SleepRecord, SleepStore};
+
+    let dir = std::env::temp_dir().join(format!("podd-sleep-http-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let sleep = Arc::new(SleepStore::open(dir.join("sleep.jsonl")).unwrap());
+    let movement = Arc::new(MovementStore::open(dir.join("movement.jsonl")).unwrap());
+
+    // 2026-08-20T02:00:00Z -> 2026-08-20T10:00:00Z, one 10-minute exit
+    let entered = 1_787_191_200i64;
+    let left = entered + 8 * 3600;
+    let record = SleepRecord {
+        id: SleepRecord::make_id(entered, BedSide::Left),
+        side: BedSide::Left,
+        entered_bed_at: entered,
+        left_bed_at: left,
+        sleep_period_seconds: 8 * 3600 - 600,
+        times_exited_bed: 1,
+        present_intervals: vec![(entered, entered + 3600), (entered + 4200, left)],
+        not_present_intervals: vec![(entered + 3600, entered + 4200)],
+    };
+    let id = record.id;
+    sleep.append(&record).unwrap();
+    // a second night on the other side, a week later
+    sleep
+        .append(&SleepRecord {
+            id: SleepRecord::make_id(entered + 7 * 86400, BedSide::Right),
+            side: BedSide::Right,
+            entered_bed_at: entered + 7 * 86400,
+            left_bed_at: left + 7 * 86400,
+            sleep_period_seconds: 8 * 3600,
+            times_exited_bed: 0,
+            present_intervals: vec![],
+            not_present_intervals: vec![],
+        })
+        .unwrap();
+    for (ts, mv) in [(entered, 40i64), (entered + 120, 900)] {
+        movement
+            .append(&MovementRecord {
+                side: BedSide::Left,
+                timestamp: ts,
+                total_movement: mv,
+            })
+            .unwrap();
+    }
+
+    let store = Arc::new(StateStore::in_memory());
+    let control = Arc::new(MockControl::new());
+    let app = api::router_with_biometrics(
+        store,
+        control as Arc<dyn PodControl>,
+        None,
+        podd_core::biometrics::Stores {
+            sleep: Some(sleep),
+            movement: Some(movement),
+            ..Default::default()
+        },
+    );
+
+    // GET: epoch seconds become the ISO-8601 strings the UI's zod schema wants
+    let resp = app
+        .clone()
+        .oneshot(get("/api/metrics/sleep?side=left"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = body_json(resp).await;
+    let records = v.as_array().unwrap();
+    assert_eq!(records.len(), 1, "the right-side night must be filtered out");
+    assert_eq!(records[0]["side"], "left");
+    assert_eq!(records[0]["entered_bed_at"], "2026-08-20T02:00:00Z");
+    assert_eq!(records[0]["left_bed_at"], "2026-08-20T10:00:00Z");
+    assert_eq!(records[0]["times_exited_bed"], 1);
+    assert_eq!(records[0]["present_intervals"].as_array().unwrap().len(), 2);
+    assert_eq!(records[0]["id"], id);
+
+    // the week window filters on entered_bed_at
+    let resp = app
+        .clone()
+        .oneshot(get(
+            "/api/metrics/sleep?startTime=2026-08-19T00:00:00Z&endTime=2026-08-21T00:00:00Z",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(body_json(resp).await.as_array().unwrap().len(), 1);
+
+    // movement records keep epoch seconds and gain a UI-facing id
+    let resp = app
+        .clone()
+        .oneshot(get("/api/metrics/movement?side=left"))
+        .await
+        .unwrap();
+    let v = body_json(resp).await;
+    let records = v.as_array().unwrap();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0]["timestamp"], entered);
+    assert_eq!(records[1]["total_movement"], 900);
+    assert_ne!(records[0]["id"], records[1]["id"]);
+
+    // PUT: correcting the bed times reclips the intervals
+    let body = json!({ "entered_bed_at": "2026-08-20T04:00:00Z" });
+    let req = Request::builder()
+        .method("PUT")
+        .uri(format!("/api/metrics/sleep/{id}"))
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = body_json(resp).await;
+    assert_eq!(v["entered_bed_at"], "2026-08-20T04:00:00Z");
+    // only the second presence interval survives, clipped to the new start,
+    // and the exit that fell outside the window is no longer counted
+    assert_eq!(v["present_intervals"].as_array().unwrap().len(), 1);
+    assert_eq!(v["sleep_period_seconds"], left - (entered + 2 * 3600));
+    assert_eq!(v["times_exited_bed"], 0);
+
+    // DELETE: gone, and a second delete 404s
+    let del = |id: i64| {
+        Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/metrics/sleep/{id}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let resp = app.clone().oneshot(del(id)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    let resp = app.clone().oneshot(del(id)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let resp = app
+        .oneshot(get("/api/metrics/sleep?side=left"))
+        .await
+        .unwrap();
+    assert!(body_json(resp).await.as_array().unwrap().is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Without stores (the `router()` construction the other tests use) the
+/// biometrics endpoints must still answer with well-formed empties.
+#[tokio::test]
+async fn metrics_endpoints_are_empty_without_stores() {
+    for path in [
+        "/api/metrics/sleep",
+        "/api/metrics/vitals",
+        "/api/metrics/movement",
+    ] {
+        let (app, _c, _s) = build();
+        let resp = app.oneshot(get(path)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "path={path}");
+        assert!(body_json(resp).await.as_array().unwrap().is_empty());
+    }
 }

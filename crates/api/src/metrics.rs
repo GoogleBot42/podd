@@ -73,7 +73,13 @@ impl MetricsQuery {
     }
 }
 
-fn parse_param(name: &str, raw: Option<&str>, errors: &mut Vec<String>) -> Option<Timestamp> {
+/// Parse one optional ISO-8601 parameter, pushing a message onto `errors` if
+/// it is present but unparseable. Blank/absent is `None` with no error.
+pub(crate) fn parse_param(
+    name: &str,
+    raw: Option<&str>,
+    errors: &mut Vec<String>,
+) -> Option<Timestamp> {
     let raw = raw.map(str::trim).filter(|s| !s.is_empty())?;
     match parse_instant(raw) {
         Some(ts) => Some(ts),
