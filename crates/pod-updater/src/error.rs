@@ -30,11 +30,6 @@ pub enum Error {
     #[error("component kind {0:?} not present in manifest")]
     ComponentMissing(ComponentKind),
 
-    /// The canary health check failed after activating a new app release; the
-    /// swap was discarded and `current` was left untouched.
-    #[error("health check failed for release {version}; kept current")]
-    HealthCheckFailed { version: String },
-
     /// `rollback()` was called but there is no recorded previous release.
     #[error("no previous release to roll back to")]
     NoPreviousRelease,

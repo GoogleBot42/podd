@@ -36,6 +36,18 @@ mod hostinfo;
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
 
+    // App-update trial guard, before ANYTHING else (even config parsing): if a
+    // freshly activated release keeps crashing during startup, this counts the
+    // boot attempts, rolls the `current` symlink back to the previous release,
+    // and exits so systemd respawns into the restored binary (ExecStart
+    // re-resolves the symlink). See `pod_updater::trial`.
+    if let pod_updater::BootDecision::RolledBack { failed_version } =
+        pod_updater::early_boot_guard_from_env()
+    {
+        log::error!("app release {failed_version} rolled back; exiting for systemd to respawn");
+        std::process::exit(1);
+    }
+
     // config path: first positional arg, default `./config.ron`
     let config_path = std::env::args()
         .nth(1)

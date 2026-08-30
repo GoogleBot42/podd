@@ -207,9 +207,14 @@ just swapping in the new release under `current`.
 Two layers protect you, depending on what got updated:
 
 **App updates (the common case).** The agent keeps the last `PODD_UPDATER_KEEP`
-(default 3) releases. After it activates a new one, it health-checks podd. If the
-new version fails to come up healthy within the timeout, it flips `current` back to
-the previous release. Nothing is lost — the old release directory is still there.
+(default 3) releases. Activating one is a two-phase *trial*, because the restart
+kills the process doing the update: the old podd flips `current` and restarts;
+the **new** podd then health-checks its own API and either commits the release
+or flips `current` back to the previous release and restarts again. A release
+that crashes before it can even serve gets 3 boot attempts (counted at startup,
+like U-Boot's `bootlimit`) before the same rollback happens. A rolled-back
+version is remembered and never auto-retried — apply it manually to try again.
+Nothing is lost either way — the old release directory is still there.
 
 **OS / slot updates (i.MX A/B).** When podd's own OS image is installed to a slot
 (see [INSTALL.md](INSTALL.md#advanced-ab-slot-install)), rollback happens in the
