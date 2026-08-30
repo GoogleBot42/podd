@@ -97,6 +97,13 @@ if [ -z "$DISK" ]; then
 fi
 [ -n "$DISK" ] && [ -b "$DISK" ] || die "could not find eMMC whole-disk device (pass --disk)"
 
+# The rollback story rests entirely on U-Boot's bootcount/altbootcmd
+# auto-revert. Confirm it actually exists in THIS unit's env BEFORE writing
+# anything: arming ustate=1 on a U-Boot without altbootcmd would leave a bad
+# slot boot-looping with no fallback, needing serial-U-Boot recovery (#51).
+ALTBOOTCMD="$(fw_printenv -n altbootcmd 2>/dev/null || echo '')"
+[ -n "$ALTBOOTCMD" ] || die "this unit's U-Boot env has no 'altbootcmd' - the 3-failed-boots auto-revert this script relies on is absent, so a bad slot could NOT roll back. Refusing. Inspect 'fw_printenv' and see flashing-method.md §3c/§4."
+
 # Compute inactive slot + its partition. Refuse if the active slot is unknown.
 case "$ACTIVE" in
   1) INACTIVE=2 ;;
@@ -168,6 +175,17 @@ mount "$TARGET_PART" "$MNT"
 log "extracting rootfs into $TARGET_PART (must include /boot/Image.gz + DTB)"
 tar -xzf "$TARBALL" -C "$MNT"
 sync
+
+# Sanity-check the extracted tree BEFORE flipping the boot pointer: a
+# truncated, wrong, or kernel-less tarball must fail HERE, leaving the
+# pointer on the known-good active slot, not at boot time (#51).
+[ -s "$MNT/boot/Image.gz" ] \
+  || die "extracted rootfs has no /boot/Image.gz - boot pointer NOT flipped, active slot untouched. Bad tarball?"
+DTB_COUNT="$(find "$MNT/boot" -name '*.dtb' 2>/dev/null | wc -l)"
+[ "$DTB_COUNT" -gt 0 ] \
+  || die "extracted rootfs has no device tree (*.dtb) under /boot - boot pointer NOT flipped, active slot untouched. Bad tarball?"
+log "slot sanity OK: /boot/Image.gz present, $DTB_COUNT DTB(s)"
+
 umount "$MNT"
 command -v e2fsck >/dev/null 2>&1 && e2fsck -pf "$TARGET_PART" >/dev/null 2>&1 || true
 
