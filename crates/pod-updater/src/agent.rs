@@ -276,6 +276,17 @@ impl Updater {
             .component(kind)
             .ok_or(Error::ComponentMissing(kind))?
             .clone();
+        // Enforce the manifest's min_app dependency before any download or
+        // dispatch — an OS/MCU component built against a newer app must not
+        // land under an older one (#40). Fails closed on unknown versions.
+        let installed_app = self.layout.installed_version(ComponentKind::App);
+        if !component.min_app_satisfied(installed_app.as_deref()) {
+            return Err(Error::MinAppNotMet {
+                name: component.name.clone(),
+                min_app: component.min_app.clone().unwrap_or_default(),
+                installed: installed_app,
+            });
+        }
         let staged = self.download_verified(&manifest, &component).await?;
 
         let outcome = match kind {
