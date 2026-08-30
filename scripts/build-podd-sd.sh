@@ -4,11 +4,14 @@
 # Eight Sleep i.MX8M-Mini / Variscite SD-variant hub (Pod 3-SD / Pod 4).
 #
 # WHAT IT PRODUCES
-#   podd-sd.img.gz - a full-device image you `dd` to a microSD. Inserting that
-#   card (swapping the stock one) makes the Pod boot a COMPLETE podd system
-#   entirely from the SD. The eMMC is NEVER written by this build, and the
-#   running system is configured so it is not written at runtime either, so
-#   swapping the original card back reverts to stock instantly.
+#   dist/podd-sd.img.gz AND the raw dist/podd-sd.img alongside it - a
+#   full-device image you `dd` to a microSD (gunzip the .gz first, or use the
+#   raw .img directly). Inserting that card (swapping the stock one) makes
+#   the Pod boot a COMPLETE podd system entirely from the SD. The eMMC is
+#   NEVER written by this build, and the running system is configured so it
+#   is not written at runtime either, so swapping the original card back
+#   reverts to stock instantly. The raw .img is also what
+#   scripts/patch-podd-sd-diag.sh and scripts/slim-podd-sd.sh expect as input.
 #
 # HOW IT WORKS (see docs/SD-BOOT.md for the full rationale)
 #   The U-Boot environment lives on the SD at offset 0x400000
@@ -301,14 +304,27 @@ echo "$ENV_CHECK" | grep -qx 'mmcpart=1' || die "env verify: mmcpart!=1"
 log "env verified on image: $(echo "$ENV_CHECK" | tr '\n' ' ')"
 
 # ---------------------------------------------------------------------------
-# STEP 6 - compress + checksum + manifest.
+# STEP 6 - keep the raw .img + compress + checksum + manifest.
+#
+# The raw image otherwise only lives in $WORK, which cleanup() deletes on
+# exit (unless --keep-work). scripts/slim-podd-sd.sh and
+# scripts/patch-podd-sd-diag.sh both default to the raw dist/podd-sd.img, so
+# copy it out to dist/ alongside the .gz (mirrors what the L2 build's
+# os/scripts/build-image.sh already does) instead of letting it evaporate
+# with $WORK (podd#49).
 # ---------------------------------------------------------------------------
+case "$OUT" in
+  *.gz) RAW_OUT="${OUT%.gz}" ;;
+  *)    RAW_OUT="$OUT.img" ;;
+esac
+log "moving raw image -> $RAW_OUT"
+mv "$SD_IMG" "$RAW_OUT"
 log "compressing -> $OUT (this can take a few minutes; image is a full device)"
-gzip -c "$SD_IMG" > "$OUT"
-RAW_BYTES="$(wc -c < "$SD_IMG")"
+gzip -c "$RAW_OUT" > "$OUT"
+RAW_BYTES="$(wc -c < "$RAW_OUT")"
 GZ_BYTES="$(wc -c < "$OUT")"
 SHA="$(sha256sum "$OUT" | awk '{print $1}')"
-RAW_SHA="$(sha256sum "$SD_IMG" | awk '{print $1}')"
+RAW_SHA="$(sha256sum "$RAW_OUT" | awk '{print $1}')"
 
 MANIFEST="${OUT%.gz}.manifest.txt"
 {
@@ -317,9 +333,10 @@ MANIFEST="${OUT%.gz}.manifest.txt"
   echo "generated : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "version   : $VERSION"
   echo "output    : $OUT"
+  echo "  raw image   : $RAW_OUT (write this full image to the microSD)"
   echo "  gz size : $GZ_BYTES bytes"
   echo "  gz sha256   : $SHA"
-  echo "  raw size    : $RAW_BYTES bytes (write this full image to the microSD)"
+  echo "  raw size    : $RAW_BYTES bytes"
   echo "  raw sha256  : $RAW_SHA"
   echo
   echo "Inputs"
@@ -354,6 +371,6 @@ log "DONE"
 echo
 cat "$MANIFEST"
 echo
-echo "image : $OUT"
+echo "image : $OUT (gz)  /  $RAW_OUT (raw)"
 echo "size  : $GZ_BYTES bytes (gz)  /  $RAW_BYTES bytes (raw)"
 echo "sha256: $SHA  (gz)"
