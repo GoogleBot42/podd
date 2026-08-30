@@ -6,6 +6,7 @@ use crate::metrics::{
     filter_records, MetricsFilter, MetricsQuery, MovementRecord, SleepRecord, VitalsRecord,
 };
 use crate::state::StateStore;
+use crate::updates::{DaemonBuild, UpdateOps, UpdatesReport};
 use crate::wire::*;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -30,6 +31,9 @@ pub struct AppState {
     pub control: Arc<dyn PodControl>,
     /// Vitals history store; `None` = biometrics off (endpoints serve empty).
     pub vitals: Option<Arc<podd_core::biometrics::VitalsStore>>,
+    /// The on-device update agent; `None` = API-only mode (update routes
+    /// report "no agent" rather than pretending).
+    pub updates: Option<Arc<dyn UpdateOps>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -546,6 +550,62 @@ pub async fn post_services(ApiJson(_patch): ApiJson<Value>) -> Response {
 /// twelve permanently-"OK" Node services.
 pub async fn get_server_status(State(app): State<AppState>) -> Json<ServerStatus> {
     Json(ServerStatus::from_health(&app.store.health()))
+}
+
+// ---------------------------------------------------------------------------
+// updates (REPLACEMENT_PLAN §9 observability; issue #1)
+// ---------------------------------------------------------------------------
+
+/// `GET /api/updates` — what the device runs plus the update agent's state.
+/// Always 200: `updater: null` says "no agent wired", which is different from
+/// "no updates available".
+pub async fn get_updates(State(app): State<AppState>) -> Json<UpdatesReport> {
+    Json(UpdatesReport {
+        daemon: DaemonBuild::default(),
+        updater: app.updates.as_ref().map(|u| u.status()),
+    })
+}
+
+/// 503 for the action routes when no update agent is wired.
+fn no_updater() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "no update agent is running",
+    )
+        .into_response()
+}
+
+/// `POST /api/updates/check` — poll the configured channel now. Returns the
+/// refreshed status on success; `502` (with the agent's message) when the
+/// channel could not be reached or verified.
+pub async fn post_updates_check(State(app): State<AppState>) -> Response {
+    let Some(updates) = app.updates.clone() else {
+        return no_updater();
+    };
+    match updates.check_now().await {
+        Ok(()) => Json(updates.status()).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("update check failed: {e}")).into_response(),
+    }
+}
+
+/// `POST /api/updates/rollback` — flip the Tier-2 app symlink back to the
+/// previous release. On-device this restarts `podd`, so the response may never
+/// reach the client; the UI treats a dropped connection as "restarting".
+pub async fn post_updates_rollback(State(app): State<AppState>) -> Response {
+    let Some(updates) = app.updates.clone() else {
+        return no_updater();
+    };
+    match updates.rollback() {
+        Ok(restored) => {
+            log::warn!("rolling app back to {restored} on API request");
+            Json(json!({ "restored": restored })).into_response()
+        }
+        Err(e) => (
+            StatusCode::CONFLICT,
+            format!("rollback not possible: {e}"),
+        )
+            .into_response(),
+    }
 }
 
 // ---------------------------------------------------------------------------

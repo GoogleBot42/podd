@@ -20,10 +20,12 @@ pub mod error;
 pub mod handlers;
 pub mod metrics;
 pub mod state;
+pub mod updates;
 pub mod wire;
 
 pub use control::{Call, MockControl, NotImplemented, PoddControl, PodControl};
 pub use state::{StateStore, StoreConfig};
+pub use updates::{DaemonBuild, MockUpdates, UpdateOps, UpdateStatus, UpdatesReport};
 
 use axum::extract::Request;
 use axum::http::{header, HeaderValue, Method, StatusCode};
@@ -99,10 +101,24 @@ pub fn router_with_vitals(
     spa_dir: Option<PathBuf>,
     vitals: Option<Arc<podd_core::biometrics::VitalsStore>>,
 ) -> Router {
+    router_full(store, control, spa_dir, vitals, None)
+}
+
+/// [`router_with_vitals`] plus the update agent backing `/updates*`
+/// (`REPLACEMENT_PLAN` §9). `updates: None` leaves those routes reporting
+/// "no update agent is running" rather than a fabricated status.
+pub fn router_full(
+    store: Arc<StateStore>,
+    control: Arc<dyn PodControl>,
+    spa_dir: Option<PathBuf>,
+    vitals: Option<Arc<podd_core::biometrics::VitalsStore>>,
+    updates: Option<Arc<dyn UpdateOps>>,
+) -> Router {
     let app_state = AppState {
         store,
         control,
         vitals,
+        updates,
     };
 
     let api = Router::new()
@@ -126,6 +142,12 @@ pub fn router_with_vitals(
             get(handlers::get_services).post(handlers::post_services),
         )
         .route("/serverStatus", get(handlers::get_server_status))
+        // update observability + the two controls pod-updater implements
+        // (REPLACEMENT_PLAN §9; issue #1). Applying an update is deliberately
+        // not routed here — see crates/api/src/updates.rs.
+        .route("/updates", get(handlers::get_updates))
+        .route("/updates/check", post(handlers::post_updates_check))
+        .route("/updates/rollback", post(handlers::post_updates_rollback))
         .route("/logs", get(handlers::get_logs))
         .route("/logs/{filename}", get(handlers::get_log_stream))
         .route(
@@ -241,7 +263,19 @@ pub async fn serve_with_vitals(
     spa_dir: Option<PathBuf>,
     vitals: Option<Arc<podd_core::biometrics::VitalsStore>>,
 ) -> anyhow::Result<()> {
-    let app = router_with_vitals(store, control, spa_dir, vitals);
+    serve_full(addr, store, control, spa_dir, vitals, None).await
+}
+
+/// [`serve_with_vitals`] plus the update agent backing `/updates*`.
+pub async fn serve_full(
+    addr: SocketAddr,
+    store: Arc<StateStore>,
+    control: Arc<dyn PodControl>,
+    spa_dir: Option<PathBuf>,
+    vitals: Option<Arc<podd_core::biometrics::VitalsStore>>,
+    updates: Option<Arc<dyn UpdateOps>>,
+) -> anyhow::Result<()> {
+    let app = router_full(store, control, spa_dir, vitals, updates);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     log::info!("api listening on {addr}");
     axum::serve(listener, app).await?;
