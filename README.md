@@ -21,9 +21,10 @@ projects get wrong — a **signed, atomic, reproducible update system**.
 > OS A/B OTA is wired end-to-end (updater writes + verifies the inactive SD
 > slot, U-Boot counts boot attempts and auto-reverts, podd marks-good —
 > hardware verification of the full cycle pending). Biometrics (heart rate,
-> HRV, breathing rate from the piezo stream) are computed and recorded
-> on-device. Remaining work: the OS-OTA hardware pass, the sleep-detection
-> half of biometrics (sleep sessions/movement), and an
+> HRV, breathing rate, sleep sessions, and movement from the piezo +
+> capacitance streams) are computed and recorded on-device. Remaining work:
+> the OS-OTA hardware pass, validating the biometrics numbers against a
+> reference (issue #142), and an
 > open reliability item on the Pod-4 sensor MCU (auto-recovers; see
 > `docs/research/pod4-sensor-protocol.md` §5). See
 > [`docs/REPLACEMENT_PLAN.md`](docs/REPLACEMENT_PLAN.md) for the full design

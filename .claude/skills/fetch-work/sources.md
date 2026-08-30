@@ -16,9 +16,10 @@ update it here, not in either skill.
 
 2. **README.md "Status" paragraph's "Remaining work" list.** Read the block
    under `> Status:` near the top of `README.md` — it names the current
-   remaining-work items in prose. As of 2026-08-30 that's: the hardware
-   verification pass for the OS A/B OTA cycle, the sleep-detection half of
-   biometrics (issue #141; vitals landed in PR #140), and an open Pod-4
+   remaining-work items in prose. As of 2026-08-30 (evening) that's: the
+   hardware verification pass for the OS A/B OTA cycle, validating the
+   biometrics numbers against a reference (issue #142; vitals landed in
+   PR #140, sleep/movement in PR #148), and an open Pod-4
    sensor MCU reliability item (auto-recovers; see
    `docs/research/pod4-sensor-protocol.md` §5). Don't
    trust this cached list — re-read the paragraph; it's the one place this is
