@@ -116,6 +116,16 @@ topic whenever such a command actually changes the config — the MQTT action
 path always did this inline, so without it a UI settings save left Home
 Assistant on a stale retained value until the next broker reconnect (#106).
 
+Beyond the free-sleep set, `GET /api/updates` is podd's own update-observability
+surface (`REPLACEMENT_PLAN` §9): the running build stamp plus the update agent's
+published `UpdateStatus` (channel, mode, installed version per tier, last check,
+available components, last error/apply), with `POST /api/updates/check` and
+`POST /api/updates/rollback` driving the two controls `pod-updater` implements.
+`updater: null` means no agent is wired — distinct from "no updates available".
+Applying an update is not routed (issue #1's other half), and the channel is
+read-only because it is fixed at start-up from `PODD_UPDATER_CHANNEL`. The UI
+renders all of it in Settings → Updates.
+
 `GET /serverStatus` keeps free-sleep's `StatusInfo` wire shape but **not** its
 key set: it reports podd's own subsystems (`sensor`, `coverControl`, `mqtt`,
 `clock`, `api`) from the `podd_core::health` registry, which the managers
