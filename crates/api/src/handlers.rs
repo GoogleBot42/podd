@@ -286,6 +286,86 @@ fn validate_schedule_overrides(s: &Settings) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
+// mqtt (issue #18)
+// ---------------------------------------------------------------------------
+
+/// The stored broker settings, password-free (`passwordSet` only). The daemon
+/// mirrors `config.ron` into the store; an API-only build reports the
+/// "not configured" default rather than guessing.
+pub async fn get_mqtt(State(app): State<AppState>) -> Json<MqttSettings> {
+    Json(app.store.mqtt())
+}
+
+/// Apply a partial edit to the broker settings.
+///
+/// Every field is optional and merges onto the stored document, so the UI can
+/// change one thing at a time — and an absent `password` keeps the stored
+/// secret, which is why the GET never has to return it. The daemon writes only
+/// the `mqtt` block of `config.ron`; nothing here can reach the alarm or
+/// profile config.
+pub async fn post_mqtt(
+    State(app): State<AppState>,
+    ApiJson(patch): ApiJson<MqttSettingsPatch>,
+) -> Response {
+    let current = app.store.mqtt();
+    let enabled = patch.enabled.unwrap_or(current.enabled);
+    let server = patch
+        .server
+        .unwrap_or_else(|| current.server.clone())
+        .trim()
+        .to_string();
+    let port = patch.port.unwrap_or(current.port);
+    let user = patch.user.unwrap_or_else(|| current.user.clone());
+
+    // Validate before anything is written: a half-applied broker address would
+    // leave the daemon pointing at nothing after the next restart.
+    let mut errs = Vec::new();
+    if enabled && server.is_empty() {
+        errs.push("server must not be empty when MQTT is enabled".to_string());
+    }
+    if server.contains("://") {
+        errs.push(format!(
+            "server must be a host name or IP, not a URL, got {server:?}"
+        ));
+    }
+    if server.chars().any(char::is_whitespace) {
+        errs.push(format!("server must not contain whitespace, got {server:?}"));
+    }
+    if port == 0 {
+        errs.push("port must be between 1 and 65535".to_string());
+    }
+    if !errs.is_empty() {
+        return invalid_request_data(errs);
+    }
+
+    let password_set = match &patch.password {
+        Some(p) => !p.is_empty(),
+        None => current.password_set,
+    };
+    let update = podd_core::bus::MqttUpdate {
+        enabled,
+        server: server.clone(),
+        port,
+        user: user.clone(),
+        password: patch.password,
+    };
+    if let Err(e) = app.control.set_mqtt(update).await {
+        return control_error(e);
+    }
+    // Reflect the edit immediately: the daemon's mirror lands a moment later
+    // (command bus -> config watch -> store), and a UI refetch must not race it.
+    let applied = MqttSettings {
+        enabled,
+        server,
+        port,
+        user,
+        password_set,
+    };
+    app.store.set_mqtt(applied.clone());
+    Json(applied).into_response()
+}
+
+// ---------------------------------------------------------------------------
 // schedules
 // ---------------------------------------------------------------------------
 

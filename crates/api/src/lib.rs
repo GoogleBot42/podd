@@ -134,6 +134,8 @@ pub fn router_full(
             "/schedules",
             get(handlers::get_schedules).post(handlers::post_schedules),
         )
+        // podd-only (free-sleep has no MQTT): the broker link's settings (#18)
+        .route("/mqtt", get(handlers::get_mqtt).post(handlers::post_mqtt))
         .route("/alarm", post(handlers::post_alarm))
         .route("/execute", post(handlers::post_execute))
         .route("/jobs", post(handlers::post_jobs))

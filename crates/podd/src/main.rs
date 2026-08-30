@@ -88,6 +88,9 @@ async fn main() -> anyhow::Result<()> {
     // Live status store (fed by the watch) + real control (feeds the mpsc).
     let store = StateStore::from_watch(shared.status.clone(), store_config);
     store.spawn_health_updater(shared.health.clone());
+    // Broker settings for `GET /api/mqtt` (#18). Password-free by construction:
+    // podd-core mirrors only what the UI may see.
+    store.spawn_mqtt_updater(shared.mqtt.clone());
     let control = Arc::new(PoddControl::new(shared.commands.clone())) as Arc<dyn PodControl>;
 
     // Hub identity + WiFi strength for /api/deviceStatus (host facts, not MCU).

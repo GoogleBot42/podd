@@ -195,6 +195,67 @@ pub use podd_core::settings::{
 };
 
 // ---------------------------------------------------------------------------
+// MQTT (GET/POST /api/mqtt)
+// ---------------------------------------------------------------------------
+
+/// The MQTT broker settings as the UI sees them (#18).
+///
+/// Not free-sleep-compatible — free-sleep has no MQTT — so the shape is ours.
+/// The password is deliberately absent: `passwordSet` says whether one is
+/// stored, and the secret never leaves `config.ron` (mode 600 on-device).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MqttSettings {
+    pub enabled: bool,
+    pub server: String,
+    pub port: u16,
+    pub user: String,
+    pub password_set: bool,
+}
+
+impl Default for MqttSettings {
+    /// What an API-only build (no control core attached) reports: nothing is
+    /// configured, which is the truth in that mode.
+    fn default() -> Self {
+        MqttSettings {
+            enabled: false,
+            server: String::new(),
+            port: 1883,
+            user: String::new(),
+            password_set: false,
+        }
+    }
+}
+
+impl From<podd_core::bus::MqttSnapshot> for MqttSettings {
+    fn from(s: podd_core::bus::MqttSnapshot) -> Self {
+        MqttSettings {
+            enabled: s.enabled,
+            server: s.server,
+            port: s.port,
+            user: s.user,
+            password_set: s.password_set,
+        }
+    }
+}
+
+/// A partial edit of [`MqttSettings`]. Every field is optional; absent means
+/// "leave it alone", which for `password` means *keep the stored secret* — the
+/// UI can change a port without ever handling it. An explicit `""` clears it.
+#[derive(Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MqttSettingsPatch {
+    pub enabled: Option<bool>,
+    pub server: Option<String>,
+    pub port: Option<u16>,
+    pub user: Option<String>,
+    pub password: Option<String>,
+    /// Accepted and ignored, so a client may POST back the document it GET'd.
+    #[serde(rename = "passwordSet")]
+    pub password_set: Option<bool>,
+}
+
+// ---------------------------------------------------------------------------
 // Jobs
 // ---------------------------------------------------------------------------
 

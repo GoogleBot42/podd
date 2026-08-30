@@ -8,7 +8,7 @@
 use crate::wire::{AlarmJob, Schedules, Settings, Side, VibrationPattern};
 use async_trait::async_trait;
 use jiff::civil::Time;
-use podd_core::bus::{AlarmSpec, Command};
+use podd_core::bus::{AlarmSpec, Command, MqttUpdate};
 use pod_proto::packet::BedSide;
 use pod_proto::sensor::command::AlarmPattern;
 use std::sync::Mutex;
@@ -57,6 +57,10 @@ pub trait PodControl: Send + Sync {
     /// already validated by the caller.
     async fn set_timezone(&self, iana: &str) -> anyhow::Result<()>;
 
+    /// Apply the MQTT broker settings to the daemon's live config (#18).
+    /// `update.password == None` keeps the stored secret.
+    async fn set_mqtt(&self, update: MqttUpdate) -> anyhow::Result<()>;
+
     /// Hand the daemon the whole per-weekday schedule document (the UI's
     /// Schedule page). Already validated *and* persisted by the caller — this
     /// only refreshes what the control core resolves targets from.
@@ -96,6 +100,8 @@ pub enum Call {
     SetPrimeDaily(bool, Time),
     SetAwayMode(bool, bool),
     SetTimezone(String),
+    /// The broker settings edit. `MqttUpdate`'s `Debug` redacts the password.
+    SetMqtt(MqttUpdate),
     /// Boxed: the whole weekly document dwarfs every other variant.
     SetSchedules(Box<Schedules>),
     SetSettings(Box<Settings>),
@@ -182,6 +188,11 @@ impl PodControl for MockControl {
 
     async fn set_timezone(&self, iana: &str) -> anyhow::Result<()> {
         self.record(Call::SetTimezone(iana.to_string()));
+        Ok(())
+    }
+
+    async fn set_mqtt(&self, update: MqttUpdate) -> anyhow::Result<()> {
+        self.record(Call::SetMqtt(update));
         Ok(())
     }
 
@@ -311,6 +322,10 @@ impl PodControl for PoddControl {
             iana: iana.to_string(),
         })
         .await
+    }
+
+    async fn set_mqtt(&self, update: MqttUpdate) -> anyhow::Result<()> {
+        self.send(Command::SetMqtt(update)).await
     }
 
     async fn set_schedules(&self, schedules: Schedules) -> anyhow::Result<()> {
