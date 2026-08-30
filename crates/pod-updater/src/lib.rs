@@ -370,10 +370,19 @@ mod tests {
             .with_dry_run(os_dry, mcu_dry)
         };
 
-        // Dry-run: both succeed and record their versions.
+        // Dry-run: both succeed but must NOT record their versions — nothing
+        // was flashed, so the update stays pending for check()/status (#39).
         let dry = make(true, true);
         dry.apply(ComponentKind::Os).await.unwrap();
         dry.apply(ComponentKind::McuFrozen).await.unwrap();
+        let layout = ReleaseLayout::new(paths.clone());
+        assert_eq!(layout.installed_version(ComponentKind::Os), None);
+        assert_eq!(layout.installed_version(ComponentKind::McuFrozen), None);
+        assert_eq!(
+            dry.check().await.unwrap().len(),
+            2,
+            "dry-run apply must leave both updates pending"
+        );
 
         // Live: both refuse with the gated error.
         let live = make(false, false);

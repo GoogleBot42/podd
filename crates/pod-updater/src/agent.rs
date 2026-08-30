@@ -274,7 +274,16 @@ impl Updater {
                 .os_writer
                 .write_inactive_slot(&component, &staged, self.os_dry_run)
                 .await
-                .and_then(|_| self.layout.record_version(kind, &component.version))
+                .and_then(|_| {
+                    // A dry-run applied nothing: leave the recorded version
+                    // alone so check()/status keep reporting the update as
+                    // pending (#39).
+                    if self.os_dry_run {
+                        Ok(())
+                    } else {
+                        self.layout.record_version(kind, &component.version)
+                    }
+                })
                 .map(|_| {
                     format!(
                         "os -> {} ({})",
@@ -286,7 +295,13 @@ impl Updater {
                 .mcu_flasher
                 .flash(&component, &staged, self.mcu_dry_run)
                 .await
-                .and_then(|_| self.layout.record_version(kind, &component.version))
+                .and_then(|_| {
+                    if self.mcu_dry_run {
+                        Ok(())
+                    } else {
+                        self.layout.record_version(kind, &component.version)
+                    }
+                })
                 .map(|_| {
                     format!(
                         "{:?} -> {} ({})",
