@@ -32,7 +32,13 @@ anything on the actuation path as safety-critical.
 - `cargo test` / `cargo build` — Rust workspace under `crates/`. The Nix dev
   shell (`nix develop`) provides the toolchain.
 - Cross builds: `nix build .#podd-aarch64` (static aarch64-musl), also
-  `.#podup`, `.#ui`.
+  `.#podup`, `.#ui`. Flake builds see only **git-tracked** files — a brand-new
+  `.rs` file is invisible until `git add`ed, failing with E0583 "file not
+  found for module" even though `cargo` builds fine.
+- Don't run `scripts/build-release.sh` inside `nix develop`: the dev shell
+  sets `SOURCE_DATE_EPOCH`, which makes podup's mksquashfs die with
+  "SOURCE_DATE_EPOCH and command line options can't be used at the same
+  time". Run it bare (it only needs `nix` on PATH).
 - After any `ui/package-lock.json` change, `nix build .#ui` fails with a hash
   mismatch — paste the reported "got:" hash into `npmDepsHash` in `flake.nix`.
 - OS image: `os/scripts/build.sh`. Buildroot only works inside the
