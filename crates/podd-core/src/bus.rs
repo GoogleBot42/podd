@@ -250,7 +250,7 @@ pub struct Shared {
     pub mqtt: watch::Receiver<MqttSnapshot>,
     /// Command sink into the managers.
     pub commands: mpsc::Sender<Command>,
-    /// Vitals history (HR/HRV/breathing), fed by the sensor manager's
-    /// biometrics processors; `None` if the store could not be opened.
-    pub vitals: Option<std::sync::Arc<crate::biometrics::VitalsStore>>,
+    /// Biometrics history (vitals, sleep records, movement), fed by the sensor
+    /// manager's processors; a store is `None` if its file could not be opened.
+    pub biometrics: crate::biometrics::Stores,
 }

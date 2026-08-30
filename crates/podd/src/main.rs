@@ -119,7 +119,7 @@ async fn main() -> anyhow::Result<()> {
             store,
             control,
             spa_dir,
-            shared.vitals.clone(),
+            shared.biometrics.clone(),
             updates,
         ),
         updater_fut,
