@@ -38,6 +38,17 @@ pub enum Error {
     #[error("release {0} not found on disk")]
     ReleaseMissing(String),
 
+    /// The component declares a `min_app` the installed app does not satisfy
+    /// (or the installed app version is unknown — the gate fails closed).
+    #[error(
+        "component {name} requires app >= {min_app}, installed app is {installed:?}; update the app first"
+    )]
+    MinAppNotMet {
+        name: String,
+        min_app: String,
+        installed: Option<String>,
+    },
+
     /// The bootloader (Tier 0) is deliberately excluded from auto-updates.
     #[error("bootloader (Tier 0) is never auto-updated; apply manually")]
     BootloaderRefused,

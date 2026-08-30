@@ -496,6 +496,71 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    #[tokio::test]
+    async fn min_app_is_enforced_before_apply() {
+        // An OS component declaring min_app must refuse to apply while the
+        // installed app is older or unknown, and pass once it satisfies (#40).
+        let root = tmp("minapp");
+        let paths = paths_in(&root);
+        std::fs::create_dir_all(&paths.staging_dir).unwrap();
+
+        let os_bytes = b"os-image".to_vec();
+        let mut m = Manifest::new("stable", 1);
+        m.components.push(Component {
+            name: "os-imx8mm".into(),
+            kind: ComponentKind::Os,
+            version: "os-2".into(),
+            artifact: Artifact {
+                filename: "os.img".into(),
+                sha256: sha256_hex(&os_bytes),
+                size: os_bytes.len() as u64,
+            },
+            min_app: Some("0.2.0".into()),
+        });
+        let sm = SignedManifest::unsigned(m);
+
+        let make = || {
+            let src = MemorySource::new(sm.to_json_pretty().unwrap())
+                .with_artifact("os.img", os_bytes.clone());
+            Updater::new(
+                "stable",
+                UpdateMode::Manual,
+                TrustPolicy::AllowUnsigned,
+                vec![Box::new(src)],
+                paths.staging_dir.clone(),
+                ReleaseLayout::new(paths.clone()),
+                Box::new(NoopInstaller::default()),
+                Box::new(FnHealthCheck(|| true)),
+                3,
+            )
+            .with_dry_run(true, true)
+        };
+
+        // No app installed at all -> fails closed.
+        assert!(matches!(
+            make().apply(ComponentKind::Os).await.unwrap_err(),
+            Error::MinAppNotMet { installed: None, .. }
+        ));
+
+        // Older app installed -> refused, with the version in the error.
+        let layout = ReleaseLayout::new(paths.clone());
+        layout
+            .record_version(ComponentKind::App, "0.1.9-gabc1234")
+            .unwrap();
+        assert!(matches!(
+            make().apply(ComponentKind::Os).await.unwrap_err(),
+            Error::MinAppNotMet { installed: Some(v), .. } if v == "0.1.9-gabc1234"
+        ));
+
+        // Satisfying app installed -> the (dry-run) apply goes through.
+        layout
+            .record_version(ComponentKind::App, "0.2.0-gdef5678")
+            .unwrap();
+        make().apply(ComponentKind::Os).await.unwrap();
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn source_url_shapes_resolve() {
         // GitHub with explicit tag.
