@@ -13,12 +13,15 @@
 //!    automatic rollback (a two-phase trial — see [`crate::trial`]); OS/MCU =
 //!    gated plumbing.
 
-use crate::config::{UpdateMode, UpdaterConfig};
+use crate::bootenv::{BootEnv, FwEnv};
+use crate::config::{OsWriterKind, UpdateMode, UpdaterConfig};
 use crate::error::{Error, Result};
 use crate::install::{
     DryMcuFlasher, DryOsSlotWriter, HealthCheck, HttpHealthCheck, McuFlasher, OsSlotWriter,
     ReleaseInstaller, SystemInstaller,
 };
+use crate::os_slot::AbSlotWriter;
+use crate::os_trial::{self, OsTrialOutcome};
 use crate::release::ReleaseLayout;
 use crate::source::{build_source, ReleaseSource};
 use crate::status::{now_unix, AvailableUpdate, UpdateStatus, VersionEntry};
@@ -43,6 +46,7 @@ pub struct Updater {
     installer: Box<dyn ReleaseInstaller>,
     health: Box<dyn HealthCheck>,
     os_writer: Box<dyn OsSlotWriter>,
+    boot_env: Arc<dyn BootEnv>,
     mcu_flasher: Box<dyn McuFlasher>,
     keep_releases: usize,
     os_dry_run: bool,
@@ -80,6 +84,7 @@ impl Updater {
             installer,
             health,
             os_writer: Box::new(DryOsSlotWriter),
+            boot_env: Arc::new(FwEnv),
             mcu_flasher: Box::new(DryMcuFlasher),
             keep_releases,
             os_dry_run: true,
@@ -92,6 +97,10 @@ impl Updater {
 
     pub fn with_os_writer(mut self, w: Box<dyn OsSlotWriter>) -> Self {
         self.os_writer = w;
+        self
+    }
+    pub fn with_boot_env(mut self, e: Arc<dyn BootEnv>) -> Self {
+        self.boot_env = e;
         self
     }
     pub fn with_mcu_flasher(mut self, f: Box<dyn McuFlasher>) -> Self {
@@ -282,21 +291,20 @@ impl Updater {
                 .os_writer
                 .write_inactive_slot(&component, &staged, self.os_dry_run)
                 .await
-                .and_then(|_| {
-                    // A dry-run applied nothing: leave the recorded version
-                    // alone so check()/status keep reporting the update as
-                    // pending (#39).
-                    if self.os_dry_run {
-                        Ok(())
-                    } else {
-                        self.layout.record_version(kind, &component.version)
-                    }
-                })
                 .map(|_| {
+                    // Never record the version here: a live write only staged
+                    // + armed the slot — the version is recorded by the OS
+                    // trial resolution after the first healthy boot of the
+                    // new slot (and a dry-run applied nothing at all, #39).
+                    // Until then check()/status keep reporting it pending.
                     format!(
                         "os -> {} ({})",
                         component.version,
-                        if self.os_dry_run { "dry-run" } else { "live" }
+                        if self.os_dry_run {
+                            "dry-run"
+                        } else {
+                            "written to inactive slot + armed; reboot to activate"
+                        }
                     )
                 }),
             ComponentKind::McuFrozen | ComponentKind::McuSensor => self
@@ -365,6 +373,44 @@ impl Updater {
         Some(outcome)
     }
 
+    /// Resolve the OS-tier trial (see [`crate::os_trial`]): after a healthy
+    /// boot, disarm the U-Boot env (mark-good) and record the committed OS
+    /// version; detect a U-Boot auto-revert. `None` when there is nothing to
+    /// do (env unreadable / not an A/B system / nothing pending).
+    pub async fn resolve_os_trial(&self) -> Option<OsTrialOutcome> {
+        let outcome =
+            os_trial::resolve_os_trial(&self.layout, &*self.boot_env, &*self.health).await?;
+        match &outcome {
+            OsTrialOutcome::Committed { version } => self.set_status(|s| {
+                s.last_applied = Some(format!("os -> {version} (committed after healthy boot)"));
+                s.last_error = None;
+            }),
+            OsTrialOutcome::RolledBack { version } => self.set_status(|s| {
+                s.last_error = Some(format!(
+                    "os {version} did not activate (U-Boot rolled back / trial cancelled)"
+                ));
+            }),
+            OsTrialOutcome::Disarmed | OsTrialOutcome::StillArmed
+            | OsTrialOutcome::AwaitingReboot => {}
+        }
+        Some(outcome)
+    }
+
+    /// Like [`Self::resolve_os_trial`], but keeps retrying while the trial is
+    /// armed-and-unhealthy (the disarm must eventually happen or U-Boot will
+    /// revert an actually-good slot after 3 more reboots). Returns once the
+    /// trial settles or turns out to be idle.
+    async fn resolve_os_trial_until_settled(&self) {
+        loop {
+            match self.resolve_os_trial().await {
+                Some(OsTrialOutcome::StillArmed) => {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                }
+                _ => return,
+            }
+        }
+    }
+
     /// Roll the app tier back to the previous release.
     pub fn rollback(&self) -> Result<String> {
         match self.layout.rollback(&*self.installer) {
@@ -390,8 +436,11 @@ impl Updater {
     /// with dry-run gates honoured).
     pub async fn run(self) -> anyhow::Result<()> {
         // A half-finished activation must be resolved before anything else —
-        // this process may itself be the new release on trial.
+        // this process may itself be the new release on trial. Same for the
+        // OS tier: after the activation reboot, this boot must mark-good (or
+        // U-Boot will revert a perfectly good slot after 3 more reboots).
         self.resolve_pending_trial().await;
+        self.resolve_os_trial_until_settled().await;
         if !self.enabled {
             log::info!("pod-updater disabled; not polling");
             std::future::pending::<()>().await;
@@ -410,6 +459,11 @@ impl Updater {
             self.sources.len(),
         );
         loop {
+            // Cheap when idle (one env read / marker stat); keeps mark-good
+            // and revert detection working across poll ticks (e.g. an arm
+            // done by a manual apply between ticks, resolved after the
+            // owner's reboot without a podd restart in between).
+            self.resolve_os_trial().await;
             match self.check().await {
                 Ok(available) if available.is_empty() => {
                     log::debug!("pod-updater: up to date");
@@ -486,6 +540,9 @@ impl Updater {
         );
         let (status_tx, _) = watch::channel(status);
 
+        let boot_env: Arc<dyn BootEnv> = Arc::new(FwEnv);
+        let os_writer = select_os_writer(config, boot_env.clone());
+
         Ok(Updater {
             channel: config.channel.clone(),
             mode: config.mode,
@@ -495,7 +552,8 @@ impl Updater {
             layout,
             installer,
             health,
-            os_writer: Box::new(DryOsSlotWriter),
+            os_writer,
+            boot_env,
             mcu_flasher: Box::new(DryMcuFlasher),
             keep_releases: config.keep_releases,
             os_dry_run: config.os_dry_run,
@@ -504,6 +562,32 @@ impl Updater {
             poll_interval: config.poll_interval,
             status_tx,
         })
+    }
+}
+
+/// Pick the Tier-1 OS writer per config. `Auto` requires the on-device A/B
+/// contract to be visibly present — the fw_env.config the env tools need AND
+/// the slot-2 block device — and falls back to the plan-only dry writer
+/// otherwise (dev boxes, non-A/B installs).
+fn select_os_writer(config: &UpdaterConfig, boot_env: Arc<dyn BootEnv>) -> Box<dyn OsSlotWriter> {
+    let live = || -> Box<dyn OsSlotWriter> {
+        Box::new(AbSlotWriter::mmc(
+            boot_env.clone(),
+            config.paths.release_root.clone(),
+        ))
+    };
+    match config.os_writer {
+        OsWriterKind::Dry => Box::new(DryOsSlotWriter),
+        OsWriterKind::Mmc => live(),
+        OsWriterKind::Auto => {
+            let has_hw = std::path::Path::new("/etc/fw_env.config").exists()
+                && std::path::Path::new(crate::os_slot::MMC_SLOT_DEVICES[1]).exists();
+            if has_hw {
+                live()
+            } else {
+                Box::new(DryOsSlotWriter)
+            }
+        }
     }
 }
 
@@ -532,17 +616,12 @@ pub async fn run_from_env() -> anyhow::Result<()> {
     }
 }
 
-/// Resolve a pending app trial without a full [`Updater`] (used when the
-/// updater is disabled or its config is broken — trial resolution must not
-/// depend on sources/trust being configured).
+/// Resolve pending app AND OS trials without a full [`Updater`] (used when
+/// the updater is disabled or its config is broken — trial resolution must
+/// not depend on sources/trust being configured).
 async fn resolve_trial_standalone(config: &UpdaterConfig) {
-    if trial::load(&config.paths).is_none() {
-        return;
-    }
+    let has_app_trial = trial::load(&config.paths).is_some();
     let layout = ReleaseLayout::new(config.paths.clone());
-    let installer = SystemInstaller {
-        service: PODD_SERVICE.into(),
-    };
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
         .build()
@@ -558,7 +637,24 @@ async fn resolve_trial_standalone(config: &UpdaterConfig) {
         url: config.health_url.clone(),
         timeout: config.health_timeout,
     };
-    trial::resolve_trial(&layout, &installer, &health, config.keep_releases).await;
+    if has_app_trial {
+        let installer = SystemInstaller {
+            service: PODD_SERVICE.into(),
+        };
+        trial::resolve_trial(&layout, &installer, &health, config.keep_releases).await;
+    }
+    // OS mark-good must run even with the updater disabled — otherwise a
+    // healthy new slot would be reverted by U-Boot after 3 more reboots.
+    // Retry while armed-and-unhealthy, same as Updater::run.
+    let env = FwEnv;
+    loop {
+        match os_trial::resolve_os_trial(&layout, &env, &health).await {
+            Some(OsTrialOutcome::StillArmed) => {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            }
+            _ => return,
+        }
+    }
 }
 
 /// Helper for callers wanting a shared updater + its status receiver.

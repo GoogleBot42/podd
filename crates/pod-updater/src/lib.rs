@@ -23,10 +23,15 @@
 //!   [`release::ReleaseLayout`], activated as a two-phase **trial**: the new
 //!   release is canaried *after* the restart, by the new process itself, and
 //!   is committed or automatically rolled back (see [`trial`]). Fully live.
-//! - **Tier 1 (OS)** and **Tier 3 (MCU)** — detection + verification are live,
-//!   but the destructive eMMC A/B write (`fw_setenv`) and STM32 `.bbin` flash
-//!   are gated behind [`install::OsSlotWriter`] / [`install::McuFlasher`] with a
-//!   `dry_run` default and `// TODO(live-cutover)`.
+//! - **Tier 1 (OS)** — live on the clean-room SD A/B layout:
+//!   [`os_slot::AbSlotWriter`] streams the image onto the inactive slot,
+//!   verifies it by readback, and arms the U-Boot trial env; U-Boot counts
+//!   boot attempts and auto-reverts, and [`os_trial`] marks-good after the
+//!   first healthy boot. Still behind the `dry_run` default
+//!   (`PODD_UPDATER_OS_DRY_RUN`), and never reboots on its own.
+//! - **Tier 3 (MCU)** — detection + verification are live, but the STM32
+//!   `.bbin` flash is gated behind [`install::McuFlasher`] with a `dry_run`
+//!   default and `// TODO(live-cutover)`.
 //!
 //! The privileged/destructive/networked steps all sit behind traits
 //! ([`source::ReleaseSource`], [`install::ReleaseInstaller`],
@@ -35,19 +40,25 @@
 //! and offline.
 
 pub mod agent;
+pub mod bootenv;
 pub mod config;
 pub mod error;
 pub mod install;
+pub mod os_slot;
+pub mod os_trial;
 pub mod release;
 pub mod source;
 pub mod status;
 pub mod trial;
 
 pub use agent::{run_from_env, shared, Updater};
+pub use bootenv::{BootEnv, FakeEnv, FwEnv};
 pub use config::{
-    PubKeySource, ReleaseSourceUrl, ResolvedSource, TrustConfig, UpdateMode, UpdaterConfig,
-    UpdaterPaths,
+    OsWriterKind, PubKeySource, ReleaseSourceUrl, ResolvedSource, TrustConfig, UpdateMode,
+    UpdaterConfig, UpdaterPaths,
 };
+pub use os_slot::AbSlotWriter;
+pub use os_trial::{resolve_os_trial, OsPending, OsTrialOutcome};
 pub use error::{Error, Result};
 pub use install::{
     DryMcuFlasher, DryOsSlotWriter, FnHealthCheck, HealthCheck, HttpHealthCheck, McuFlasher,
@@ -468,12 +479,15 @@ mod tests {
             "dry-run apply must leave both updates pending"
         );
 
-        // Live: both refuse with the gated error.
+        // Live: both refuse. OS because this Updater carries the fallback
+        // DryOsSlotWriter (no A/B hardware wired in tests); MCU because its
+        // live flash path is still unimplemented.
         let live = make(false, false);
-        assert!(matches!(
-            live.apply(ComponentKind::Os).await.unwrap_err(),
-            Error::LiveApplyNotImplemented(ComponentKind::Os)
-        ));
+        let os_err = live.apply(ComponentKind::Os).await.unwrap_err();
+        assert!(
+            os_err.to_string().contains("no A/B slot hardware"),
+            "unexpected OS error: {os_err}"
+        );
         assert!(matches!(
             live.apply(ComponentKind::McuFrozen).await.unwrap_err(),
             Error::LiveApplyNotImplemented(ComponentKind::McuFrozen)

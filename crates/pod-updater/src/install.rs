@@ -6,14 +6,16 @@
 //!   use [`NoopInstaller`].
 //! - [`HealthCheck`] — the canary. Real impl polls the local API; tests use
 //!   [`FnHealthCheck`].
-//! - [`OsSlotWriter`] / [`McuFlasher`] — Tier 1 / Tier 3. The real impls
-//!   **refuse** to perform destructive writes: they log a plan under `dry_run`
-//!   and error with `// TODO(live-cutover)` when armed, until the live path
-//!   lands.
+//! - [`OsSlotWriter`] — Tier 1. Live impl: [`crate::os_slot::AbSlotWriter`]
+//!   (write-verify-arm on the SD A/B slots); [`DryOsSlotWriter`] is the
+//!   fallback where the A/B contract isn't present.
+//! - [`McuFlasher`] — Tier 3. Still gated: [`DryMcuFlasher`] logs a plan under
+//!   `dry_run` and errors with `// TODO(live-cutover)` when armed, until the
+//!   live flash path lands.
 
 use crate::error::{Error, Result};
 use async_trait::async_trait;
-use pod_update::{Component, ComponentKind};
+use pod_update::Component;
 use std::path::Path;
 
 // ---------------------------------------------------------------------------
@@ -167,9 +169,11 @@ pub trait OsSlotWriter: Send + Sync {
     ) -> Result<SlotPlan>;
 }
 
-/// Default OS writer: computes the plan and logs it under dry-run; refuses to
-/// perform the destructive eMMC write + `fw_setenv` flip until the live path is
-/// implemented.
+/// Fallback OS writer for systems without the A/B contract (dev boxes,
+/// non-A/B installs): computes and logs the plan, and refuses an armed apply —
+/// the live path is [`crate::os_slot::AbSlotWriter`], selected automatically
+/// when `/etc/fw_env.config` + the slot devices exist (see
+/// [`crate::config::OsWriterKind`]).
 pub struct DryOsSlotWriter;
 
 #[async_trait]
@@ -180,15 +184,17 @@ impl OsSlotWriter for DryOsSlotWriter {
         image: &Path,
         dry_run: bool,
     ) -> Result<SlotPlan> {
-        // In the real i.MX layout the active slot comes from `fw_printenv
-        // mmcpart`; the inactive one is the other of {rootfs_a, rootfs_b}. We
-        // model that here without touching the device.
+        // On the real SD layout the active slot comes from `fw_printenv
+        // mmcpart` (1=A=p1, 2=B=p2). We model that here without touching
+        // anything.
         let plan = SlotPlan {
-            inactive_slot: "rootfs_b (inactive; from fw_printenv mmcpart)".into(),
-            env_flip: "fw_setenv mmcpart <inactive>; fw_setenv bootcount 0".into(),
+            inactive_slot: "inactive SD slot (from fw_printenv mmcpart; 1=A, 2=B)".into(),
+            env_flip: "fw_setenv batch: mmcpart/next_mmcpart flip + upgrade_available=1 \
+                       bootcount=0 ustate=1"
+                .into(),
         };
         log::warn!(
-            "OS update {} v{}: would write {} to {} then {} // TODO(live-cutover)",
+            "OS update {} v{}: would write {} to {} then {} (no A/B slot hardware wired)",
             component.name,
             component.version,
             image.display(),
@@ -198,8 +204,11 @@ impl OsSlotWriter for DryOsSlotWriter {
         if dry_run {
             Ok(plan)
         } else {
-            // Destructive eMMC A/B write + fw_setenv is deliberately unimplemented.
-            Err(Error::LiveApplyNotImplemented(ComponentKind::Os))
+            Err(Error::Config(
+                "no A/B slot hardware detected (missing /etc/fw_env.config or slot \
+                 devices); cannot live-apply an OS update here"
+                    .into(),
+            ))
         }
     }
 }
