@@ -167,4 +167,7 @@ pub struct Shared {
     pub health: watch::Receiver<crate::health::HealthMap>,
     /// Command sink into the managers.
     pub commands: mpsc::Sender<Command>,
+    /// Vitals history (HR/HRV/breathing), fed by the sensor manager's
+    /// biometrics processors; `None` if the store could not be opened.
+    pub vitals: Option<std::sync::Arc<crate::biometrics::VitalsStore>>,
 }

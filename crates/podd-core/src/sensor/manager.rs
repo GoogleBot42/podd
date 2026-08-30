@@ -121,6 +121,7 @@ pub async fn supervise(
     mut cmd_rx: mpsc::Receiver<Command>,
     health: HealthRegistry,
     dry_run: bool,
+    vitals: Option<std::sync::Arc<crate::biometrics::VitalsStore>>,
 ) -> Result<(), SensorError> {
     const RETRY_DELAY: Duration = Duration::from_secs(10);
     // A sensor MCU that answers nothing at either baud is usually hard-wedged:
@@ -156,6 +157,7 @@ pub async fn supervise(
             health.clone(),
             dry_run,
             &mut dismissed,
+            vitals.clone(),
         )
         .await;
         match res {
@@ -216,6 +218,7 @@ pub async fn run(
     health: HealthRegistry,
     dry_run: bool,
     dismissed: &mut [bool; 2],
+    vitals: Option<std::sync::Arc<crate::biometrics::VitalsStore>>,
 ) -> Result<(), SensorError> {
     log::info!("Initializing Sensor Subsystem...");
     health.report(health::SENSOR, Health::Started, "discovering the sensor MCU");
@@ -267,6 +270,15 @@ pub async fn run(
     let hygiene_at = Instant::now() + Duration::from_secs(2);
     let mut hygiene_done = false;
 
+    // Per-side vitals processors (HR/HRV/breathing from the piezo stream).
+    // Rebuilt per attempt like SensorState: after an MCU dropout the signal
+    // history is stale anyway. Inert while the bed is empty (presence gate)
+    // and on Pod 3 streams (see `biometrics::processor`).
+    let mut biometrics = [
+        crate::biometrics::processor::SideProcessor::new(BedSide::Left),
+        crate::biometrics::processor::SideProcessor::new(BedSide::Right),
+    ];
+
     let mut taps = TapDetector::default();
     let mut interval = interval(Duration::from_millis(50));
     let mut last_recv = Instant::now();
@@ -313,6 +325,57 @@ pub async fn run(
                             log::info!("Double tap on {side} piezo: dismissing alarm");
                             scheduler.send_alarm_stop(dry_run, side).await;
                             state.set_dismissed(&side, true);
+                        }
+                    }
+
+                    // Vitals: feed the piezo stream to the per-side processors
+                    // and persist whatever they emit (~1 record/side/minute).
+                    // Records are only persisted once the clock is NTP-synced —
+                    // a 1970 timestamp would poison the history.
+                    if let Some(store) = &vitals {
+                        let now = jiff::Timestamp::now().as_second();
+                        let mut emitted = Vec::new();
+                        match &packet {
+                            SensorPacket::Pod4Piezo(d) => {
+                                for (proc_, samples) in
+                                    biometrics.iter_mut().zip([&d.left, &d.right])
+                                {
+                                    if let Some(rec) = proc_
+                                        .push_samples(samples.iter().map(|&s| s as f64), now)
+                                    {
+                                        emitted.push(rec);
+                                    }
+                                }
+                            }
+                            SensorPacket::Piezo(d) => {
+                                for (proc_, samples) in biometrics
+                                    .iter_mut()
+                                    .zip([&d.left_samples, &d.right_samples])
+                                {
+                                    if let Some(rec) = proc_
+                                        .push_samples(samples.iter().map(|&s| s as f64), now)
+                                    {
+                                        emitted.push(rec);
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                        for rec in emitted {
+                            if !state.clock_synced {
+                                log::debug!("vitals record dropped (clock not NTP-synced yet)");
+                                continue;
+                            }
+                            log::debug!(
+                                "vitals: {} hr={} hrv={} br={}",
+                                rec.side,
+                                rec.heart_rate,
+                                rec.hrv,
+                                rec.breathing_rate
+                            );
+                            if let Err(e) = store.append(&rec) {
+                                log::warn!("vitals append failed: {e}");
+                            }
                         }
                     }
 

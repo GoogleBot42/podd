@@ -229,7 +229,18 @@ pub async fn serve(
     control: Arc<dyn PodControl>,
     spa_dir: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    let app = router(store, control, spa_dir);
+    serve_with_vitals(addr, store, control, spa_dir, None).await
+}
+
+/// [`serve`] plus a vitals history store backing `/metrics/vitals*`.
+pub async fn serve_with_vitals(
+    addr: SocketAddr,
+    store: Arc<StateStore>,
+    control: Arc<dyn PodControl>,
+    spa_dir: Option<PathBuf>,
+    vitals: Option<Arc<podd_core::biometrics::VitalsStore>>,
+) -> anyhow::Result<()> {
+    let app = router_with_vitals(store, control, spa_dir, vitals);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     log::info!("api listening on {addr}");
     axum::serve(listener, app).await?;

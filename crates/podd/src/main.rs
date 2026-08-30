@@ -107,7 +107,7 @@ async fn main() -> anyhow::Result<()> {
     // `updater_fut` only ever resolves on shutdown, never on a transient error.
     tokio::try_join!(
         core_fut,
-        api::serve(api_addr, store, control, spa_dir),
+        api::serve_with_vitals(api_addr, store, control, spa_dir, shared.vitals.clone()),
         updater_fut,
     )?;
     Ok(())
