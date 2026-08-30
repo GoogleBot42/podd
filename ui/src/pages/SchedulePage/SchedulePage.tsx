@@ -15,13 +15,14 @@ import PowerScheduleSection from './PowerScheduleSection.tsx';
 import TemperatureAdjustmentsAccordion from './TemperatureAdjustmentsAccordion.tsx';
 import { DayOfWeek, Schedules } from '@api/schedulesSchema.ts';
 import { postSchedules } from '@api/schedules';
-import { useAppStore } from '@state/appStore.tsx';
+import { Side, useAppStore } from '@state/appStore.tsx';
 import { useSchedules } from '@api/schedules';
 import { useScheduleStore } from './scheduleStore.tsx';
 import { useSettings } from '@api/settings';
 import { LOWERCASE_DAYS } from './days.ts';
 import TemperatureScheduleChart from './ScheduleChart.tsx';
 import ErrorBoundary from '@components/ErrorBoundary.tsx';
+import UnsavedChangesDialog from './UnsavedChangesDialog.tsx';
 
 
 const getAdjustedDayOfWeek = (): DayOfWeek => {
@@ -40,7 +41,7 @@ const getAdjustedDayOfWeek = (): DayOfWeek => {
 
 
 export default function SchedulePage() {
-  const { setIsUpdating, side } = useAppStore();
+  const { setIsUpdating, side, setSide } = useAppStore();
   const { data: schedules, refetch } = useSchedules();
   const {
     selectedSchedule,
@@ -48,12 +49,46 @@ export default function SchedulePage() {
     selectedDays,
     selectedDay,
     reloadScheduleData,
-    selectDay
+    selectDay,
+    changesPresent,
   } = useScheduleStore();
   const { data: settings } = useSettings();
   const [saveError, setSaveError] = useState(false);
   const displayCelsius = settings?.temperatureFormat === 'celsius';
-  // TODO: Add changes lost notification using changesPresent when user tries to switch tab before saving
+
+  // Switching day tabs or sides both call reloadScheduleData, which resets
+  // selectedSchedule from originalSchedules with no warning — silently
+  // discarding unsaved edits (#59). Route both through this guard: if there
+  // are unsaved changes, stash the action and confirm before running it.
+  const [pendingChange, setPendingChange] = useState<(() => void) | null>(null);
+
+  const guardedChange = (action: () => void) => {
+    if (changesPresent) {
+      setPendingChange(() => action);
+    } else {
+      action();
+    }
+  };
+
+  const handleDayChangeRequest = (dayIndex: number) => guardedChange(() => selectDay(dayIndex));
+  const handleSideChangeRequest = (newSide: Side) => guardedChange(() => setSide(newSide));
+
+  const confirmDiscard = () => {
+    pendingChange?.();
+    setPendingChange(null);
+  };
+  const cancelDiscard = () => setPendingChange(null);
+
+  // Also warn on browser-level navigation away (tab close/refresh) — the
+  // MUI dialog above only covers in-page tab/side switches.
+  useEffect(() => {
+    if (!changesPresent) return;
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [changesPresent]);
 
   // Jumping to today is an initialisation step, not something to redo on every
   // refetch — re-running it on the post-save refetch threw the user back to
@@ -109,9 +144,9 @@ export default function SchedulePage() {
         mb: 15,
       } }
     >
-      <SideControl/>
+      <SideControl onRequestSideChange={ handleSideChangeRequest }/>
 
-      <DayTabs/>
+      <DayTabs onRequestDayChange={ handleDayChangeRequest }/>
       <ErrorBoundary componentName='Scheduling chart'>
         <TemperatureScheduleChart />
       </ErrorBoundary>
@@ -139,6 +174,12 @@ export default function SchedulePage() {
           Failed to save schedule
         </Alert>
       </Snackbar>
+
+      <UnsavedChangesDialog
+        open={ pendingChange !== null }
+        onDiscard={ confirmDiscard }
+        onCancel={ cancelDiscard }
+      />
     </PageContainer>
   );
 }
