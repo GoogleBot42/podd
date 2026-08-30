@@ -15,9 +15,9 @@ import { useVitalsRecords } from '@api/vitals.ts';
 
 /**
  * Standalone per-day vitals view, fed by podd's on-device biometrics
- * pipeline (#12). The sleep page shows the same charts scoped to an
- * analyzed night; this page works without sleep records, which podd
- * doesn't generate yet.
+ * pipeline (#12). The sleep page shows the same charts scoped to a detected
+ * night (#141); this page works whether or not a night was detected — a nap,
+ * or the hours before a session closes, only show up here.
  */
 export default function VitalsPage() {
   const { side } = useAppStore();

@@ -23,10 +23,18 @@ import MovementChart from '@components/MovementChart.tsx';
 import ErrorBoundary from '@components/ErrorBoundary.tsx';
 
 
+/**
+ * Sleep records come from podd's on-device detection (#141): a night is
+ * recorded once it closes, so the message spells out what "no records" means
+ * rather than reading as a failure.
+ */
 const NoData = () => {
   return (
     <Alert severity="info">
-      No data available for the selected time range
+      No sleep records in this range. A night is recorded about 15 minutes
+      after you get up, and only when it adds up to more than 3 hours in bed —
+      naps and the night in progress don&apos;t appear here. Per-minute vitals
+      are on the Vitals page either way.
     </Alert>
   );
 };
