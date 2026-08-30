@@ -72,7 +72,8 @@ impl Updater {
         keep_releases: usize,
     ) -> Self {
         let channel = channel.into();
-        let status = UpdateStatus::new(true, channel.clone(), mode.as_str().into());
+        let mut status = UpdateStatus::new(true, channel.clone(), mode.as_str().into());
+        status.current_versions = installed_versions(&layout);
         let (status_tx, _) = watch::channel(status);
         Updater {
             channel,
@@ -126,6 +127,15 @@ impl Updater {
     /// A clone of the current status.
     pub fn status(&self) -> UpdateStatus {
         self.status_tx.borrow().clone()
+    }
+
+    /// Re-read the installed versions off disk into the published status,
+    /// without contacting a release source. Lets the observability surface
+    /// report what the device runs even when no source is configured or the
+    /// last check failed.
+    pub fn refresh_versions(&self) {
+        let versions = installed_versions(&self.layout);
+        self.set_status(|s| s.current_versions = versions);
     }
 
     fn set_status(&self, f: impl FnOnce(&mut UpdateStatus)) {
@@ -184,7 +194,7 @@ impl Updater {
                     })
                     .cloned()
                     .collect();
-                let versions = self.current_versions(&manifest);
+                let versions = installed_versions(&self.layout);
                 let avail_status: Vec<AvailableUpdate> =
                     available.iter().map(AvailableUpdate::from).collect();
                 self.set_status(|s| {
@@ -206,25 +216,6 @@ impl Updater {
                 Err(e)
             }
         }
-    }
-
-    /// Installed versions per tier (App from the symlink; others from the record
-    /// or the manifest as a fallback label).
-    fn current_versions(&self, _manifest: &Manifest) -> Vec<VersionEntry> {
-        [
-            ComponentKind::App,
-            ComponentKind::Os,
-            ComponentKind::McuFrozen,
-            ComponentKind::McuSensor,
-            ComponentKind::Bootloader,
-        ]
-        .into_iter()
-        .filter_map(|kind| {
-            self.layout
-                .installed_version(kind)
-                .map(|version| VersionEntry { kind, version })
-        })
-        .collect()
     }
 
     /// Download a component's artifact to staging and verify size+digest before
@@ -445,7 +436,7 @@ impl Updater {
     /// the loop keeps polling. In `Auto` mode, App updates are applied
     /// automatically; OS/MCU updates are only *reported* (apply them explicitly,
     /// with dry-run gates honoured).
-    pub async fn run(self) -> anyhow::Result<()> {
+    pub async fn run(&self) -> anyhow::Result<()> {
         // A half-finished activation must be resolved before anything else —
         // this process may itself be the new release on trial. Same for the
         // OS tier: after the activation reboot, this boot must mark-good (or
@@ -544,11 +535,12 @@ impl Updater {
             timeout: config.health_timeout,
         });
 
-        let status = UpdateStatus::new(
+        let mut status = UpdateStatus::new(
             config.enabled,
             config.channel.clone(),
             config.mode.as_str().into(),
         );
+        status.current_versions = installed_versions(&layout);
         let (status_tx, _) = watch::channel(status);
 
         let boot_env: Arc<dyn BootEnv> = Arc::new(FwEnv);
@@ -574,6 +566,26 @@ impl Updater {
             status_tx,
         })
     }
+}
+
+/// Installed versions per tier, read off disk (App from the `current` symlink;
+/// the other tiers from the recorded `versions.json`). Tiers that were never
+/// installed through the updater are simply absent.
+fn installed_versions(layout: &ReleaseLayout) -> Vec<VersionEntry> {
+    [
+        ComponentKind::App,
+        ComponentKind::Os,
+        ComponentKind::McuFrozen,
+        ComponentKind::McuSensor,
+        ComponentKind::Bootloader,
+    ]
+    .into_iter()
+    .filter_map(|kind| {
+        layout
+            .installed_version(kind)
+            .map(|version| VersionEntry { kind, version })
+    })
+    .collect()
 }
 
 /// Pick the Tier-1 OS writer per config. `Auto` requires the on-device A/B
@@ -607,23 +619,42 @@ fn select_os_writer(config: &UpdaterConfig, boot_env: Arc<dyn BootEnv>) -> Box<d
 /// never resolves with `Err` for transient reasons, so it will not tear the
 /// process down on a failed check.
 pub async fn run_from_env() -> anyhow::Result<()> {
+    let (_updater, run) = from_env_shared();
+    run.await
+}
+
+/// [`run_from_env`] split in two, for callers that also want to *observe* and
+/// drive the agent (the `api` crate's update panel): the shared handle plus the
+/// future running its poll loop. The handle is `None` only when the agent could
+/// not be built at all (bad trust config) — the future still resolves any
+/// pending trial and then idles, exactly as [`run_from_env`] does.
+///
+/// A disabled agent (`PODD_UPDATER_ENABLED=false`) still yields a handle: its
+/// status is worth showing, and [`Updater::run`] handles the not-polling case.
+#[allow(clippy::type_complexity)]
+pub fn from_env_shared() -> (
+    Option<Arc<Updater>>,
+    std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send>>,
+) {
     let config = UpdaterConfig::from_env();
-    if !config.enabled {
-        // Even with polling disabled, a half-finished activation (this process
-        // may be a new release on trial) must be committed or rolled back.
-        resolve_trial_standalone(&config).await;
-        log::info!("pod-updater disabled via config");
-        std::future::pending::<()>().await;
-        return Ok(());
-    }
     match Updater::from_config(&config) {
-        Ok(updater) => updater.run().await,
-        Err(e) => {
-            resolve_trial_standalone(&config).await;
-            log::error!("pod-updater: failed to build ({e}); idling");
-            std::future::pending::<()>().await;
-            Ok(())
+        Ok(updater) => {
+            let updater = Arc::new(updater);
+            let run = updater.clone();
+            (Some(updater), Box::pin(async move { run.run().await }))
         }
+        Err(e) => (
+            None,
+            Box::pin(async move {
+                // Even with no usable config, a half-finished activation (this
+                // process may be a new release on trial) must be committed or
+                // rolled back.
+                resolve_trial_standalone(&config).await;
+                log::error!("pod-updater: failed to build ({e}); idling");
+                std::future::pending::<()>().await;
+                Ok(())
+            }),
+        ),
     }
 }
 

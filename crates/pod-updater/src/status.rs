@@ -2,15 +2,16 @@
 //!
 //! A single [`UpdateStatus`] value is published on a [`tokio::sync::watch`] by
 //! the [`crate::Updater`]; the `api` crate (or a CLI) can subscribe and surface
-//! it at `/version` / an update panel without depending on the agent's
-//! internals. Everything here is `Serialize` so it can go straight onto the
-//! wire.
+//! it at `GET /api/updates` / the UI's update panel without depending on the
+//! agent's internals. Everything here is `Serialize` — `camelCase`, matching
+//! the rest of podd's JSON API — so it can go straight onto the wire.
 
 use pod_update::ComponentKind;
 use serde::Serialize;
 
 /// The version of one installed component (as the device currently believes it).
 #[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct VersionEntry {
     pub kind: ComponentKind,
     pub version: String,
@@ -18,6 +19,7 @@ pub struct VersionEntry {
 
 /// A component the channel offers that differs from what is installed.
 #[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AvailableUpdate {
     pub kind: ComponentKind,
     pub name: String,
@@ -36,6 +38,7 @@ impl From<&pod_update::Component> for AvailableUpdate {
 
 /// Latest-value snapshot of the updater, published on a `watch` channel.
 #[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateStatus {
     pub enabled: bool,
     pub channel: String,

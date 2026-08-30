@@ -51,7 +51,7 @@ pub mod source;
 pub mod status;
 pub mod trial;
 
-pub use agent::{run_from_env, shared, Updater};
+pub use agent::{from_env_shared, run_from_env, shared, Updater};
 pub use bootenv::{BootEnv, FakeEnv, FwEnv};
 pub use config::{
     OsWriterKind, PubKeySource, ReleaseSourceUrl, ResolvedSource, TrustConfig, UpdateMode,

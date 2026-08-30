@@ -1316,3 +1316,105 @@ async fn metrics_endpoints_are_empty_without_stores() {
         assert!(body_json(resp).await.as_array().unwrap().is_empty());
     }
 }
+// ---------------------------------------------------------------------------
+// updates (REPLACEMENT_PLAN §9 observability; issue #1)
+// ---------------------------------------------------------------------------
+
+fn build_with_updates(updates: Arc<api::MockUpdates>) -> axum::Router {
+    let store = Arc::new(StateStore::in_memory());
+    let control = Arc::new(MockControl::new());
+    api::router_full(
+        store,
+        control as Arc<dyn PodControl>,
+        None,
+        Default::default(),
+        Some(updates as Arc<dyn api::UpdateOps>),
+    )
+}
+
+/// Without an agent the surface still reports the daemon's build stamp, and
+/// says "no updater" instead of implying everything is up to date.
+#[tokio::test]
+async fn updates_without_an_agent() {
+    let (app, _c, _s) = build();
+    let resp = app.clone().oneshot(get("/api/updates")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = body_json(resp).await;
+    assert_eq!(v["daemon"]["version"], json!(podd_core::VERSION));
+    assert_eq!(v["daemon"]["rev"], json!(podd_core::GIT_REV));
+    assert!(v["updater"].is_null());
+
+    for path in ["/api/updates/check", "/api/updates/rollback"] {
+        let resp = app
+            .clone()
+            .oneshot(post_json(path, &json!({})))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
+    }
+}
+
+#[tokio::test]
+async fn updates_report_the_agent_status_in_camel_case() {
+    let mut status = api::UpdateStatus::new(true, "stable".into(), "manual".into());
+    status.last_check_unix = Some(1_700_000_000);
+    status.last_check_ok = true;
+    status.last_applied = Some("app -> 0.2.0 (committed)".into());
+    let app = build_with_updates(Arc::new(api::MockUpdates::new(status)));
+
+    let v = body_json(app.oneshot(get("/api/updates")).await.unwrap()).await;
+    assert_eq!(v["updater"]["enabled"], json!(true));
+    assert_eq!(v["updater"]["channel"], json!("stable"));
+    assert_eq!(v["updater"]["mode"], json!("manual"));
+    assert_eq!(v["updater"]["lastCheckUnix"], json!(1_700_000_000_i64));
+    assert_eq!(v["updater"]["lastCheckOk"], json!(true));
+    assert!(v["updater"]["currentVersions"].is_array());
+    assert!(v["updater"]["available"].is_array());
+    assert!(v["updater"]["lastError"].is_null());
+    assert!(v["updater"]["lastApplied"].is_string());
+}
+
+#[tokio::test]
+async fn check_now_and_rollback_reach_the_agent() {
+    let updates = Arc::new(api::MockUpdates::default());
+    let app = build_with_updates(updates.clone());
+
+    let resp = app
+        .clone()
+        .oneshot(post_json("/api/updates/check", &json!({})))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    // the refreshed status comes back, so the UI needs no second round-trip
+    assert_eq!(body_json(resp).await["lastCheckOk"], json!(true));
+
+    let resp = app
+        .oneshot(post_json("/api/updates/rollback", &json!({})))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_json(resp).await["restored"], json!("0.0.1"));
+
+    assert_eq!(updates.calls(), vec!["check", "rollback"]);
+}
+
+/// A failed check must not read as success (an unreachable channel is not
+/// "up to date"), and a rollback with nothing to roll back to must say so.
+#[tokio::test]
+async fn update_action_failures_are_surfaced() {
+    let updates = Arc::new(api::MockUpdates::default().failing("no sources configured"));
+    let app = build_with_updates(updates);
+
+    let resp = app
+        .clone()
+        .oneshot(post_json("/api/updates/check", &json!({})))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+
+    let resp = app
+        .oneshot(post_json("/api/updates/rollback", &json!({})))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+}

@@ -7,6 +7,7 @@ import type { MovementRecord } from '@api/movement.ts';
 import type { SleepRecord } from '@api/sleepSchema.ts';
 import type { VitalsRecord } from '@api/vitals.ts';
 import type { ServerStatus } from '@api/serverStatusSchema.ts';
+import type { UpdatesReport } from '@api/schemas/updatesSchema.ts';
 import type { Jobs } from '@api/jobs.ts';
 import { UI_VERSION } from '@lib/version.ts';
 
@@ -379,6 +380,24 @@ const createServerStatus = (): ServerStatus => ({
   },
 });
 
+const createUpdates = (): UpdatesReport => ({
+  daemon: { version: UI_VERSION, rev: 'demo0000' },
+  updater: {
+    enabled: true,
+    channel: 'stable',
+    mode: 'manual',
+    currentVersions: [
+      { kind: 'app', version: UI_VERSION },
+      { kind: 'os', version: 'os-2026.08.1' },
+    ],
+    lastCheckUnix: Math.floor((now.getTime() - 12 * MINUTES_TO_MS) / 1000),
+    lastCheckOk: true,
+    available: [],
+    lastError: null,
+    lastApplied: `app -> ${UI_VERSION} (committed)`,
+  },
+});
+
 const createLogs = (): LogStore => ({
   'podd.log': [
     `[${new Date(now.getTime() - 3 * MINUTES_TO_MS).toISOString()}] INFO Starting podd demo mode`,
@@ -412,6 +431,7 @@ let settings = createSettings();
 let services = createServices();
 let deviceStatus = createDeviceStatus();
 let serverStatus = createServerStatus();
+let updates = createUpdates();
 let logsStore = createLogs();
 
 export const mergeDeep = (target: unknown, source: unknown): unknown => {
@@ -464,6 +484,24 @@ export const getServerStatus = () => serverStatus;
 export const setServerStatus = (next: ServerStatus) => {
   serverStatus = clone(next);
   return serverStatus;
+};
+
+export const getUpdates = () => updates;
+
+// Demo "check now": the channel is always reachable and always up to date.
+export const checkUpdates = () => {
+  if (updates.updater) {
+    updates = {
+      ...updates,
+      updater: {
+        ...updates.updater,
+        lastCheckUnix: Math.floor(Date.now() / 1000),
+        lastCheckOk: true,
+        lastError: null,
+      },
+    };
+  }
+  return updates.updater;
 };
 
 export const listSleepRecords = () => sleepRecords;

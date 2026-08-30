@@ -44,7 +44,10 @@ DIAG="$REPO/install/diag"
 log()  { printf '==> %s\n' "$*"; }
 die()  { printf '!!  %s\n' "$*" >&2; exit 1; }
 
-[ -f "$IMG" ] || die "image not found: $IMG (pass the raw .img, not the .gz)"
+if [ ! -f "$IMG" ]; then
+  [ -f "$IMG.gz" ] && die "image not found: $IMG (found $IMG.gz - gunzip it first)"
+  die "image not found: $IMG (pass the raw .img, not the .gz)"
+fi
 for f in bootlog.sh podd-bootlog-early.service podd-bootlog-mid.service podd-bootlog-late.service; do
   [ -f "$DIAG/$f" ] || die "missing diag artifact: $DIAG/$f"
 done

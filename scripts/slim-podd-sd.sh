@@ -20,6 +20,12 @@
 #
 # Unprivileged: dd + sfdisk + mkenvimage on plain files, no root, no loop mounts.
 #
+# Diagnostics: if scripts/patch-podd-sd-diag.sh was already run on FULL_IMAGE,
+# its /opt/podd/bootlog.sh survives the slim untouched (it's part of p1, which
+# is copied byte-for-byte). Running patch-diag BEFORE slim is recommended but
+# not required - an un-patched source image slims fine, it just won't
+# self-log its boot (this script warns rather than failing in that case).
+#
 # Usage: scripts/slim-podd-sd.sh [FULL_IMAGE]      # default dist/podd-sd.img
 set -euo pipefail
 
@@ -31,10 +37,14 @@ esac
 SRC="${1:-$REPO/dist/podd-sd.img}"
 OUT="${PODD_SLIM_OUT:-$REPO/dist/podd-sd-slim.img}"
 
-log() { printf '==> %s\n' "$*"; }
-die() { printf '!!  %s\n' "$*" >&2; exit 1; }
+log()  { printf '==> %s\n' "$*"; }
+warn() { printf '!!  %s\n' "$*" >&2; }
+die()  { printf '!!  %s\n' "$*" >&2; exit 1; }
 
-[ -f "$SRC" ] || die "source image not found: $SRC"
+if [ ! -f "$SRC" ]; then
+  [ -f "$SRC.gz" ] && die "source image not found: $SRC (found $SRC.gz - gunzip it first)"
+  die "source image not found: $SRC"
+fi
 command -v nix >/dev/null 2>&1 || die "nix not found"
 log "resolving tools via nix (e2fsprogs, util-linux, ubootTools, gzip)"
 # shellcheck disable=SC2016  # $PATH must expand inside the nix shell, not here.
@@ -100,15 +110,29 @@ echo "$ENV_RB" | grep -qx 'mmcblk=1'  || die "env verify: mmcblk!=1"
 echo "$ENV_RB" | grep -qx 'mmcpart=1' || die "env verify: mmcpart!=1"
 echo "$ENV_RB" | grep -q  '^altbootcmd=setenv bootcount 0; saveenv; run bootcmd$' || die "env verify: altbootcmd not hardened"
 
-# rootfs contents sanity (podd + diag + kernel present)
+# rootfs contents sanity (podd + kernel present; diag logger is optional).
 CARVE="$WORK/p1.img"
 dd if="$OUT" of="$CARVE" bs=512 skip="$P1_START" count="$P1_SIZE" status=none
 e2fsck -fy "$CARVE" >/dev/null 2>&1 || true
 debugfs -R "stat /opt/podd/current/rootfs/podd" "$CARVE" >/dev/null 2>&1 \
   || debugfs -R "ls /opt/podd" "$CARVE" 2>/dev/null | grep -q current || die "podd payload missing"
-debugfs -R "stat /opt/podd/bootlog.sh" "$CARVE" 2>/dev/null | grep -q 'Mode:  0755' || die "diag bootlog.sh missing"
 debugfs -R "stat /boot/Image.gz" "$CARVE" >/dev/null 2>&1 || die "/boot/Image.gz missing"
-log "rootfs contents verified (podd payload, diag logger, kernel present)"
+# The diag self-logger (/opt/podd/bootlog.sh) is installed by the separate
+# scripts/patch-podd-sd-diag.sh, not by build-podd-sd.sh, so a freshly built
+# (un-patched) image legitimately lacks it. Warn rather than fail: slimming
+# an un-patched image is valid, it just won't self-log its boot (podd#50).
+DIAG_PRESENT=0
+if debugfs -R "stat /opt/podd/bootlog.sh" "$CARVE" 2>/dev/null | grep -q 'Mode:  0755'; then
+  DIAG_PRESENT=1
+else
+  warn "diag bootlog.sh not present in source image - slim image will not self-log its boot."
+  warn "Run scripts/patch-podd-sd-diag.sh on the image BEFORE slimming if you need boot diagnostics."
+fi
+if [ "$DIAG_PRESENT" = 1 ]; then
+  log "rootfs contents verified (podd payload, diag logger, kernel present)"
+else
+  log "rootfs contents verified (podd payload, kernel present; no diag logger)"
+fi
 
 # --- 5. compress + manifest -------------------------------------------------
 log "compressing -> $OUT.gz"
@@ -125,6 +149,11 @@ RAW_SHA="$(sha256sum "$OUT" | awk '{print $1}')"; GZ_SHA="$(sha256sum "$OUT.gz" 
   echo "gz  sha256 : $GZ_SHA"
   echo "layout     : imx-boot@0x8400 + U-Boot env@0x400000 + p1 (rootfs). p2/p3 dropped."
   echo "env        : mmcdev=1 mmcblk=1 mmcpart=1; altbootcmd hardened (retry p1)."
+  if [ "$DIAG_PRESENT" = 1 ]; then
+    echo "diag       : bootlog.sh present - image self-logs its boot to /opt/podd/bootlog"
+  else
+    echo "diag       : bootlog.sh NOT present - run scripts/patch-podd-sd-diag.sh before slim for boot diagnostics"
+  fi
   echo "fits       : any card >= $RAW_BYTES bytes (an 8 GB card is plenty)."
   echo "write      : sudo dd if=$(basename "$OUT") of=/dev/sdX bs=4M conv=fsync status=progress; sync"
   echo "verify     : sudo cmp -n $RAW_BYTES $(basename "$OUT") /dev/sdX && echo OK"

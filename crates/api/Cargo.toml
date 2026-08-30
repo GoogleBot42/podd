@@ -10,6 +10,7 @@ authors.workspace = true
 [dependencies]
 podd-core = { path = "../podd-core" }
 pod-proto = { path = "../pod-proto" }
+pod-updater = { path = "../pod-updater" }
 
 serde.workspace = true
 serde_json.workspace = true

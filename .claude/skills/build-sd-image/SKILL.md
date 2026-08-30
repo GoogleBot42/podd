@@ -161,10 +161,13 @@ and L2, and getting it wrong looks like "no logs exist":**
   (`docs/CLEANROOM-OS.md`'s "Debug channels" section documents the same
   L1-vs-L2 split — `install/diag/` is the **L1** mechanism only.)
 - **L1 (`scripts/build-podd-sd.sh` output): diagnostics are NOT automatic —
-  inject them as an explicit extra step.** Run
+  inject them as an explicit extra step.** `build-podd-sd.sh` leaves both
+  `dist/podd-sd.img.gz` and the raw `dist/podd-sd.img` (podd#49 — it used to
+  only produce the `.gz`, which `patch-podd-sd-diag.sh`/`slim-podd-sd.sh`
+  can't read directly), so just run
   `scripts/patch-podd-sd-diag.sh dist/podd-sd.img` (it needs the **raw**
-  `.img`, not `.gz` — `gunzip` the `build-podd-sd.sh` output first; the
-  script errors out with a clear message if you hand it a `.gz`). It patches
+  `.img`, not `.gz`; the script errors out with a clear message pointing at
+  the `.gz` if you hand it one that hasn't been gunzipped). It patches
   `install/diag/{bootlog.sh,podd-bootlog-early.service,
   podd-bootlog-mid.service,podd-bootlog-late.service}` onto **p1** (unlike
   L2, L1's rootfs *is* `/opt/podd`, since it clones the stock Yocto rootfs).
@@ -182,10 +185,12 @@ and L2, and getting it wrong looks like "no logs exist":**
   `early`/`late` — another difference between the two paths, don't assume
   L2 has a "mid" file).
   If you're also slimming the image (`scripts/slim-podd-sd.sh`), run the
-  diag patch **before** slimming — slim operates on p1 + imx-boot and its
-  own contents-sanity check specifically looks for
-  `/opt/podd/bootlog.sh` mode 0755, so an un-patched image will fail that
-  check with "diag bootlog.sh missing."
+  diag patch **before** slimming so the slim image self-logs its boot too
+  (p1 is copied byte-for-byte, so a patch applied after slimming would work
+  just as well, but before is the documented order). Slim's own
+  contents-sanity check looks for `/opt/podd/bootlog.sh` mode 0755 but only
+  **warns** (podd#50) if it's missing rather than failing — an un-patched
+  image slims fine, it just won't self-log its boot.
 
 ### 5. TZDIR / jiff zoneinfo crash-loop
 

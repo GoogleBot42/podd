@@ -181,6 +181,32 @@ podup verify --pubkey keys/signing.pub --manifest dist/manifest.json --dir dist
 
 ---
 
+## Seeing what the agent is doing
+
+The web UI has an **Updates** panel under **Settings**: installed version per
+tier, whether the agent is enabled and in auto or manual mode, when it last
+checked (and whether that check succeeded), anything the channel is offering,
+the last error, and the last thing applied. Two buttons there drive the agent —
+**Check now** (poll the channel out of band) and **Roll back** (return to the
+previous app release; podd restarts).
+
+The same data is available over HTTP if you'd rather script it:
+
+```sh
+curl -s http://<pod-ip>:3000/api/updates          # status
+curl -s -X POST http://<pod-ip>:3000/api/updates/check
+curl -s -X POST http://<pod-ip>:3000/api/updates/rollback
+```
+
+`"updater": null` means no update agent is running (it failed to build — check
+`journalctl -u podd` for a trust-policy error); that is *not* the same as
+"you're up to date". The release **channel is shown read-only**: it is read
+once at start-up from `PODD_UPDATER_CHANNEL`, so change it in the systemd
+drop-in above and restart. There is no "apply this update" button yet — in
+Manual mode, apply via the installer (below).
+
+---
+
 ## Updating manually
 
 If you're in Manual mode (or just want to force an update now), re-running the
