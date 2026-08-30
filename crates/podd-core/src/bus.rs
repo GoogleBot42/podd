@@ -100,6 +100,80 @@ pub struct AlarmSpec {
     pub pattern: AlarmPattern,
 }
 
+/// The MQTT broker settings as a *reader* (the api layer, and through it the
+/// UI) may see them: deliberately password-free. The stored secret never
+/// leaves podd-core — only whether one is set (issue #18).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MqttSnapshot {
+    pub enabled: bool,
+    pub server: String,
+    pub port: u16,
+    pub user: String,
+    pub password_set: bool,
+}
+
+impl Default for MqttSnapshot {
+    fn default() -> Self {
+        // Pre-config-load placeholder (the watch is created before the file is
+        // read). "Not configured" is the honest thing to show if it is ever
+        // observed: no broker, no link.
+        MqttSnapshot {
+            enabled: false,
+            server: String::new(),
+            port: 1883,
+            user: String::new(),
+            password_set: false,
+        }
+    }
+}
+
+impl From<&crate::config::MqttConfig> for MqttSnapshot {
+    fn from(cfg: &crate::config::MqttConfig) -> Self {
+        MqttSnapshot {
+            enabled: cfg.enabled,
+            server: cfg.server.clone(),
+            port: cfg.port,
+            user: cfg.user.clone(),
+            password_set: !cfg.password.is_empty(),
+        }
+    }
+}
+
+/// An edit to the MQTT broker settings (the UI's Settings → MQTT section).
+///
+/// `password: None` means *keep the stored password*, so the UI never has to
+/// round-trip the secret to change the port.
+#[derive(Clone, PartialEq, Eq)]
+pub struct MqttUpdate {
+    pub enabled: bool,
+    pub server: String,
+    pub port: u16,
+    pub user: String,
+    /// `None` = keep whatever is in the config; `Some("")` = clear it.
+    pub password: Option<String>,
+}
+
+/// Hand-written so a `{cmd:?}` anywhere (the dispatcher logs unmapped commands
+/// that way) can never print the broker password.
+impl std::fmt::Debug for MqttUpdate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MqttUpdate")
+            .field("enabled", &self.enabled)
+            .field("server", &self.server)
+            .field("port", &self.port)
+            .field("user", &self.user)
+            .field(
+                "password",
+                &match &self.password {
+                    Some(p) if p.is_empty() => "<cleared>",
+                    Some(_) => "<redacted>",
+                    None => "<unchanged>",
+                },
+            )
+            .finish()
+    }
+}
+
 /// A command from a consumer (`api`, schedulers) into the managers. The
 /// dispatcher in [`crate::run`] routes each variant to the owning manager.
 #[derive(Clone, Debug, PartialEq)]
@@ -124,6 +198,11 @@ pub enum Command {
     /// Update the schedule timezone in the live config. `iana` is validated
     /// by the API layer; an unknown name is dropped here with an error log.
     SetTimezone { iana: String },
+    /// Update the MQTT broker settings in the live config (the UI's
+    /// Settings → MQTT section, #18). Applied to the config watch and
+    /// persisted like [`Command::SetPrimeDaily`]; the broker *connection*
+    /// itself is only rebuilt on the next podd restart.
+    SetMqtt(MqttUpdate),
     /// Replace the live per-weekday heating schedule (the UI's Schedule page).
     ///
     /// The API layer has already persisted `schedules.json` — podd-core never
@@ -165,6 +244,10 @@ pub struct Shared {
     pub status: watch::Receiver<DeviceSnapshot>,
     /// Latest per-subsystem health (read-only; see [`crate::health`]).
     pub health: watch::Receiver<crate::health::HealthMap>,
+    /// Latest MQTT broker settings, password-free ([`MqttSnapshot`]). Mirrors
+    /// the live config watch so the api layer can render Settings → MQTT
+    /// without ever holding the credential (#18).
+    pub mqtt: watch::Receiver<MqttSnapshot>,
     /// Command sink into the managers.
     pub commands: mpsc::Sender<Command>,
     /// Vitals history (HR/HRV/breathing), fed by the sensor manager's

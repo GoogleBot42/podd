@@ -44,6 +44,10 @@ embedded-hal = "1.0.0"
 rustfft = "6.4.0"
 cbor4ii = { version = "1.0.0", features = ["use_std", "serde1"] }
 rumqttc = "0.24.0"
+# rumqttc's own request channel type: `AsyncClient::from_senders` takes a
+# `flume::Sender<rumqttc::Request>`, which is how podd builds the discarding
+# client used when `mqtt.enabled` is false. Must stay on rumqttc's flume major.
+flume = "0.11"
 ron = "0.10.1"
 jiff = { version = "0.2.15", features = ["serde", "tzdb-bundle-always"] }
 log = "0.4.27"

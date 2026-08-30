@@ -37,6 +37,10 @@
     ),
 
     mqtt: (
+        // Broker link. Editable from the web UI (Settings -> MQTT); an edit
+        // there is written back here and applies on the next podd start.
+        // `enabled: false` turns the broker link off entirely.
+        enabled: true,
         server: "homeassistant.local",
         port: 1883,
         user: "example",
