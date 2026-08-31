@@ -76,7 +76,8 @@ anything on the actuation path as safety-critical.
 
 - `docs/ARCHITECTURE.md` as-built design; `docs/REPLACEMENT_PLAN.md` original plan.
 - `docs/CLEANROOM-OS.md` from-source OS image + bring-up field notes;
-  `docs/SD-BOOT.md` legacy L1 stock-clone image.
+  `docs/SD-BOOT.md` SD boot-flow reference (the legacy L1 stock-clone
+  image + scripts were deleted 2026-08-31; git history has them).
 - `docs/FLASHING.md`, `INSTALL.md`, `RECOVERY.md`, `UPDATING.md`,
   `RELEASING.md` — user/maintainer guides (releases: tag `v*`, CI does the rest).
 - `docs/ALARM-TESTING.md` — staged live-alarm verification protocol (kill
