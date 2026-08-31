@@ -1,5 +1,5 @@
 [package]
-name = "pod-updater"
+name = "pod-update-agent"
 description = "Device-side OTA update agent for podd (Tier-2 app swaps; Tier-1 OS + Tier-3 MCU plumbing)"
 version.workspace = true
 edition.workspace = true

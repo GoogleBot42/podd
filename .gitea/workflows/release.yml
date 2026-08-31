@@ -2,7 +2,7 @@ name: release
 
 # Gitea Actions twin of .github/workflows/release.yml. Builds the SAME bundle
 # via scripts/build-release.sh and publishes it to the Gitea Release for the
-# tag, named so pod-updater's Gitea source resolves it:
+# tag, named so pod-update-agent's Gitea source resolves it:
 #   <host>/<owner>/<repo>/releases/download/<tag>/manifest.json (+ app-<v>.squashfs)
 #
 # Runner note: targets the self-hosted NixOS runner (label: nixos) — a bare

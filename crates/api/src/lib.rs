@@ -147,7 +147,7 @@ pub fn router_full(
             get(handlers::get_services).post(handlers::post_services),
         )
         .route("/serverStatus", get(handlers::get_server_status))
-        // update observability + the two controls pod-updater implements
+        // update observability + the two controls pod-update-agent implements
         // (REPLACEMENT_PLAN §9; issue #1). Applying an update is deliberately
         // not routed here — see crates/api/src/updates.rs.
         .route("/updates", get(handlers::get_updates))

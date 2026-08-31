@@ -7,7 +7,7 @@
 # same env-var scheme (mmcpart/next_mmcpart/upgrade_available/bootcount/
 # ustate, 1=A 2=B) but implements the bootcount logic in its own env script
 # (os/board/eightsleep/imx8mm-varsom/uboot-env.txt) and applies OS updates
-# through pod-updater, which also runs the --confirm-good step automatically
+# through pod-update-agent, which also runs the --confirm-good step automatically
 # after a healthy boot.
 #
 # ****************************  DANGER: THIS WRITES eMMC  *******************

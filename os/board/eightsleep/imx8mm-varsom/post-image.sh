@@ -120,7 +120,7 @@ genimage \
 
 # --- 4. compress + manifest + OTA slot artifact ------------------------------
 # The OTA artifact is the bare slot filesystem (kernel+dtb in /boot included):
-# pod-updater streams it onto the inactive A/B partition. zstd's frame checksum
+# pod-update-agent streams it onto the inactive A/B partition. zstd's frame checksum
 # (on by default) gives decompressed-integrity verification for free; the
 # release pipeline renames this to os-<version>.ext4.zst (see
 # scripts/build-release.sh).

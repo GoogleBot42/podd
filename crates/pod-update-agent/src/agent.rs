@@ -189,7 +189,7 @@ impl Updater {
             }
         });
         if changed {
-            log::info!("pod-updater: channel switched to {channel}");
+            log::info!("pod-update-agent: channel switched to {channel}");
         }
         Ok(channel)
     }
@@ -506,17 +506,17 @@ impl Updater {
         self.resolve_pending_trial().await;
         self.resolve_os_trial_until_settled().await;
         if !self.enabled {
-            log::info!("pod-updater disabled; not polling");
+            log::info!("pod-update-agent disabled; not polling");
             std::future::pending::<()>().await;
             return Ok(());
         }
         if self.sources.is_empty() {
-            log::warn!("pod-updater enabled but no sources configured; idling");
+            log::warn!("pod-update-agent enabled but no sources configured; idling");
             std::future::pending::<()>().await;
             return Ok(());
         }
         log::info!(
-            "pod-updater: channel={} mode={} every {:?} ({} source(s))",
+            "pod-update-agent: channel={} mode={} every {:?} ({} source(s))",
             self.channel(),
             self.mode.as_str(),
             self.poll_interval,
@@ -530,11 +530,11 @@ impl Updater {
             self.resolve_os_trial().await;
             match self.check().await {
                 Ok(available) if available.is_empty() => {
-                    log::debug!("pod-updater: up to date");
+                    log::debug!("pod-update-agent: up to date");
                 }
                 Ok(available) => {
                     log::info!(
-                        "pod-updater: {} update(s) available: {}",
+                        "pod-update-agent: {} update(s) available: {}",
                         available.len(),
                         available
                             .iter()
@@ -554,20 +554,20 @@ impl Updater {
                                 .is_some_and(|f| f.version == app.version);
                             if failed {
                                 log::warn!(
-                                    "pod-updater: skipping app {} — its last activation was \
+                                    "pod-update-agent: skipping app {} — its last activation was \
                                      rolled back; apply manually to retry",
                                     app.version
                                 );
                             } else {
                                 match self.apply(ComponentKind::App).await {
-                                    Ok(()) => log::info!("pod-updater: applied app update"),
-                                    Err(e) => log::error!("pod-updater: app apply failed: {e}"),
+                                    Ok(()) => log::info!("pod-update-agent: applied app update"),
+                                    Err(e) => log::error!("pod-update-agent: app apply failed: {e}"),
                                 }
                             }
                         }
                     }
                 }
-                Err(e) => log::warn!("pod-updater: check failed: {e}"),
+                Err(e) => log::warn!("pod-update-agent: check failed: {e}"),
             }
             tokio::time::sleep(self.poll_interval).await;
         }
@@ -712,7 +712,7 @@ pub fn from_env_shared() -> (
                 // process may be a new release on trial) must be committed or
                 // rolled back.
                 resolve_trial_standalone(&config).await;
-                log::error!("pod-updater: failed to build ({e}); idling");
+                log::error!("pod-update-agent: failed to build ({e}); idling");
                 std::future::pending::<()>().await;
                 Ok(())
             }),
@@ -732,7 +732,7 @@ async fn resolve_trial_standalone(config: &UpdaterConfig) {
     {
         Ok(c) => c,
         Err(e) => {
-            log::error!("pod-updater: cannot build health-check client ({e}); trial unresolved");
+            log::error!("pod-update-agent: cannot build health-check client ({e}); trial unresolved");
             return;
         }
     };

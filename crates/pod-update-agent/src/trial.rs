@@ -116,7 +116,7 @@ fn record_failure(paths: &UpdaterPaths, version: &str, reason: &str) {
         at_unix: now_unix(),
     };
     if let Err(e) = write_json(&failed_path(paths), &failed) {
-        log::error!("pod-updater: failed to record trial failure: {e}");
+        log::error!("pod-update-agent: failed to record trial failure: {e}");
     }
 }
 
@@ -155,10 +155,10 @@ pub fn early_boot_guard(paths: &UpdaterPaths) -> BootDecision {
     state.boots += 1;
     if state.boots <= MAX_TRIAL_BOOTS {
         if let Err(e) = save(paths, &state) {
-            log::error!("pod-updater: failed to persist trial boot count: {e}");
+            log::error!("pod-update-agent: failed to persist trial boot count: {e}");
         }
         log::info!(
-            "pod-updater: app release {} on trial (boot attempt {}/{})",
+            "pod-update-agent: app release {} on trial (boot attempt {}/{})",
             state.new_version,
             state.boots,
             MAX_TRIAL_BOOTS
@@ -174,7 +174,7 @@ pub fn early_boot_guard(paths: &UpdaterPaths) -> BootDecision {
         Ok(true) => {
             clear(paths);
             log::error!(
-                "pod-updater: app release {} {reason}; rolled `current` back",
+                "pod-update-agent: app release {} {reason}; rolled `current` back",
                 state.new_version
             );
             BootDecision::RolledBack {
@@ -186,7 +186,7 @@ pub fn early_boot_guard(paths: &UpdaterPaths) -> BootDecision {
             // release we have and stop counting.
             clear(paths);
             log::error!(
-                "pod-updater: app release {} {reason}, but there is no previous \
+                "pod-update-agent: app release {} {reason}, but there is no previous \
                  release to roll back to; keeping it",
                 state.new_version
             );
@@ -195,7 +195,7 @@ pub fn early_boot_guard(paths: &UpdaterPaths) -> BootDecision {
         Err(e) => {
             clear(paths);
             log::error!(
-                "pod-updater: rollback of app release {} failed: {e}; keeping it",
+                "pod-update-agent: rollback of app release {} failed: {e}; keeping it",
                 state.new_version
             );
             BootDecision::NoTrial
@@ -240,12 +240,12 @@ pub async fn resolve_trial(
 
     if health.healthy().await {
         if let Err(e) = layout.record_version(ComponentKind::App, &version) {
-            log::error!("pod-updater: failed to record committed version: {e}");
+            log::error!("pod-update-agent: failed to record committed version: {e}");
         }
         clear(paths);
         clear_failure(paths);
         let _ = layout.prune(keep);
-        log::info!("pod-updater: app release {version} committed (canary healthy)");
+        log::info!("pod-update-agent: app release {version} committed (canary healthy)");
         return Some(TrialOutcome::Committed { version });
     }
 
@@ -260,28 +260,28 @@ pub async fn resolve_trial(
         Ok(true) => {
             clear(paths);
             log::error!(
-                "pod-updater: app release {version} failed its canary; rolling back to {} \
+                "pod-update-agent: app release {version} failed its canary; rolling back to {} \
                  and restarting",
                 restored.as_deref().unwrap_or("?")
             );
             // On-device this restart kills the current process; the restored
             // release comes up with no trial pending.
             if let Err(e) = installer.restart() {
-                log::error!("pod-updater: restart after rollback failed: {e}");
+                log::error!("pod-update-agent: restart after rollback failed: {e}");
             }
             Some(TrialOutcome::RolledBack { version, restored })
         }
         Ok(false) => {
             clear(paths);
             log::error!(
-                "pod-updater: app release {version} failed its canary, but there is no \
+                "pod-update-agent: app release {version} failed its canary, but there is no \
                  previous release to roll back to; keeping it"
             );
             Some(TrialOutcome::Abandoned { version })
         }
         Err(e) => {
             clear(paths);
-            log::error!("pod-updater: rollback of app release {version} failed: {e}; keeping it");
+            log::error!("pod-update-agent: rollback of app release {version} failed: {e}; keeping it");
             Some(TrialOutcome::Abandoned { version })
         }
     }

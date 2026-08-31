@@ -1,4 +1,4 @@
-//! `pod-updater` — the on-device OTA update **agent** for the Eight Sleep Pod.
+//! `pod-update-agent` — the on-device OTA update **agent** for the Eight Sleep Pod.
 //!
 //! This is the device half of the update system charter in `REPLACEMENT_PLAN`
 //! §9. A CI pipeline (separate) publishes signed releases; this crate makes the
@@ -88,7 +88,7 @@ mod tests {
     /// A unique temp dir for a test, cleaned up by the caller.
     fn tmp(tag: &str) -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!(
-            "pod-updater-{tag}-{}-{}",
+            "pod-update-agent-{tag}-{}-{}",
             std::process::id(),
             now_nanos()
         ));

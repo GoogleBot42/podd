@@ -4,14 +4,14 @@
 //! `REPLACEMENT_PLAN` §9 asks for an observability surface over the updater
 //! ("app/OS/MCU versions + closure hashes + history", plus channel / "check
 //! now" / "roll back" controls). [`UpdateOps`] is that surface, narrowed to
-//! what `pod-updater` actually implements today:
+//! what `pod-update-agent` actually implements today:
 //!
 //! - **read** the published [`UpdateStatus`] (channel, mode, installed
 //!   versions, last check, available components, last error/apply),
 //! - **check now** — poll the configured channel out of band,
 //! - **apply** — install the offered Tier-2 (app) release and restart into it
 //!   as a canary that must pass its health check or be rolled back
-//!   automatically (`pod_updater::trial`),
+//!   automatically (`pod_update_agent::trial`),
 //! - **set the channel** — switch channels at runtime, persisted by the agent,
 //! - **roll back** — flip the Tier-2 app symlink to the previous release.
 //!
@@ -24,7 +24,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-pub use pod_updater::UpdateStatus;
+pub use pod_update_agent::UpdateStatus;
 
 /// An update tier as named on the wire (`{"kind": "app"}`). Mirrors
 /// `pod_update::ComponentKind`'s serde names; only [`UpdateTier::App`] is
@@ -60,7 +60,7 @@ pub struct ChannelRequest {
 }
 
 /// Read/act interface onto the on-device update agent. Implemented for
-/// [`pod_updater::Updater`]; [`MockUpdates`] backs tests and the example
+/// [`pod_update_agent::Updater`]; [`MockUpdates`] backs tests and the example
 /// server so the routes are exercisable without an updater.
 #[async_trait]
 pub trait UpdateOps: Send + Sync {
@@ -91,32 +91,32 @@ pub trait UpdateOps: Send + Sync {
 }
 
 #[async_trait]
-impl UpdateOps for pod_updater::Updater {
+impl UpdateOps for pod_update_agent::Updater {
     fn status(&self) -> UpdateStatus {
         // Installed versions are cheap to re-read and are the one part of the
         // status that is true even when no source is configured or the last
         // check failed — refresh them so the panel never shows a stale build.
-        pod_updater::Updater::refresh_versions(self);
-        pod_updater::Updater::status(self)
+        pod_update_agent::Updater::refresh_versions(self);
+        pod_update_agent::Updater::status(self)
     }
 
     async fn check_now(&self) -> anyhow::Result<()> {
-        pod_updater::Updater::check(self).await?;
+        pod_update_agent::Updater::check(self).await?;
         Ok(())
     }
 
     async fn apply_app(&self) -> anyhow::Result<()> {
-        pod_updater::Updater::apply(self, pod_updater::ComponentKind::App).await?;
+        pod_update_agent::Updater::apply(self, pod_update_agent::ComponentKind::App).await?;
         Ok(())
     }
 
     fn set_channel(&self, channel: &str) -> anyhow::Result<()> {
-        pod_updater::Updater::set_channel(self, channel)?;
+        pod_update_agent::Updater::set_channel(self, channel)?;
         Ok(())
     }
 
     fn rollback(&self) -> anyhow::Result<String> {
-        Ok(pod_updater::Updater::rollback(self)?)
+        Ok(pod_update_agent::Updater::rollback(self)?)
     }
 }
 

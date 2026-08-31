@@ -28,7 +28,7 @@ podd-sd-<tag>.img.gz    # full flashable SD image for fresh installs (not in the
 The device fetches `manifest.json`, checks each artifact's SHA-256 (always),
 checks the signature (if the owner requires one), then activates the app
 squashfs; the OS image is applied to the inactive A/B slot only on an explicit
-apply (see [UPDATING.md](UPDATING.md)). The filenames are what `pod-updater`'s
+apply (see [UPDATING.md](UPDATING.md)). The filenames are what `pod-update-agent`'s
 GitHub and Gitea sources expect, so **don't rename them.**
 
 ---
@@ -138,7 +138,7 @@ GitHub one (which uses the DeterminateSystems Nix action):
 
 The uploaded assets are given their bare filenames so the device resolves
 `<host>/<owner>/<repo>/releases/download/<tag>/manifest.json` (and the artifact)
-exactly as `pod-updater`'s Gitea source expects.
+exactly as `pod-update-agent`'s Gitea source expects.
 
 ---
 

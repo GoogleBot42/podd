@@ -3,18 +3,18 @@
 # build-release.sh - shared CI logic for GitHub Actions and Gitea Actions.
 #
 # Builds the podd userland bundle (the primary deliverable, flashing-method.md
-# §6b item 1) and produces the release `dist/` that pod-updater consumes:
+# §6b item 1) and produces the release `dist/` that pod-update-agent consumes:
 #
 #     dist/manifest.json            (signed if a key is available, else unsigned)
 #     dist/app-<version>.squashfs   (podd + UI + configs, packed by `podup`)
 #     dist/signing.pub              (public key, ONLY when signing)
 #     dist/os-<version>.ext4.zst    (OS slot image; ONLY when OS_IMAGE is set)
 #
-# These names are exactly what pod-updater's GitHub/Gitea sources resolve:
+# These names are exactly what pod-update-agent's GitHub/Gitea sources resolve:
 #   GitHub latest:  https://github.com/<o>/<r>/releases/latest/download/manifest.json
 #                   https://github.com/<o>/<r>/releases/latest/download/app-<v>.squashfs
 #   Gitea:          <host>/<o>/<r>/releases/download/<tag>/manifest.json  (+ artifact)
-# (manifest_name defaults to "manifest.json" in pod-updater's config.)
+# (manifest_name defaults to "manifest.json" in pod-update-agent's config.)
 #
 # Signing is OPTIONAL and honours pod-update's owner-controlled trust model:
 #   - PODD_SIGNING_KEY present (base64 ed25519 seed) -> signed manifest + signing.pub
@@ -83,7 +83,7 @@ PODUP="result-podup/bin/podup"
 
 # ---------------------------------------------------------------------------
 # 2. Assemble the app payload directory, laid out as it appears on-device under
-#    /opt/podd/current/. pod-updater mounts the squashfs and flips `current`;
+#    /opt/podd/current/. pod-update-agent mounts the squashfs and flips `current`;
 #    the installer scripts extract it into /opt/podd/releases/<version>/.
 #
 #      podd               the aarch64 (static musl) daemon
