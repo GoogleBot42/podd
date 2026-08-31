@@ -190,6 +190,16 @@ repo, not only in on-device comments.
   (`FrozenTarget::delimiter_safe` in `pod-proto`). If a config/setpoint
   change you pushed seems to just not take effect with no error anywhere,
   this is a candidate cause, not just "the write didn't land."
+- **Busybox has no `timeout`, and `nc` probes lie.** `timeout 5 nc host
+  port` fails with "not found" — swallowed by the usual `>/dev/null 2>&1`,
+  so EVERY such probe reports "unreachable" regardless of the network
+  (2026-08-31: this faked a total egress block and nearly mis-designed the
+  update-source plan; the tell was a "FAIL" against the MQTT broker podd
+  was actively connected to). Always validate a probe against a known-good
+  target first. Reliable connect test: `wget -T 6 -O- "http://host:port/"`
+  and read the error — "error getting response" / an HTTP error = TCP
+  connected; "can't connect"/timeout = actually blocked. Also: busybox
+  wget has no TLS — use it for reachability, not for https fetches.
 - **Busybox tar has no `-z`.** The on-device tar is busybox: `tar xzf`
   fails mid-script (`invalid option -- 'z'`), and `-a` (by-extension) has
   failed on a `.tgz` too ("invalid tar magic"). When shipping the UI bundle,
