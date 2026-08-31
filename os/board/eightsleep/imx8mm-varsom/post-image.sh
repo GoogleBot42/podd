@@ -8,7 +8,8 @@
 #   2. bake the U-Boot env blob (mkenvimage from uboot-env.txt, incl. the A/B
 #      rollback state machine)
 #   3. lay out the A/B + data partitions (genimage) into podd-sd.img
-#   4. gzip + manifest, plus the OTA slot artifact (podd-os.ext4.zst)
+#   4. gzip + manifest, plus the OTA slot artifact (podd-os.ext4.zst) and the
+#      slot-install tarball (podd-rootfs.tar.gz)
 #
 # $1 = $BINARIES_DIR (Buildroot output/images). $BR2_EXTERNAL_PODD_PATH,
 # $BUILD_DIR and the host tools ($HOST_DIR/bin) are exported by Buildroot.
@@ -126,6 +127,14 @@ genimage \
 # scripts/build-release.sh).
 zstd -T0 -19 -kf "$BINARIES_DIR/rootfs.ext2" -o "$BINARIES_DIR/podd-os.ext4.zst"
 
+# The slot-install artifact: the same rootfs as a verified tarball, for the
+# consumers that populate a slot by extracting rather than by dd'ing an fs image
+# (install/podd-slot-install.sh, scripts/build-recovery-sd.sh). Buildroot already
+# tarred $TARGET_DIR under fakeroot (BR2_TARGET_ROOTFS_TAR_GZIP); this only
+# renames, content-checks and checksums it. Re-runnable standalone — see #52.
+EXT_PATH="${BR2_EXTERNAL_PODD_PATH:-$BOARD_DIR/../../..}"
+"$EXT_PATH/scripts/package-rootfs.sh" --images-dir "$BINARIES_DIR"
+
 IMG="$BINARIES_DIR/podd-sd.img"
 gzip -kf "$IMG"
 {
@@ -135,6 +144,7 @@ gzip -kf "$IMG"
 	echo "layout     : imx-boot@0x8400 + env@0x400000 + rootfs_a + rootfs_b + data"
 	echo "boot chain : from-source SPL/U-Boot (Variscite imx_v2020.04_5.4.70_2.3.0_var01) + ATF + dual LPDDR4/DDR4 fw"
 	echo "write      : sudo dd if=$(basename "$IMG") of=/dev/sdX bs=4M conv=fsync status=progress"
+	echo "rootfs.tgz : $(cut -d' ' -f1 < "$BINARIES_DIR/podd-rootfs.tar.gz.sha256")  podd-rootfs.tar.gz"
 } > "${IMG%.img}.manifest.txt"
 
-echo "post-image: $IMG(.gz) + podd-os.ext4.zst assembled (from-source imx-boot)"
+echo "post-image: $IMG(.gz) + podd-os.ext4.zst + podd-rootfs.tar.gz assembled (from-source imx-boot)"

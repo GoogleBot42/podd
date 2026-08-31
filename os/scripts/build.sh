@@ -43,4 +43,4 @@ PODD_FIT_MKIMAGE_LIBS="${SSL_LIBDIR}" \
 	   --ui-dir '${REPO_ROOT}/result-ui' \
 	   ${*:-} --output-dir dist/"
 
-echo "==> done: dist/podd-sd.img.gz"
+echo "==> done: dist/podd-sd.img.gz + dist/podd-os.ext4.zst + dist/podd-rootfs.tar.gz"

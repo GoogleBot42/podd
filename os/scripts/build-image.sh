@@ -9,6 +9,9 @@
 #   U-Boot env @0x400000, and A/B rootfs slots + a persistent data partition. The
 #   whole thing is built from pinned upstream source (see os/README.md); `dd` it
 #   to a spare microSD and it boots without touching the stock eMMC.
+#   Alongside it: podd-os.ext4.zst (the OTA slot image pod-updater streams) and
+#   podd-rootfs.tar.gz (the same rootfs as a tarball, for the extract-into-a-slot
+#   consumers - install/podd-slot-install.sh, scripts/build-recovery-sd.sh).
 #
 # HOW IT WORKS
 #   1. podd + its web UI are cross-compiled OUTSIDE Buildroot via the repo's Nix
@@ -72,7 +75,7 @@ log() { printf '==> %s\n' "$*"; }
 usage() {
 	# Print the leading comment block (up to the first blank comment terminator)
 	# as the help text, so this stays the single source of truth.
-	sed -n '3,41p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+	sed -n '3,44p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 while [ "$#" -gt 0 ]; do
@@ -181,10 +184,13 @@ log "image ready: ${IMG}(.gz)"
 
 if [ -n "${OUTPUT_DIR}" ]; then
 	mkdir -p "${OUTPUT_DIR}"
-	# Copy the raw + gz images, the manifest, and the OTA slot artifact
-	# emitted by the board post-image.
-	for f in podd-sd.img podd-sd.img.gz podd-sd.manifest.txt podd-os.ext4.zst; do
-		[ -f "${IMAGES_DIR}/${f}" ] && cp -v "${IMAGES_DIR}/${f}" "${OUTPUT_DIR}/"
+	# Copy the raw + gz images, the manifest, the OTA slot artifact and the
+	# slot-install rootfs tarball emitted by the board post-image.
+	for f in podd-sd.img podd-sd.img.gz podd-sd.manifest.txt podd-os.ext4.zst \
+	         podd-rootfs.tar.gz podd-rootfs.tar.gz.sha256; do
+		if [ -f "${IMAGES_DIR}/${f}" ]; then
+			cp -v "${IMAGES_DIR}/${f}" "${OUTPUT_DIR}/"
+		fi
 	done
 	log "copied image(s) to ${OUTPUT_DIR}"
 fi
