@@ -13,6 +13,16 @@ update it here, not in either skill.
    (footer: "opened by GoogleBot42"); higher-numbered ones are agent-filed
    audit findings. "Tasks I/Jeremy filed" means the migrated set. The GitHub
    originals 404 (repo shadowbanned) — the Gitea copies are canonical.
+   Staleness gotcha: migrated issues (≤ #23) predate most of the codebase —
+   before presenting one, grep for whether it's already implemented (#4 and
+   #3 were both closed as already-done, 2026-08-30/31).
+
+1b. **Open PRs awaiting merge.** `tea pr list --repo zuckerberg/podd` — the
+   weekly `flake-update` workflow (since #168) opens/refreshes an
+   `auto/flake-update` PR authored by "Gitea Actions" that deliberately does
+   NOT auto-merge; merging it once CI is green is standing candidate work.
+   Other stray open PRs may be another session's in-flight work — check age
+   before touching.
 
 2. **README.md "Status" paragraph's "Remaining work" list.** Read the block
    under `> Status:` near the top of `README.md` — it names the current
