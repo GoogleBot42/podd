@@ -56,6 +56,10 @@ pub struct Updater {
     mcu_dry_run: bool,
     enabled: bool,
     poll_interval: std::time::Duration,
+    /// This process's own executable path, checked by the trial before a
+    /// commit so a canary can't bless a release the exec path never picked up
+    /// (`None` skips the check — tests / exotic layouts).
+    trial_exe: Option<PathBuf>,
     status_tx: watch::Sender<UpdateStatus>,
 }
 
@@ -95,8 +99,16 @@ impl Updater {
             mcu_dry_run: true,
             enabled: true,
             poll_interval: std::time::Duration::from_secs(3600),
+            trial_exe: None,
             status_tx,
         }
+    }
+
+    /// Set the executable path the trial verifies before committing (see
+    /// [`crate::trial::resolve_trial`]). `from_config` wires the real one.
+    pub fn with_trial_exe(mut self, exe: Option<PathBuf>) -> Self {
+        self.trial_exe = exe;
+        self
     }
 
     pub fn with_os_writer(mut self, w: Box<dyn OsSlotWriter>) -> Self {
@@ -414,9 +426,14 @@ impl Updater {
     /// when no trial is pending. Called at the start of [`Updater::run`]; also
     /// callable directly from tests/custom wiring.
     pub async fn resolve_pending_trial(&self) -> Option<TrialOutcome> {
-        let outcome =
-            trial::resolve_trial(&self.layout, &*self.installer, &*self.health, self.keep_releases)
-                .await?;
+        let outcome = trial::resolve_trial(
+            &self.layout,
+            &*self.installer,
+            &*self.health,
+            self.keep_releases,
+            self.trial_exe.as_deref(),
+        )
+        .await?;
         match &outcome {
             TrialOutcome::Committed { version } => self.set_status(|s| {
                 s.last_applied = Some(format!("app -> {version} (committed)"));
@@ -625,6 +642,7 @@ impl Updater {
             mcu_dry_run: config.mcu_dry_run,
             enabled: config.enabled,
             poll_interval: config.poll_interval,
+            trial_exe: std::env::current_exe().ok(),
             status_tx,
         })
     }
@@ -745,7 +763,14 @@ async fn resolve_trial_standalone(config: &UpdaterConfig) {
         let installer = SystemInstaller {
             service: PODD_SERVICE.into(),
         };
-        trial::resolve_trial(&layout, &installer, &health, config.keep_releases).await;
+        trial::resolve_trial(
+            &layout,
+            &installer,
+            &health,
+            config.keep_releases,
+            std::env::current_exe().ok().as_deref(),
+        )
+        .await;
     }
     // OS mark-good must run even with the updater disabled — otherwise a
     // healthy new slot would be reverted by U-Boot after 3 more reboots.

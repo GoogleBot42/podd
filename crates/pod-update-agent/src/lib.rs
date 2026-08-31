@@ -593,6 +593,33 @@ mod tests {
 
     /// Switching channels takes effect immediately (the next check follows the
     /// new channel), is persisted, and is picked up again by `from_env`.
+    /// A healthy canary must NOT commit a release this process isn't actually
+    /// executing (e.g. the image's podd-launch fell back to the baked binary).
+    #[tokio::test]
+    async fn trial_refuses_to_commit_when_exe_is_not_the_release() {
+        let root = tmp("exe-mismatch");
+        let bytes = b"v1".to_vec();
+        let sm = SignedManifest::unsigned(app_manifest("1.0", "app.squashfs", &bytes));
+        let up = updater_with(
+            &root,
+            sm.to_json_pretty().unwrap(),
+            vec![("app.squashfs", bytes)],
+            TrustPolicy::AllowUnsigned,
+            Arc::new(AtomicBool::new(true)), // canary would say healthy
+        )
+        // A real path that exists but is not under releases/1.0:
+        .with_trial_exe(std::env::current_exe().ok());
+        up.apply(ComponentKind::App).await.unwrap();
+
+        match up.resolve_pending_trial().await {
+            // No previous release exists, so the failed trial is abandoned —
+            // the important part is that it did NOT commit.
+            Some(TrialOutcome::Abandoned { version }) => assert_eq!(version, "1.0"),
+            other => panic!("expected Abandoned (not committed), got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[tokio::test]
     async fn channel_switch_takes_effect_and_persists() {
         let root = tmp("channel");

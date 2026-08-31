@@ -54,9 +54,19 @@ for f in "$DIST_DIR"/*; do
   if [ -n "$asset_id" ]; then
     curl -fsSL -X DELETE -H "$AUTH" "${API}/releases/${release_id}/assets/${asset_id}" >/dev/null 2>&1 || true
   fi
-  curl -fsSL -X POST -H "$AUTH" \
+  # No -f: keep the response body so a failure says WHY (the first-ever
+  # release upload died silently behind -f; the Actions-injected GITHUB_TOKEN
+  # can create releases but not upload assets — use a RELEASE_TOKEN secret).
+  http_code="$(curl -sSL -o /tmp/upload-resp.$$ -w '%{http_code}' -X POST -H "$AUTH" \
     -F "attachment=@${f};filename=${name}" \
-    "${API}/releases/${release_id}/assets?name=${name}" >/dev/null
+    "${API}/releases/${release_id}/assets?name=${name}")"
+  if [ "${http_code}" != "201" ]; then
+    echo "!! upload of ${name} failed (HTTP ${http_code}):" >&2
+    cat /tmp/upload-resp.$$ >&2 || true
+    rm -f /tmp/upload-resp.$$
+    exit 1
+  fi
+  rm -f /tmp/upload-resp.$$
 done
 
 echo "==> uploaded $(find "$DIST_DIR" -maxdepth 1 -type f | wc -l) asset(s) to $TAG"

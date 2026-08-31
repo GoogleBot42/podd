@@ -233,12 +233,40 @@ pub async fn resolve_trial(
     installer: &dyn ReleaseInstaller,
     health: &dyn HealthCheck,
     keep: usize,
+    running_exe: Option<&Path>,
 ) -> Option<TrialOutcome> {
     let paths = &layout.paths;
     let state = load(paths)?;
     let version = state.new_version.clone();
 
-    if health.healthy().await {
+    // The canary polls "a healthy podd is serving" — it cannot tell WHICH
+    // binary is serving. If the service's exec path never picked up the new
+    // release (e.g. the clean-room image's podd-launch fell back to the
+    // OS-baked binary), a plain health check would commit a release that is
+    // not actually running. `running_exe` is this process's own path
+    // (`std::env::current_exe()` on-device; `None` skips the check where the
+    // caller has no meaningful exe, e.g. unit tests).
+    let exe_matches_release = match (
+        running_exe.and_then(|p| p.canonicalize().ok()),
+        layout.release_dir(&version).canonicalize().ok(),
+    ) {
+        (Some(exe), Some(release)) => {
+            let ok = exe.starts_with(&release);
+            if !ok {
+                log::error!(
+                    "pod-update-agent: trial of {version} pending but this process runs {} \
+                     (not under {}); the exec path did not pick up the release",
+                    exe.display(),
+                    release.display()
+                );
+            }
+            ok
+        }
+        // Unresolvable: fall back to health alone.
+        _ => true,
+    };
+
+    if exe_matches_release && health.healthy().await {
         if let Err(e) = layout.record_version(ComponentKind::App, &version) {
             log::error!("pod-update-agent: failed to record committed version: {e}");
         }
@@ -249,7 +277,12 @@ pub async fn resolve_trial(
         return Some(TrialOutcome::Committed { version });
     }
 
-    record_failure(paths, &version, "post-restart canary health check failed");
+    let reason = if exe_matches_release {
+        "post-restart canary health check failed"
+    } else {
+        "exec path did not pick up the release (process running a different binary)"
+    };
+    record_failure(paths, &version, reason);
     let restored = state
         .old_release
         .as_deref()
