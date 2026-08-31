@@ -17,6 +17,7 @@ import {
   getServerStatus,
   getUpdates,
   checkUpdates,
+  setUpdatesChannel,
   listSleepRecords,
   setSleepRecords,
   listMovementRecords,
@@ -110,6 +111,20 @@ export const handlers = [
   http.post('/api/updates/check', async () => {
     await delay(400);
     return HttpResponse.json(deepClone(checkUpdates()));
+  }),
+  http.post('/api/updates/channel', async ({ request }) => {
+    const { channel } = (await request.json()) as { channel: string };
+    await delay(200);
+    return HttpResponse.json(deepClone(setUpdatesChannel(channel)));
+  }),
+  http.post('/api/updates/apply', async () => {
+    await delay(300);
+    // Demo mode never has a release to install — same 409 the daemon gives
+    // when the channel offers nothing (or cannot be reached).
+    return HttpResponse.json(
+      { message: 'update failed: no working release source' },
+      { status: 409 },
+    );
   }),
   http.post('/api/updates/rollback', async () => {
     await delay(200);
