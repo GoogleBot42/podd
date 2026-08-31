@@ -25,7 +25,10 @@ pub mod wire;
 
 pub use control::{Call, MockControl, NotImplemented, PoddControl, PodControl};
 pub use state::{StateStore, StoreConfig};
-pub use updates::{DaemonBuild, MockUpdates, UpdateOps, UpdateStatus, UpdatesReport};
+pub use updates::{
+    ApplyRequest, ChannelRequest, DaemonBuild, MockUpdates, UpdateOps, UpdateStatus, UpdateTier,
+    UpdatesReport,
+};
 
 use axum::extract::Request;
 use axum::http::{header, HeaderValue, Method, StatusCode};
@@ -149,6 +152,8 @@ pub fn router_full(
         // not routed here — see crates/api/src/updates.rs.
         .route("/updates", get(handlers::get_updates))
         .route("/updates/check", post(handlers::post_updates_check))
+        .route("/updates/apply", post(handlers::post_updates_apply))
+        .route("/updates/channel", post(handlers::post_updates_channel))
         .route("/updates/rollback", post(handlers::post_updates_rollback))
         .route("/logs", get(handlers::get_logs))
         .route("/logs/{filename}", get(handlers::get_log_stream))

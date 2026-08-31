@@ -525,6 +525,25 @@ export const checkUpdates = () => {
   return updates.updater;
 };
 
+// Demo "switch channel": the daemon persists the choice and drops the previous
+// channel's offers + check verdict, so the demo does the same.
+export const setUpdatesChannel = (channel: string) => {
+  if (updates.updater) {
+    updates = {
+      ...updates,
+      updater: {
+        ...updates.updater,
+        channel,
+        available: [],
+        lastCheckUnix: null,
+        lastCheckOk: false,
+        lastError: null,
+      },
+    };
+  }
+  return updates.updater;
+};
+
 export const listSleepRecords = () => sleepRecords;
 export const setSleepRecords = (records: SleepRecord[]) => {
   sleepRecords = records;

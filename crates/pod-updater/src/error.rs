@@ -59,6 +59,16 @@ pub enum Error {
     #[error("live apply for {0:?} is not implemented yet // TODO(live-cutover)")]
     LiveApplyNotImplemented(ComponentKind),
 
+    /// An apply was requested while the agent is switched off. Nothing was
+    /// downloaded, staged or activated — say so rather than pretending.
+    #[error("update agent is disabled (PODD_UPDATER_ENABLED=false); nothing was applied")]
+    Disabled,
+
+    /// A channel name the agent refuses to use (empty, over-long, or carrying
+    /// characters that have no business in a URL/filename).
+    #[error("invalid channel name: {0}")]
+    InvalidChannel(String),
+
     /// Configuration could not be built/resolved.
     #[error("updater config error: {0}")]
     Config(String),

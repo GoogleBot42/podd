@@ -45,7 +45,9 @@ anything on the actuation path as safety-critical.
   `.#buildrootEnv` FHS sandbox (plain nix shells fail its `dependencies.sh`);
   the script handles this — see `os/README.md`. Read the `build-sd-image`
   skill before touching this area.
-- UI dev: `npm run dev|build|lint` in `ui/` (React 19, Vite, MUI).
+- UI dev: `npm run dev|build|lint` in `ui/` (React 19, Vite, MUI). A fresh
+  worktree has no `node_modules` — run `npm ci` first or lint dies with
+  "eslint: command not found".
 
 ## Git & forge
 

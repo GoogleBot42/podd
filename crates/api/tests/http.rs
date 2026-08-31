@@ -21,6 +21,12 @@ async fn body_json(resp: axum::response::Response) -> Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
+/// Plain-text body (the action routes answer errors as text, not JSON).
+async fn body_text(resp: axum::response::Response) -> String {
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
 fn get(path: &str) -> Request<Body> {
     Request::builder()
         .uri(path)
@@ -1357,12 +1363,13 @@ async fn updates_without_an_agent() {
     assert_eq!(v["daemon"]["rev"], json!(podd_core::GIT_REV));
     assert!(v["updater"].is_null());
 
-    for path in ["/api/updates/check", "/api/updates/rollback"] {
-        let resp = app
-            .clone()
-            .oneshot(post_json(path, &json!({})))
-            .await
-            .unwrap();
+    for (path, body) in [
+        ("/api/updates/check", json!({})),
+        ("/api/updates/apply", json!({ "kind": "app" })),
+        ("/api/updates/channel", json!({ "channel": "beta" })),
+        ("/api/updates/rollback", json!({})),
+    ] {
+        let resp = app.clone().oneshot(post_json(path, &body)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
     }
 }
@@ -1426,10 +1433,107 @@ async fn update_action_failures_are_surfaced() {
     assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
 
     let resp = app
+        .clone()
         .oneshot(post_json("/api/updates/rollback", &json!({})))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+    // A refused apply (disabled agent, unreachable source, bad digest) must
+    // surface the agent's message — never a silent 200.
+    let resp = app
+        .oneshot(post_json("/api/updates/apply", &json!({ "kind": "app" })))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let body = body_text(resp).await;
+    assert!(body.contains("no sources configured"), "body={body}");
+}
+
+/// Applying reaches the agent and answers with the refreshed status (the
+/// on-device restart usually kills the connection first — that is the UI's
+/// problem, not the route's). `{}` means the app tier.
+#[tokio::test]
+async fn apply_drives_the_app_tier() {
+    let updates = Arc::new(api::MockUpdates::default());
+    let app = build_with_updates(updates.clone());
+
+    let resp = app
+        .clone()
+        .oneshot(post_json("/api/updates/apply", &json!({ "kind": "app" })))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(body_json(resp).await["lastApplied"].is_string());
+
+    let resp = app
+        .oneshot(post_json("/api/updates/apply", &json!({})))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "empty body = app tier");
+
+    assert_eq!(updates.calls(), vec!["apply", "apply"]);
+}
+
+/// Tier-1 (OS) and Tier-3 (MCU) live applies are still stubs behind their
+/// dry-run gates (issue #43): the route must say "not supported yet" instead
+/// of half-applying something destructive.
+#[tokio::test]
+async fn apply_refuses_the_os_and_mcu_tiers() {
+    let updates = Arc::new(api::MockUpdates::default());
+    let app = build_with_updates(updates.clone());
+
+    for kind in ["os", "mcu_frozen", "mcu_sensor", "bootloader"] {
+        let resp = app
+            .clone()
+            .oneshot(post_json("/api/updates/apply", &json!({ "kind": kind })))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED, "kind={kind}");
+    }
+    // An unknown tier is a client error, not a 501.
+    let resp = app
+        .clone()
+        .oneshot(post_json("/api/updates/apply", &json!({ "kind": "kernel" })))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    assert!(
+        updates.calls().is_empty(),
+        "nothing may reach the agent for an unappliable tier"
+    );
+}
+
+/// The channel is settable at runtime and the agent persists it; junk names
+/// are rejected before the agent sees them.
+#[tokio::test]
+async fn channel_can_be_switched_at_runtime() {
+    let updates = Arc::new(api::MockUpdates::default());
+    let app = build_with_updates(updates.clone());
+
+    let resp = app
+        .clone()
+        .oneshot(post_json("/api/updates/channel", &json!({ "channel": "beta" })))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_json(resp).await["channel"], json!("beta"));
+
+    // ...and it sticks on the next read.
+    let v = body_json(app.clone().oneshot(get("/api/updates")).await.unwrap()).await;
+    assert_eq!(v["updater"]["channel"], json!("beta"));
+
+    for bad in [json!({ "channel": "../etc" }), json!({ "channel": "  " })] {
+        let resp = app
+            .clone()
+            .oneshot(post_json("/api/updates/channel", &bad))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "bad={bad}");
+    }
+
+    assert_eq!(updates.calls(), vec!["channel"], "junk must not reach the agent");
 }
 
 // ---------------------------------------------------------------------------
