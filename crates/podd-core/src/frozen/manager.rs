@@ -5,14 +5,14 @@ use crate::health::{self, Health, HealthRegistry};
 use crate::led::{IS31FL3194Config, IS31FL3194Controller, LedPattern};
 use crate::schedule::{self, Schedules};
 use crate::settings::{Settings, TemperatureScheduleOverride};
+use futures_util::{SinkExt, StreamExt, stream::SplitSink};
+use jiff::{Timestamp, Zoned, civil::Time, tz::TimeZone};
+use linux_embedded_hal::I2cdev;
 use pod_proto::codec::{CommandTrait, PacketCodec};
 use pod_proto::frozen::packet::FrozenTarget;
 use pod_proto::frozen::{FrozenCommand, FrozenPacket};
 use pod_proto::packet::BedSide;
 use pod_proto::serial::{SerialError, create_framed_port};
-use futures_util::{SinkExt, StreamExt, stream::SplitSink};
-use jiff::{Timestamp, Zoned, civil::Time, tz::TimeZone};
-use linux_embedded_hal::I2cdev;
 use rumqttc::AsyncClient;
 use thiserror::Error;
 use tokio::sync::{mpsc, watch};
@@ -23,6 +23,12 @@ use tokio_util::codec::Framed;
 const HWINFO_INT: Duration = Duration::from_secs(1);
 const TEMP_INT: Duration = Duration::from_secs(10);
 const MAX_WAKE_ATTEMPTS: u32 = 5;
+/// How long a sent Prime may go unconfirmed (no `PrimingStarted` ack, no
+/// `[priming] start` message) before it is resent. Generous: the ack is
+/// immediate when the frame arrives, so a miss means the frame was dropped.
+const PRIME_CONFIRM_TIMEOUT: Duration = Duration::from_secs(15);
+/// Total Prime sends (first try + retries) before giving up loudly.
+const MAX_PRIME_SENDS: u8 = 3;
 
 /// Safe setpoint (centi-°C, 27.5 °C) for a "turn this side on" with no real
 /// setpoint to carry forward.
@@ -137,6 +143,8 @@ pub async fn run(
     let mut led_state: Option<LedThermalState> = None;
     let mut wake_attempts = 0;
     let mut overrides = ManualOverrides::default();
+    // In-flight Prime awaiting firmware confirmation (#9).
+    let mut prime_verify: Option<PrimeVerify> = None;
 
     loop {
         tokio::select! {
@@ -171,7 +179,37 @@ pub async fn run(
 
             // sends commands separated by 20ms
             // before sending any commands, wakes the device by sending ping + jump fw
-            _ = interval.tick() => if let Some(cmd) = get_next_command(
+            _ = interval.tick() => {
+                // A sent Prime must be confirmed by the firmware before we
+                // trust it — LSP frames drop silently (actuation-safety rule),
+                // and a missed daily prime would go unnoticed for a day.
+                if let Some(v) = &mut prime_verify {
+                    match prime_verdict(v, state.is_priming, Instant::now()) {
+                        PrimeVerdict::Confirmed => {
+                            log::info!("Priming confirmed by firmware (send {}/{MAX_PRIME_SENDS})", v.attempts);
+                            prime_verify = None;
+                        }
+                        PrimeVerdict::Wait => {}
+                        PrimeVerdict::Resend => if state.is_awake() {
+                            v.attempts += 1;
+                            v.sent_at = Instant::now();
+                            log::warn!(
+                                "Prime not confirmed within {}s; resending (send {}/{MAX_PRIME_SENDS})",
+                                PRIME_CONFIRM_TIMEOUT.as_secs(), v.attempts
+                            );
+                            send_command(&mut writer, FrozenCommand::Prime).await;
+                        },
+                        PrimeVerdict::GiveUp => {
+                            log::error!(
+                                "Priming was never confirmed after {MAX_PRIME_SENDS} sends; \
+                                 giving up (water tank? cover MCU?)"
+                            );
+                            prime_verify = None;
+                        }
+                    }
+                }
+
+                if let Some(cmd) = get_next_command(
                 &mut timers,
                 &state,
                 &timezone,
@@ -193,7 +231,11 @@ pub async fn run(
                         Health::Healthy,
                         "cover MCU awake; driving the TEC/pump",
                     );
+                    let is_prime = matches!(cmd, FrozenCommand::Prime);
                     send_command(&mut writer, cmd).await;
+                    if is_prime {
+                        prime_verify = Some(PrimeVerify { sent_at: Instant::now(), attempts: 1 });
+                    }
                 }
 
                 // keep trying to wake it up, give it 2 seconds every attempt
@@ -230,7 +272,7 @@ pub async fn run(
                         log::error!("Failed to send JumpToFirmware: {e}");
                     }
                 }
-            },
+            }},
 
             Ok(_) = config_rx.changed() => {
                 let cfg = config_rx.borrow();
@@ -282,6 +324,12 @@ pub async fn run(
 
             // api / scheduler commands routed to the Frozen subsystem.
             Some(cmd) = cmd_rx.recv() => {
+                // A live "Prime Now" gets the same firmware-confirmation
+                // watch as the scheduled daily prime (dry-run sends nothing,
+                // so there is nothing to confirm).
+                if !dry_run && matches!(cmd, Command::Prime) {
+                    prime_verify = Some(PrimeVerify { sent_at: Instant::now(), attempts: 1 });
+                }
                 if let Some((side, target, expires_at)) = handle_command(&mut writer, &state, dry_run, cmd).await {
                     // Must be the *same* wanted target `get_next_command`
                     // computes, weekly path included: this flag is what the
@@ -348,7 +396,9 @@ fn apply_target(side: &mut SideSnapshot, tar: &FrozenTarget) {
 
 /// °F -> centidegrees Celsius, for building Frozen setpoint frames.
 fn f_to_centi_c(f: i32) -> u16 {
-    (((f as f64 - 32.0) * 5.0 / 9.0) * 100.0).round().clamp(0.0, u16::MAX as f64) as u16
+    (((f as f64 - 32.0) * 5.0 / 9.0) * 100.0)
+        .round()
+        .clamp(0.0, u16::MAX as f64) as u16
 }
 
 /// Translate a bus [`Command`] into a Frozen control frame.
@@ -376,7 +426,11 @@ async fn handle_command(
             }
             .delimiter_safe(side),
         }),
-        Command::SetPower { side, on, duration_s } => {
+        Command::SetPower {
+            side,
+            on,
+            duration_s,
+        } => {
             // Carry the last *real* setpoint forward (see [`power_on_temp`]);
             // the firmware ignores temp when disabling. The firmware has no
             // session timer, so duration_s becomes the override's expiry (#31).
@@ -596,7 +650,6 @@ fn get_next_command(
 
     let now_local = now_zoned.time();
 
-    // TODO verify it actually started priming
     if should_prime(
         away_mode.both(),
         prime_enabled,
@@ -609,6 +662,38 @@ fn get_next_command(
     }
 
     None
+}
+
+/// A Prime that was actually written to the UART and is awaiting the
+/// firmware's confirmation ([`FrozenState::is_priming`]).
+struct PrimeVerify {
+    sent_at: Instant,
+    attempts: u8,
+}
+
+/// What to do about an in-flight [`PrimeVerify`] this tick.
+#[derive(Debug, PartialEq, Eq)]
+enum PrimeVerdict {
+    /// Firmware reports priming — done watching.
+    Confirmed,
+    /// No confirmation yet, but still within the timeout.
+    Wait,
+    /// Timed out with sends left — send Prime again.
+    Resend,
+    /// Timed out with no sends left — stop and log an error.
+    GiveUp,
+}
+
+fn prime_verdict(v: &PrimeVerify, is_priming: bool, now: Instant) -> PrimeVerdict {
+    if is_priming {
+        PrimeVerdict::Confirmed
+    } else if now.duration_since(v.sent_at) <= PRIME_CONFIRM_TIMEOUT {
+        PrimeVerdict::Wait
+    } else if v.attempts < MAX_PRIME_SENDS {
+        PrimeVerdict::Resend
+    } else {
+        PrimeVerdict::GiveUp
+    }
 }
 
 /// Whether the *scheduled daily* prime should fire now.
@@ -650,8 +735,7 @@ fn resolve_target(
     now: Instant,
 ) -> FrozenTarget {
     if let Some(ov) = slot
-        && (ov.config_enabled != config_wanted.enabled
-            || ov.expires_at.is_some_and(|at| now >= at))
+        && (ov.config_enabled != config_wanted.enabled || ov.expires_at.is_some_and(|at| now >= at))
     {
         if ov.config_enabled != config_wanted.enabled {
             log::info!("Manual override on {side:?} expired (schedule boundary)");
@@ -1056,7 +1140,15 @@ mod tests {
             ovs
         };
         let at = |ovs: &[TemperatureScheduleOverride; 2], side| {
-            scheduled_target(side, &profile(), &schedules, ovs, false, &tz(), &monday_at(22, 0))
+            scheduled_target(
+                side,
+                &profile(),
+                &schedules,
+                ovs,
+                false,
+                &tz(),
+                &monday_at(22, 0),
+            )
         };
 
         // live suspension: the owned, in-window side reads as off
@@ -1070,7 +1162,14 @@ mod tests {
         // no overrides at all: same as wanted_target
         assert_eq!(
             at(&temp_overrides_from(&Settings::default()), BedSide::Left),
-            wanted_target(BedSide::Left, &profile(), &schedules, false, &tz(), &monday_at(22, 0))
+            wanted_target(
+                BedSide::Left,
+                &profile(),
+                &schedules,
+                false,
+                &tz(),
+                &monday_at(22, 0)
+            )
         );
     }
 
@@ -1100,11 +1199,19 @@ mod tests {
         // inside: onTemperature, then the step stop, both delimiter-safe
         assert_eq!(
             at(22, 0),
-            FrozenTarget { enabled: true, temp: f_to_centi_c(82) }.delimiter_safe(BedSide::Left)
+            FrozenTarget {
+                enabled: true,
+                temp: f_to_centi_c(82)
+            }
+            .delimiter_safe(BedSide::Left)
         );
         assert_eq!(
             at(23, 30),
-            FrozenTarget { enabled: true, temp: f_to_centi_c(75) }.delimiter_safe(BedSide::Left)
+            FrozenTarget {
+                enabled: true,
+                temp: f_to_centi_c(75)
+            }
+            .delimiter_safe(BedSide::Left)
         );
     }
 
@@ -1128,7 +1235,10 @@ mod tests {
             &monday_at(22, 0),
         );
         assert_eq!(got, FrozenTarget::default());
-        assert!(legacy(BedSide::Left, false).enabled, "premise: profile is on");
+        assert!(
+            legacy(BedSide::Left, false).enabled,
+            "premise: profile is on"
+        );
     }
 
     #[test]
@@ -1204,7 +1314,11 @@ mod tests {
             let got = wanted_target(side, &solo, &schedules, false, &tz(), &monday_at(22, 0));
             assert_eq!(
                 got,
-                FrozenTarget { enabled: true, temp: f_to_centi_c(82) }.delimiter_safe(side)
+                FrozenTarget {
+                    enabled: true,
+                    temp: f_to_centi_c(82)
+                }
+                .delimiter_safe(side)
             );
         }
     }
@@ -1271,5 +1385,59 @@ mod tests {
             ..FrozenState::default()
         };
         assert_eq!(led_thermal_state(&state), LedThermalState::Heating);
+    }
+}
+
+#[cfg(test)]
+mod prime_verify_tests {
+    use super::*;
+
+    fn pending(attempts: u8) -> (PrimeVerify, Instant) {
+        let now = Instant::now();
+        (
+            PrimeVerify {
+                sent_at: now,
+                attempts,
+            },
+            now,
+        )
+    }
+
+    #[test]
+    fn confirmed_the_moment_firmware_reports_priming() {
+        let (v, now) = pending(1);
+        assert_eq!(prime_verdict(&v, true, now), PrimeVerdict::Confirmed);
+        // even after the timeout — late confirmation still wins over a retry
+        assert_eq!(
+            prime_verdict(&v, true, now + PRIME_CONFIRM_TIMEOUT * 2),
+            PrimeVerdict::Confirmed
+        );
+    }
+
+    #[test]
+    fn waits_out_the_confirmation_window() {
+        let (v, now) = pending(1);
+        assert_eq!(prime_verdict(&v, false, now), PrimeVerdict::Wait);
+        assert_eq!(
+            prime_verdict(&v, false, now + PRIME_CONFIRM_TIMEOUT),
+            PrimeVerdict::Wait
+        );
+    }
+
+    #[test]
+    fn resends_after_timeout_while_sends_remain() {
+        let (v, now) = pending(1);
+        let after = now + PRIME_CONFIRM_TIMEOUT + Duration::from_secs(1);
+        assert_eq!(prime_verdict(&v, false, after), PrimeVerdict::Resend);
+        let (v, now) = pending(MAX_PRIME_SENDS - 1);
+        let after = now + PRIME_CONFIRM_TIMEOUT + Duration::from_secs(1);
+        assert_eq!(prime_verdict(&v, false, after), PrimeVerdict::Resend);
+    }
+
+    #[test]
+    fn gives_up_after_the_last_send_times_out() {
+        let (v, now) = pending(MAX_PRIME_SENDS);
+        let after = now + PRIME_CONFIRM_TIMEOUT + Duration::from_secs(1);
+        assert_eq!(prime_verdict(&v, false, after), PrimeVerdict::GiveUp);
     }
 }
