@@ -1,15 +1,10 @@
 *filter
 :INPUT DROP [0:0]
 :FORWARD DROP [0:0]
-:OUTPUT DROP [0:0]
+:OUTPUT ACCEPT [0:0]
 -A INPUT -i lo -j ACCEPT
 -A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 -A INPUT -p ipv6-icmp -j ACCEPT
 -A INPUT -s fe80::/10 -j ACCEPT
 -A INPUT -s fc00::/7 -j ACCEPT
--A OUTPUT -o lo -j ACCEPT
--A OUTPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
--A OUTPUT -p ipv6-icmp -j ACCEPT
--A OUTPUT -d fe80::/10 -j ACCEPT
--A OUTPUT -d fc00::/7 -j ACCEPT
 COMMIT

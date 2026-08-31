@@ -1,6 +1,6 @@
 [Unit]
-Description=podd egress muzzle (strict default-DROP firewall)
-# Load before the network comes up so nothing leaks before the rules are in.
+Description=podd inbound firewall (LAN-only INPUT)
+# Load before the network comes up so the rules are in from the first packet.
 DefaultDependencies=no
 Before=network-pre.target
 Wants=network-pre.target
@@ -9,7 +9,12 @@ After=local-fs.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-# LAN + loopback + DHCP/NTP only; everything to the public internet is dropped.
+# Inbound: LAN + loopback (+ provisioning-AP DHCP) only. Outbound is OPEN on
+# the clean-room image: every byte of this rootfs is built from source, there
+# is nothing that phones home, and the OTA updater needs to reach the public
+# release host (GitHub). The strict egress muzzle belongs to installs onto a
+# STOCK rootfs, where Eight Sleep's binaries still exist disabled — see
+# issue #162 for deploying it there.
 ExecStart=/usr/sbin/iptables-restore /etc/iptables/iptables.rules
 ExecStart=/usr/sbin/ip6tables-restore /etc/iptables/ip6tables.rules
 

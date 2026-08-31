@@ -84,7 +84,7 @@ Net: the OS **image** is 100% free of **Eight-authored** code and is publishable
                         ├─ podd  (static aarch64-musl, from the Cargo workspace)
                         ├─ podd web UI (from ui/)
                         ├─ fw_printenv/fw_setenv (libubootenv; A/B env access)
-                        └─ NetworkManager, sshd, iptables muzzle, …
+                        └─ NetworkManager, sshd, LAN-only inbound firewall, …
 ```
 
 - **`imx-boot`** is assembled by `imx-mkimage` (open) from SPL + U-Boot + ATF +
