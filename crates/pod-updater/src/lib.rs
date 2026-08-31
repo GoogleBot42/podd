@@ -54,9 +54,12 @@ pub mod trial;
 pub use agent::{from_env_shared, run_from_env, shared, Updater};
 pub use bootenv::{BootEnv, FakeEnv, FwEnv};
 pub use config::{
-    OsWriterKind, PubKeySource, ReleaseSourceUrl, ResolvedSource, TrustConfig, UpdateMode,
-    UpdaterConfig, UpdaterPaths,
+    load_channel_override, save_channel_override, validate_channel, OsWriterKind, PubKeySource,
+    ReleaseSourceUrl, ResolvedSource, TrustConfig, UpdateMode, UpdaterConfig, UpdaterPaths,
 };
+/// The update tiers, re-exported so API/UI seams can name one (e.g. "apply the
+/// App tier") without depending on `pod-update` directly.
+pub use pod_update::ComponentKind;
 pub use os_slot::AbSlotWriter;
 pub use os_trial::{resolve_os_trial, OsPending, OsTrialOutcome};
 pub use error::{Error, Result};
@@ -557,6 +560,82 @@ mod tests {
             .record_version(ComponentKind::App, "0.2.0-gdef5678")
             .unwrap();
         make().apply(ComponentKind::Os).await.unwrap();
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An apply while the agent is switched off must refuse loudly — nothing
+    /// downloaded, nothing activated, and an error the UI can quote.
+    #[tokio::test]
+    async fn apply_refuses_while_the_agent_is_disabled() {
+        let root = tmp("disabled");
+        let bytes = b"v1".to_vec();
+        let sm = SignedManifest::unsigned(app_manifest("1.0", "app.squashfs", &bytes));
+        let up = updater_with(
+            &root,
+            sm.to_json_pretty().unwrap(),
+            vec![("app.squashfs", bytes)],
+            TrustPolicy::AllowUnsigned,
+            Arc::new(AtomicBool::new(true)),
+        )
+        .with_enabled(false);
+
+        assert!(matches!(
+            up.apply(ComponentKind::App).await.unwrap_err(),
+            Error::Disabled
+        ));
+        assert!(
+            std::fs::read_link(root.join("current")).is_err(),
+            "a disabled agent must not activate anything"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Switching channels takes effect immediately (the next check follows the
+    /// new channel), is persisted, and is picked up again by `from_env`.
+    #[tokio::test]
+    async fn channel_switch_takes_effect_and_persists() {
+        let root = tmp("channel");
+        let bytes = b"beta-bytes".to_vec();
+        // The source only ever serves a `beta` manifest.
+        let mut m = app_manifest("2.0", "app.squashfs", &bytes);
+        m.channel = "beta".into();
+        let sm = SignedManifest::unsigned(m);
+        let up = updater_with(
+            &root,
+            sm.to_json_pretty().unwrap(),
+            vec![("app.squashfs", bytes)],
+            TrustPolicy::AllowUnsigned,
+            Arc::new(AtomicBool::new(true)),
+        );
+
+        // On `stable` the beta manifest is a channel mismatch.
+        assert!(up.check().await.is_err());
+        assert!(!up.status().last_check_ok);
+
+        assert_eq!(up.set_channel(" beta ").unwrap(), "beta");
+        assert_eq!(up.channel(), "beta");
+        let status = up.status();
+        assert_eq!(status.channel, "beta");
+        assert!(
+            status.last_check_unix.is_none() && status.last_error.is_none(),
+            "the old channel's verdict must not carry over"
+        );
+
+        // The very next check follows the new channel — no restart needed.
+        assert_eq!(up.check().await.unwrap().len(), 1);
+
+        // ...and the switch survives a restart (same paths, fresh config).
+        let paths = paths_in(&root);
+        assert_eq!(load_channel_override(&paths).as_deref(), Some("beta"));
+
+        // Junk channel names are refused and change nothing.
+        assert!(matches!(
+            up.set_channel("../etc").unwrap_err(),
+            Error::InvalidChannel(_)
+        ));
+        assert!(matches!(up.set_channel("  ").unwrap_err(), Error::InvalidChannel(_)));
+        assert_eq!(up.channel(), "beta");
 
         let _ = std::fs::remove_dir_all(&root);
     }

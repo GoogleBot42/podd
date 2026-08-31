@@ -37,7 +37,10 @@ const PODD_SERVICE: &str = "podd.service";
 /// The agent. Construct with [`Updater::from_config`] (real transports) or the
 /// field-wise [`Updater::new`] + `with_*` setters (tests/custom wiring).
 pub struct Updater {
-    channel: String,
+    /// The release channel followed. Interior-mutable: the owner can switch
+    /// channels at runtime ([`Updater::set_channel`]) without restarting podd,
+    /// and the switch is persisted so it survives one.
+    channel: std::sync::RwLock<String>,
     mode: UpdateMode,
     policy: TrustPolicy,
     sources: Vec<Box<dyn ReleaseSource>>,
@@ -76,7 +79,7 @@ impl Updater {
         status.current_versions = installed_versions(&layout);
         let (status_tx, _) = watch::channel(status);
         Updater {
-            channel,
+            channel: std::sync::RwLock::new(channel),
             mode,
             policy,
             sources,
@@ -113,6 +116,13 @@ impl Updater {
         self.mcu_dry_run = mcu;
         self
     }
+    /// Switch the agent off (as `PODD_UPDATER_ENABLED=false` does): no polling,
+    /// and [`Updater::apply`] refuses. Trial resolution still runs.
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self.set_status(|s| s.enabled = enabled);
+        self
+    }
     pub fn with_poll_interval(mut self, d: std::time::Duration) -> Self {
         self.poll_interval = d;
         self
@@ -142,9 +152,52 @@ impl Updater {
         self.status_tx.send_modify(f);
     }
 
+    /// The release channel currently followed.
+    pub fn channel(&self) -> String {
+        self.channel.read().expect("channel lock").clone()
+    }
+
+    /// Switch the followed release channel at runtime and persist the choice
+    /// (`<release_root>/channel.json`), so it survives a restart and outranks
+    /// `PODD_UPDATER_CHANNEL` from then on. Returns the normalised name.
+    ///
+    /// Nothing is downloaded or applied here: the next check (poll tick or
+    /// `POST /api/updates/check`) is what consults the new channel. Any
+    /// previously-offered components are dropped from the published status —
+    /// they describe the *old* channel and must not read as offers on the new
+    /// one. Allowed while the agent is disabled: it only records a preference.
+    pub fn set_channel(&self, channel: &str) -> Result<String> {
+        let channel = crate::config::validate_channel(channel)?;
+        // Persist first: a switch the owner is told succeeded must survive a
+        // restart, and a read-only /opt must fail the request, not lie.
+        crate::config::save_channel_override(&self.layout.paths, &channel)?;
+        let changed = {
+            let mut guard = self.channel.write().expect("channel lock");
+            let changed = *guard != channel;
+            guard.clone_from(&channel);
+            changed
+        };
+        let published = channel.clone();
+        self.set_status(move |s| {
+            s.channel = published;
+            if changed {
+                // The old channel's offers and check verdict no longer apply.
+                s.available.clear();
+                s.last_check_unix = None;
+                s.last_check_ok = false;
+                s.last_error = None;
+            }
+        });
+        if changed {
+            log::info!("pod-updater: channel switched to {channel}");
+        }
+        Ok(channel)
+    }
+
     /// Fetch and verify the manifest from the first source that yields a valid,
     /// channel-matching, trust-policy-satisfying manifest.
     async fn fetch_verified(&self) -> Result<Manifest> {
+        let want_channel = self.channel();
         let mut last_err = String::from("no sources configured");
         for src in &self.sources {
             let json = match src.fetch_manifest().await {
@@ -162,12 +215,12 @@ impl Updater {
                 }
             };
             match pod_update::verify_release(&sm, &self.policy) {
-                Ok(m) if m.channel == self.channel => return Ok(m),
+                Ok(m) if m.channel == want_channel => return Ok(m),
                 Ok(m) => {
                     last_err = format!(
                         "{}: channel mismatch (want {}, got {})",
                         src.label(),
-                        self.channel,
+                        want_channel,
                         m.channel
                     );
                 }
@@ -253,7 +306,16 @@ impl Updater {
     /// Apply the newest manifest's component of `kind`. App = atomic swap with
     /// a post-restart canary trial (see [`crate::trial`]); OS/MCU = verified +
     /// gated plumbing; Bootloader is refused.
+    ///
+    /// Refuses outright when the agent is disabled
+    /// (`PODD_UPDATER_ENABLED=false`): an operator who switched the agent off
+    /// must not get an update applied by pressing a button, and the refusal is
+    /// explicit rather than a silent no-op. (The poll loop never reaches here
+    /// when disabled — it stops before polling.)
     pub async fn apply(&self, kind: ComponentKind) -> Result<()> {
+        if !self.enabled {
+            return Err(Error::Disabled);
+        }
         if kind == ComponentKind::Bootloader {
             return Err(Error::BootloaderRefused);
         }
@@ -455,7 +517,7 @@ impl Updater {
         }
         log::info!(
             "pod-updater: channel={} mode={} every {:?} ({} source(s))",
-            self.channel,
+            self.channel(),
             self.mode.as_str(),
             self.poll_interval,
             self.sources.len(),
@@ -547,7 +609,7 @@ impl Updater {
         let os_writer = select_os_writer(config, boot_env.clone());
 
         Ok(Updater {
-            channel: config.channel.clone(),
+            channel: std::sync::RwLock::new(config.channel.clone()),
             mode: config.mode,
             policy,
             sources,

@@ -9,11 +9,17 @@
 use crate::error::{Error, Result};
 use pod_update::sign::{decode_verifying_key, VerifyingKey};
 use pod_update::TrustPolicy;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
 
 /// Default filename of the signed manifest within a release.
 pub const DEFAULT_MANIFEST_NAME: &str = "manifest.json";
+
+/// Persisted runtime channel override, stored next to the releases (same
+/// directory as `trial.json`). Written only by an explicit runtime setter
+/// ([`crate::Updater::set_channel`], i.e. `POST /api/updates/channel`).
+const CHANNEL_FILE: &str = "channel.json";
 
 /// Whether the loop applies updates on its own or only reports them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -194,6 +200,55 @@ impl UpdaterPaths {
     }
 }
 
+/// On-disk shape of the persisted channel override.
+#[derive(Serialize, Deserialize)]
+struct PersistedChannel {
+    channel: String,
+}
+
+/// Validate + normalise an owner-supplied channel name. Channel names end up
+/// in URLs (the Gitea/GitHub release tag shape) and in an on-disk JSON file,
+/// so keep them to a boring, path-free alphabet.
+pub fn validate_channel(name: &str) -> Result<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(Error::InvalidChannel("channel name is empty".into()));
+    }
+    if name.len() > 64 {
+        return Err(Error::InvalidChannel("channel name is too long".into()));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return Err(Error::InvalidChannel(format!(
+            "{name:?}: use letters, digits, '-', '_' or '.'"
+        )));
+    }
+    Ok(name.to_string())
+}
+
+/// The persisted runtime channel override, if one was ever set. Invalid or
+/// unreadable content is ignored (the env/default channel wins) — a corrupt
+/// state file must never stop the agent from starting.
+pub fn load_channel_override(paths: &UpdaterPaths) -> Option<String> {
+    let bytes = std::fs::read(paths.release_root.join(CHANNEL_FILE)).ok()?;
+    let parsed: PersistedChannel = serde_json::from_slice(&bytes).ok()?;
+    validate_channel(&parsed.channel).ok()
+}
+
+/// Persist a channel override so a runtime switch survives a restart.
+/// Written atomically (temp + rename), like `trial.json` / `versions.json`.
+pub fn save_channel_override(paths: &UpdaterPaths, channel: &str) -> Result<()> {
+    let channel = validate_channel(channel)?;
+    std::fs::create_dir_all(&paths.release_root)?;
+    let path = paths.release_root.join(CHANNEL_FILE);
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(&PersistedChannel { channel })?)?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(())
+}
+
 /// Which Tier-1 (OS) writer to wire up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OsWriterKind {
@@ -262,7 +317,8 @@ impl UpdaterConfig {
     ///
     /// Recognised vars (all optional):
     /// - `PODD_UPDATER_ENABLED` (`false`/`0` disables; default enabled)
-    /// - `PODD_UPDATER_CHANNEL` (default `stable`)
+    /// - `PODD_UPDATER_CHANNEL` (default `stable`; a persisted runtime
+    ///   override in `<release_root>/channel.json` wins over it)
     /// - `PODD_UPDATER_MODE` (`auto`/`manual`; default `manual`)
     /// - `PODD_UPDATER_POLL_SECS` (default 3600)
     /// - `PODD_UPDATER_MANIFEST_URL` + `PODD_UPDATER_ARTIFACT_BASE` (explicit)
@@ -370,6 +426,15 @@ impl UpdaterConfig {
         }
         if let Some(u) = env("PODD_UPDATER_HEALTH_URL") {
             cfg.health_url = u;
+        }
+
+        // A channel switched at runtime (UI / `POST /api/updates/channel`)
+        // outranks `PODD_UPDATER_CHANNEL`: the env var is the install-time
+        // default, the override is a later, explicit owner decision. Delete
+        // `<release_root>/channel.json` to fall back to the env var.
+        // (Read last: it needs the resolved paths above.)
+        if let Some(c) = load_channel_override(&cfg.paths) {
+            cfg.channel = c;
         }
         cfg
     }
