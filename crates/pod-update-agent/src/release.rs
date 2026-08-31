@@ -53,6 +53,11 @@ impl ReleaseLayout {
         ReleaseLayout { paths }
     }
 
+    /// Where a given app release version lives (or would live).
+    pub fn release_dir(&self, version: &str) -> PathBuf {
+        self.paths.release_root.join(version)
+    }
+
     fn previous(&self) -> PathBuf {
         previous_link(&self.paths)
     }
@@ -113,7 +118,7 @@ impl ReleaseLayout {
         installer: &dyn ReleaseInstaller,
     ) -> Result<()> {
         let version = &component.version;
-        let release_dir = self.paths.release_root.join(version);
+        let release_dir = self.release_dir(version);
         std::fs::create_dir_all(&release_dir)?;
         let dest = release_dir.join(APP_ARTIFACT);
         move_file(staged_squashfs, &dest)?;
