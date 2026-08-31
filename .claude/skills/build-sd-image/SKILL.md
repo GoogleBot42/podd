@@ -120,64 +120,32 @@ see "Host mkimage workaround" in `os/README.md`.
 This board has none of the usual debug ports (`docs/CLEANROOM-OS.md` →
 "Debug channels"). Post-mortem is entirely: boot the image, let it run a few
 minutes, power off, pull the card, mount it **read-only** on a host, and read
-the boot log it wrote to its own persistent storage. **Which partition and
-which path depends on which image path you built — this differs between L1
-and L2, and getting it wrong looks like "no logs exist":**
+the boot log it wrote to its own persistent storage.
 
-- **L2 (the current `os/scripts/build.sh` path): diagnostics are baked into
-  every build automatically** — no separate patch step. The logger
-  (`os/board/eightsleep/imx8mm-varsom/rootfs-overlay/usr/bin/podd-bootlog`)
-  and its units (`podd-bootlog-early.service` at `sysinit.target`,
-  `podd-bootlog.timer` firing `podd-bootlog-late.service` `OnBootSec=60s`)
-  are enabled by `post-build.sh` into every rootfs. It writes to
-  `/data/bootlog` — **that's partition p3** (`genimage.cfg`: the `data`
-  partition, ext4, `label = "podd_data"`), **not p1**. Boot ~3 min (past the
-  60 s late snapshot), power off, then on a host (device node depends on your
-  reader: `/dev/sdX3` for a USB adapter, `/dev/mmcblk0p3` for a built-in slot):
-  ```sh
-  sudo mount -o ro /dev/sdX3 /mnt   # p3, label podd_data — NOT p1
-  ls -la /mnt/bootlog/              # status-early.txt, status-late.txt,
-                                     # dmesg-early.txt, dmesg-late.txt,
-                                     # journal-early.txt, journal-late.txt,
-                                     # wifi-early.txt, wifi-late.txt
-  sudo umount /mnt
-  ```
-  If `/data` failed to mount on-device (e.g. p3 didn't come up at all), the
-  logger falls back to `/root/bootlog` on the rootfs itself — check p1 for
-  that if p3 comes up empty or doesn't exist.
-  (`docs/CLEANROOM-OS.md`'s "Debug channels" section documents the same
-  L1-vs-L2 split — `install/diag/` is the **L1** mechanism only.)
-- **L1 (`scripts/build-podd-sd.sh` output): diagnostics are NOT automatic —
-  inject them as an explicit extra step.** `build-podd-sd.sh` leaves both
-  `dist/podd-sd.img.gz` and the raw `dist/podd-sd.img` (podd#49 — it used to
-  only produce the `.gz`, which `patch-podd-sd-diag.sh`/`slim-podd-sd.sh`
-  can't read directly), so just run
-  `scripts/patch-podd-sd-diag.sh dist/podd-sd.img` (it needs the **raw**
-  `.img`, not `.gz`; the script errors out with a clear message pointing at
-  the `.gz` if you hand it one that hasn't been gunzipped). It patches
-  `install/diag/{bootlog.sh,podd-bootlog-early.service,
-  podd-bootlog-mid.service,podd-bootlog-late.service}` onto **p1** (unlike
-  L2, L1's rootfs *is* `/opt/podd`, since it clones the stock Yocto rootfs).
-  Boot ~3 min, power off, then (device node again depends on your reader):
-  ```sh
-  sudo mount -o ro /dev/sdX1 /mnt   # p1 (or /dev/mmcblk0p1 for a built-in slot)
-  ls -la /mnt/opt/podd/bootlog/     # timeline.txt, dmesg.<stage>.txt,
-                                     # net.<stage>.txt, nmcli.txt, iw.txt,
-                                     # journal.txt, failed.txt,
-                                     # podd-status.txt, lsmod.txt,
-                                     # wifi-modules.txt
-  sudo umount /mnt
-  ```
-  `<stage>` is `early`/`mid`/`late` (L1 has three stages; L2 only has
-  `early`/`late` — another difference between the two paths, don't assume
-  L2 has a "mid" file).
-  If you're also slimming the image (`scripts/slim-podd-sd.sh`), run the
-  diag patch **before** slimming so the slim image self-logs its boot too
-  (p1 is copied byte-for-byte, so a patch applied after slimming would work
-  just as well, but before is the documented order). Slim's own
-  contents-sanity check looks for `/opt/podd/bootlog.sh` mode 0755 but only
-  **warns** (podd#50) if it's missing rather than failing — an un-patched
-  image slims fine, it just won't self-log its boot.
+Diagnostics are baked into every build automatically — no separate patch
+step. The logger
+(`os/board/eightsleep/imx8mm-varsom/rootfs-overlay/usr/bin/podd-bootlog`)
+and its units (`podd-bootlog-early.service` at `sysinit.target`,
+`podd-bootlog.timer` firing `podd-bootlog-late.service` `OnBootSec=60s`)
+are enabled by `post-build.sh` into every rootfs. It writes to
+`/data/bootlog` — **that's partition p3** (`genimage.cfg`: the `data`
+partition, ext4, `label = "podd_data"`), **not p1**. Boot ~3 min (past the
+60 s late snapshot), power off, then on a host (device node depends on your
+reader: `/dev/sdX3` for a USB adapter, `/dev/mmcblk0p3` for a built-in slot):
+
+```sh
+sudo mount -o ro /dev/sdX3 /mnt   # p3, label podd_data — NOT p1
+ls -la /mnt/bootlog/              # status-early.txt, status-late.txt,
+                                   # dmesg-early.txt, dmesg-late.txt,
+                                   # journal-early.txt, journal-late.txt,
+                                   # wifi-early.txt, wifi-late.txt
+sudo umount /mnt
+```
+
+If `/data` failed to mount on-device (e.g. p3 didn't come up at all), the
+logger falls back to `/root/bootlog` on the rootfs itself — check p1 for
+that if p3 comes up empty or doesn't exist. There is no "mid" stage file —
+only `early`/`late`.
 
 ### 5. TZDIR / jiff zoneinfo crash-loop
 

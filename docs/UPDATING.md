@@ -1,76 +1,68 @@
 # Keeping podd updated
 
-**Who this is for / what you'll need:** Anyone with podd already installed
-([INSTALL.md](INSTALL.md)) who wants to understand and configure how it stays up to
-date. You'll need root/SSH on the Pod. No new hardware. This guide explains the
-built-in over-the-air (OTA) update agent, how to point it at a release source, how
-to choose your trust policy (including trusting your *own* signing key), and how
-rollback keeps a bad update from bricking you.
+For anyone with podd already installed ([INSTALL.md](INSTALL.md)) who wants to
+configure how it stays up to date. You'll need root/SSH on the Pod. Covers the
+built-in over-the-air (OTA) update agent: release sources, trust policy
+(including trusting your own signing key), and rollback.
 
 Related: **[INSTALL.md](INSTALL.md)** (first install) ·
-**[RELEASING.md](RELEASING.md)** (cutting releases if you're a maintainer) ·
+**[RELEASING.md](RELEASING.md)** (cutting releases) ·
 **[RECOVERY.md](RECOVERY.md)** (if something goes wrong).
 
 ---
 
-## How updates work, in plain language
+## How updates work
 
-podd ships with an on-device **update agent** (built into the `podd` daemon). It
-periodically checks a release source you configure, verifies any new release, and —
-depending on your settings — either applies it automatically or just tells you one
-is available.
+podd ships with an on-device update agent built into the `podd` daemon. It
+periodically checks a release source you configure, verifies any new release,
+and — depending on your settings — either applies it or reports that one is
+available.
 
-Key ideas:
-
-- **App updates are atomic and reversible.** Each release is unpacked into its own
-  directory under `/opt/podd/releases/<version>/`, and a `current` symlink is
-  flipped to activate it. The agent keeps the last few releases (default **3**) so
-  it can flip back instantly.
-  On the **clean-room OS image** the same layout lives at
+- **App updates are atomic and reversible.** Each release is unpacked under
+  `/opt/podd/releases/<version>/` and a `current` symlink is flipped to activate
+  it. The agent keeps the last few releases (default 3) so it can flip back
+  immediately. On the clean-room OS image the same layout lives at
   `/data/podd/updates/` instead (set via `PODD_UPDATER_*` in the shipped
-  `podd.service`): the persistent `/data` partition survives OS A/B slot
-  swaps, and the `podd-launch` wrapper execs the active release — falling
-  back to the OS-baked `/usr/bin/podd` whenever no release is installed, so
-  a broken release chain can never leave the Pod without a daemon.
-- **Every update is integrity-checked (SHA-256), always.** Whether a signature is
-  *also* required is your choice (see [Trust policy](#trust-policy)).
+  `podd.service`): the persistent `/data` partition survives OS A/B slot swaps,
+  and the `podd-launch` wrapper execs the active release — falling back to the
+  OS-baked `/usr/bin/podd` whenever no release is installed, so a broken release
+  chain cannot leave the Pod without a daemon.
+- **Every update is integrity-checked (SHA-256).** Whether a signature is also
+  required is configurable (see [Trust policy](#trust-policy)).
 - **A new release is health-checked before it's trusted.** After activating an app
-  update, podd hits its own health endpoint
-  (`http://127.0.0.1:3000/api/serverStatus` by default) within a timeout (~20s). If
-  the new version doesn't come up healthy, it rolls back.
-- **The agent is enabled but conservative by default:** `PODD_UPDATER_ENABLED=true`,
-  but **Manual** mode and **dry-run** for destructive OS/MCU writes. It won't
-  surprise you.
+  update, podd queries its own health endpoint
+  (`http://127.0.0.1:3000/api/serverStatus` by default) within ~20s; if it
+  doesn't come up healthy, it rolls back.
+- **Defaults are conservative.** `PODD_UPDATER_ENABLED=true`, with Manual mode
+  and dry-run for destructive OS/MCU writes.
 
 ---
 
 ## Auto vs Manual
 
+Set with `PODD_UPDATER_MODE=auto` (or `manual`).
+
 | Mode | Behavior |
 |---|---|
-| **Manual** (default) | Polls and *reports* that an update is available; you apply it explicitly (the panel's **Update to …** button, or the installer). |
-| **Auto** | Polls and applies auto-appliable updates (app tier) on its own. |
-
-Set the mode with `PODD_UPDATER_MODE=auto` (or `manual`).
+| **Manual** (default) | Polls and reports that an update is available; you apply it explicitly (the panel's **Update to …** button, or the installer). |
+| **Auto** | Polls and applies auto-appliable updates (app tier). |
 
 ---
 
 ## Configuring the update source + trust (systemd drop-in)
 
-The agent reads its configuration from `PODD_UPDATER_*` environment variables. The
-clean way to set them is a **systemd drop-in**, so your settings survive updates and
-service reinstalls:
+The agent reads its configuration from `PODD_UPDATER_*` environment variables.
+Set them in a systemd drop-in so they survive updates and service reinstalls:
 
 ```sh
 sudo systemctl edit podd
 ```
 
-Add a block like this (the project's GitHub releases, auto-updating, trusting
-your own key):
+Example (the project's GitHub releases, auto-updating, trusting your own key):
 
 ```ini
 [Service]
-# Where to fetch releases from (pick ONE source form; see the table below):
+# Where to fetch releases from (see the source table below):
 Environment=PODD_UPDATER_GITHUB=GoogleBot42/podd
 # Apply updates automatically (omit for the default: manual/report-only):
 Environment=PODD_UPDATER_MODE=auto
@@ -80,7 +72,7 @@ Environment=PODD_UPDATER_POLL_SECS=3600
 Environment=PODD_UPDATER_TRUST=/opt/podd/keys/signing.pub
 ```
 
-Then reload and restart:
+Then restart:
 
 ```sh
 sudo systemctl restart podd
@@ -89,8 +81,8 @@ journalctl -u podd -f      # watch it poll / apply
 
 ### Source options
 
-Configure **one or more** sources (they're tried in order until one yields a
-verified manifest):
+Configure one or more sources; they are tried in order until one yields a
+verified manifest.
 
 | Variable | Value | Resolves to |
 |---|---|---|
@@ -106,7 +98,7 @@ verified manifest):
 > host, or `PODD_UPDATER_LOCAL_DIR`), or `systemctl stop podd-muzzle` for the
 > duration of the update and `start` it again after.
 
-Other knobs:
+Other settings:
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -121,7 +113,7 @@ Other knobs:
 | `PODD_UPDATER_MCU_DRY_RUN` | `true` | `false`/`0` arms live MCU firmware flashes. |
 | `PODD_UPDATER_HEALTH_URL` | `http://127.0.0.1:3000/api/serverStatus` | Health check for the canary. |
 
-> The `*_DRY_RUN` gates default to **true (safe)**. Leave them on until you're
+> The `*_DRY_RUN` gates default to `true` (safe). Leave them on until you are
 > deliberately ready for podd to write the OS image or flash the MCUs. This is
 > separate from the app-level `PODD_DRY_RUN` in [INSTALL.md](INSTALL.md), which
 > gates driving the hardware at runtime.
@@ -130,8 +122,8 @@ Other knobs:
 
 ## Trust policy
 
-Signing is **optional and entirely owner-controlled** — there is no central
-authority. You have three choices:
+Signing is optional and owner-controlled; there is no central authority. Three
+options:
 
 ### 1. Run unsigned (integrity only)
 
@@ -139,8 +131,8 @@ authority. You have three choices:
 Environment=PODD_UPDATER_TRUST=unsigned
 ```
 
-Every artifact is still SHA-256-verified; only *authenticity* is skipped. Fine for
-your own builds on your own device. This is the default.
+The default. Every artifact is still SHA-256-verified; only authenticity is
+skipped.
 
 ### 2. Trust the project's key
 
@@ -151,17 +143,17 @@ release is cut), put it on the device, and point trust at it:
 Environment=PODD_UPDATER_TRUST=/opt/podd/keys/signing.pub
 ```
 
-Now only releases signed by that key are accepted.
+Only releases signed by that key are then accepted.
 
-### 3. Trust your OWN key
+### 3. Trust your own key
 
-You can sign releases with a key **you** generate and have the device trust only
-that. This is the fully self-hosted, no-third-party-trust path.
+Sign releases with a key you generate and have the device trust only that key.
+This is the fully self-hosted path, with no third-party trust.
 
 <a name="trust-your-own-key"></a>
 
 ```sh
-# On your workstation — generate a keypair (keep signing.key OFFLINE):
+# On your workstation — generate a keypair (keep signing.key offline):
 podup keygen --out-dir keys
 #   -> keys/signing.key   (SECRET — never publish, never put on the Pod)
 #   -> keys/signing.pub   (public — safe to distribute)
@@ -175,17 +167,12 @@ podup release --channel stable --key keys/signing.key --out-dir dist \
 scp -P 8822 keys/signing.pub rewt@<pod-ip>:/opt/podd/keys/signing.pub
 ```
 
-Then on the Pod:
-
-```ini
-Environment=PODD_UPDATER_TRUST=/opt/podd/keys/signing.pub
-```
-
-You can list **multiple** trusted keys, comma-separated:
+Then set `Environment=PODD_UPDATER_TRUST=/opt/podd/keys/signing.pub` on the Pod,
+as in option 2. Multiple trusted keys can be listed comma-separated:
 `PODD_UPDATER_TRUST=/opt/podd/keys/a.pub,/opt/podd/keys/b.pub`.
 
-> The private `signing.key` **never** goes on the device — the Pod only ever
-> *verifies*. Keep it offline.
+> The private `signing.key` never goes on the device; the Pod only verifies.
+> Keep it offline.
 
 To verify a release by hand before trusting it:
 
@@ -198,15 +185,14 @@ podup verify --pubkey keys/signing.pub --manifest dist/manifest.json --dir dist
 ## Seeing what the agent is doing
 
 The web UI has an **Updates** panel under **Settings**: installed version per
-tier, whether the agent is enabled and in auto or manual mode, when it last
-checked (and whether that check succeeded), anything the channel is offering,
-the last error, and the last thing applied. Its controls drive the agent —
-**Check now** (poll the channel out of band), **Update to \<version\>** (install
-the offered app release; appears only when one is offered), **Roll back**
+tier, agent enabled/mode, when it last checked and whether that check succeeded,
+anything the channel is offering, the last error, and the last release applied.
+Its controls: **Check now** (poll out of band), **Update to \<version\>**
+(install the offered app release; shown only when one is offered), **Roll back**
 (return to the previous app release), and the **Release channel** selector.
 Installing and rolling back both restart podd.
 
-The same data is available over HTTP if you'd rather script it:
+The same data is available over HTTP:
 
 ```sh
 curl -s http://<pod-ip>:3000/api/updates          # status
@@ -219,84 +205,82 @@ curl -s -X POST http://<pod-ip>:3000/api/updates/rollback
 ```
 
 `"updater": null` means no update agent is running (it failed to build — check
-`journalctl -u podd` for a trust-policy error); that is *not* the same as
-"you're up to date".
+`journalctl -u podd` for a trust-policy error). This is not the same as being up
+to date.
 
 **Applying** is the app tier only: podd verifies and stages the release, flips
-`current`, and restarts into the new release as a canary that commits itself or
-is rolled back automatically (see [How rollback works](#how-rollback-works)).
-That restart usually kills the HTTP request before it can answer — a dropped
-connection there means "podd is restarting", and `GET /api/updates` is the
-truth once it is back. Asking to apply the OS or MCU tiers answers `501`: those
-live paths are still behind their dry-run gates, so apply them with the
-installer instead. With the agent switched off (`PODD_UPDATER_ENABLED=false`)
-an apply is refused outright rather than silently ignored.
+`current`, and restarts into it as a canary that commits itself or is rolled
+back automatically (see [How rollback works](#how-rollback-works)). That restart
+usually kills the HTTP request before it can answer; a dropped connection means
+podd is restarting, and `GET /api/updates` is authoritative once it is back.
+Applying the OS or MCU tiers answers `501`: those live paths are behind their
+dry-run gates, so apply them with the installer instead. With the agent switched
+off (`PODD_UPDATER_ENABLED=false`) an apply is refused rather than silently
+ignored.
 
 **Switching channels** takes effect immediately — no restart — and is
-*persisted* on the Pod as `<release-root>/channel.json` (by default
-`/opt/podd/releases/channel.json`). From then on that override outranks
-`PODD_UPDATER_CHANNEL`: the env var is the install-time default, the switch is
-your later decision. To go back to following the env var, delete that file and
-restart podd. Switching applies nothing on its own and drops the previous
+persisted on the Pod as `<release-root>/channel.json` (by default
+`/opt/podd/releases/channel.json`). That override outranks
+`PODD_UPDATER_CHANNEL`. To go back to following the env var, delete that file
+and restart podd. Switching applies nothing on its own and drops the previous
 channel's offers — press **Check now** afterwards.
 
 ---
 
 ## Updating manually
 
-If the agent can't reach the channel, is switched off, or you want to move to a
-specific version, re-running the installer is the simplest path — it's
-idempotent and does the same verify-then-activate flow (this is also how the OS
-and MCU tiers are applied):
+If the agent can't reach the channel, is switched off, or you want a specific
+version, re-run the installer. It does the same verify-then-activate flow and is
+also how the OS and MCU tiers are applied:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/GoogleBot42/podd/main/install/install.sh \
   | sh -s -- --source github:GoogleBot42/podd
 ```
 
-Or point it at a pinned tag to move to a specific version:
+Or pin a tag:
 
 ```sh
 podd-install.sh --source github:GoogleBot42/podd@v0.1.0
 ```
 
-Re-running is safe: it keeps your `/opt/podd/config.ron` and your systemd drop-ins,
-just swapping in the new release under `current`.
+Re-running is idempotent: it keeps `/opt/podd/config.ron` and your systemd
+drop-ins, swapping in the new release under `current`.
 
 ---
 
 ## How rollback works
 
-Two layers protect you, depending on what got updated:
+Two layers, depending on what was updated:
 
 **App updates (the common case).** The agent keeps the last `PODD_UPDATER_KEEP`
-(default 3) releases. Activating one is a two-phase *trial*, because the restart
+(default 3) releases. Activating one is a two-phase trial, because the restart
 kills the process doing the update: the old podd flips `current` and restarts;
-the **new** podd then health-checks its own API and either commits the release
-or flips `current` back to the previous release and restarts again. A release
-that crashes before it can even serve gets 3 boot attempts (counted at startup,
-like U-Boot's `bootlimit`) before the same rollback happens. A rolled-back
-version is remembered and never auto-retried — apply it manually to try again.
-Nothing is lost either way — the old release directory is still there.
+the new podd health-checks its own API and either commits the release or flips
+`current` back to the previous release and restarts again. A release that
+crashes before it can serve gets 3 boot attempts (counted at startup, like
+U-Boot's `bootlimit`) before the same rollback happens. A rolled-back version is
+remembered and never auto-retried — apply it manually to try again. The previous
+release directory remains in place either way.
 
 **OS / slot updates (i.MX A/B).** On the clean-room SD image, applying an OS
-update streams the release's `os-<version>.ext4.zst` onto the **inactive** slot,
+update streams the release's `os-<version>.ext4.zst` onto the inactive slot,
 verifies the write by reading it back, and arms the U-Boot rollback state
-machine (`upgrade_available=1 bootcount=0 ustate=1` plus the slot flip) — then
-waits for a reboot; nothing reboots your bed on its own. From there rollback
-happens in the bootloader itself:
+machine (`upgrade_available=1 bootcount=0 ustate=1` plus the slot flip). It then
+waits for a reboot; podd never reboots the Pod on its own. Rollback then happens
+in the bootloader itself:
 
 - On each armed boot U-Boot increments `bootcount` before trying the new slot.
-  If it fails to boot **3 times** (`bootlimit=3`), U-Boot flips the pointer
-  back to the previous, known-good slot in the same power cycle — a hands-off
-  rollback. (The exact env-var semantics are owned by the state-machine
-  comment block in `os/board/eightsleep/imx8mm-varsom/uboot-env.txt`.)
-- Once podd boots healthy on the new slot it **confirms the slot good
-  automatically** (disarms the env and records the new OS version) — this
-  works even when update polling is disabled. `podd-slot-install.sh
-  --confirm-good` remains as the manual equivalent for the stock-U-Boot eMMC
-  install path (see [INSTALL.md](INSTALL.md#advanced-ab-slot-install)).
+  If it fails to boot 3 times (`bootlimit=3`), U-Boot flips the pointer back to
+  the previous, known-good slot in the same power cycle, with no user action.
+  (Exact env-var semantics live in the state-machine comment block in
+  `os/board/eightsleep/imx8mm-varsom/uboot-env.txt`.)
+- Once podd boots healthy on the new slot it confirms the slot good
+  automatically (disarms the env and records the new OS version), even when
+  update polling is disabled. `podd-slot-install.sh --confirm-good` is the
+  manual equivalent for the stock-U-Boot eMMC install path (see
+  [INSTALL.md](INSTALL.md#advanced-ab-slot-install)).
 
-If you ever need to force a rollback manually, or an update leaves you unable to
-boot, see **[RECOVERY.md](RECOVERY.md)** — the shortest fix is usually a one-line
+To force a rollback manually, or if an update leaves you unable to boot, see
+**[RECOVERY.md](RECOVERY.md)** — the shortest fix is usually a one-line
 `fw_setenv`/`setenv` at the serial U-Boot prompt.
