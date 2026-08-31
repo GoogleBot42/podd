@@ -14,7 +14,7 @@ path = "src/main.rs"
 [dependencies]
 podd-core = { path = "../podd-core" }
 api = { path = "../api" }
-pod-updater = { path = "../pod-updater" }
+pod-update-agent = { path = "../pod-update-agent" }
 
 anyhow.workspace = true
 env_logger.workspace = true
@@ -22,4 +22,4 @@ log.workspace = true
 tokio.workspace = true
 
 # NOTE: the schedule layer (thermostat scheduler) lands here as the fork grows.
-# The on-device update agent is wired below via `pod_updater::run_from_env`.
+# The on-device update agent is wired below via `pod_update_agent::run_from_env`.

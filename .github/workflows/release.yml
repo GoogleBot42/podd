@@ -1,7 +1,7 @@
 name: release
 
 # Build + (optionally) sign the podd userland bundle and publish it to the
-# GitHub Release for the tag, named exactly how pod-updater's GitHub source
+# GitHub Release for the tag, named exactly how pod-update-agent's GitHub source
 # resolves it: releases/latest/download/manifest.json + app-<version>.squashfs.
 on:
   push:

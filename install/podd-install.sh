@@ -88,7 +88,7 @@ fetch() {
 }
 
 # ---- resolve the release source into MANIFEST_URL + ARTIFACT_BASE (or DIR)-
-# Mirrors pod_updater::config::ReleaseSourceUrl::resolve so the installer and
+# Mirrors pod_update_agent::config::ReleaseSourceUrl::resolve so the installer and
 # the on-device agent agree on URL shapes.
 MODE=""; MANIFEST_URL=""; ARTIFACT_BASE=""
 if [ -n "$SRC_DIR" ]; then
@@ -256,7 +256,7 @@ rm -rf "$RELEASE_DIR"
 mkdir -p "$RELEASE_DIR"
 # Payload content lives under <release>/rootfs/ so that the on-device layout is
 # IDENTICAL whether a release was placed by this installer or by the on-device
-# OTA agent (pod-updater mounts the squashfs at <release>/rootfs). `current`
+# OTA agent (pod-update-agent mounts the squashfs at <release>/rootfs). `current`
 # points at <release>, so the binary is always at current/rootfs/podd.
 ROOTFS="$RELEASE_DIR/rootfs"
 mkdir -p "$ROOTFS"

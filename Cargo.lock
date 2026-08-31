@@ -79,7 +79,7 @@ dependencies = [
  "jiff",
  "log",
  "pod-proto",
- "pod-updater",
+ "pod-update-agent",
  "podd-core",
  "serde",
  "serde_json",
@@ -1369,7 +1369,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "pod-updater"
+name = "pod-update-agent"
 version = "0.0.1"
 dependencies = [
  "anyhow",
@@ -1396,7 +1396,7 @@ dependencies = [
  "api",
  "env_logger",
  "log",
- "pod-updater",
+ "pod-update-agent",
  "podd-core",
  "tokio",
 ]

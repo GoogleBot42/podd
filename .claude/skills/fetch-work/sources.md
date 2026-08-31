@@ -37,7 +37,7 @@ update it here, not in either skill.
 
 5. **TODO/FIXME comments in the tree.**
    `grep -rn "TODO\|FIXME" crates/ ui/src/ os/ install/ scripts/` — currently
-   ~20 hits, concentrated in `pod-updater`/`podd-core` (`TODO(live-cutover)`
+   ~20 hits, concentrated in `pod-update-agent`/`podd-core` (`TODO(live-cutover)`
    markers gating live MCU/OS-update writes behind dry-run), plus a few
    one-off UI and OS-build TODOs (the pod-proto sensor decoding TODOs were
    closed by #42/#44).

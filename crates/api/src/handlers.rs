@@ -721,7 +721,7 @@ pub async fn post_updates_channel(
     };
     // Validate here so a junk name is a 400 (client error) rather than the 500
     // an agent-side failure earns; the agent validates again regardless.
-    if let Err(e) = pod_updater::validate_channel(&req.channel) {
+    if let Err(e) = pod_update_agent::validate_channel(&req.channel) {
         return (StatusCode::BAD_REQUEST, e.to_string()).into_response();
     }
     match updates.set_channel(&req.channel) {

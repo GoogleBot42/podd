@@ -197,7 +197,7 @@ RFS="$REL/rootfs"
 emit() { printf '%s\n' "$*" >> "$DBG"; }
 
 log "podd-ifying rootfs: install /opt/podd/$VERSION, config, service, masks"
-# podd on-device layout (matches install/podd-install.sh + pod_updater config).
+# podd on-device layout (matches install/podd-install.sh + pod_update_agent config).
 for d in /opt/podd /opt/podd/releases "$REL" "$RFS" "$RFS/ui"; do
   emit "mkdir $d"
 done

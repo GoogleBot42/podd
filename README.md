@@ -101,12 +101,12 @@ legacy stock-clone image ([docs/SD-BOOT.md](docs/SD-BOOT.md)) shipped.
 | `crates/pod-proto` | LSP UART protocol (framing/CRC, Frozen + Sensor packet/command tables, thermostat `profile.rs`), extracted from opensleep | ✅ implemented + tested; validated vs live Pod 4 |
 | `crates/podd-core` | opensleep control core: Frozen/Sensor subsystems, LED, reset, config, MQTT, state bus | ✅ implemented |
 | `crates/api` | free-sleep-compatible REST + SSE HTTP API and embedded-SPA server (biometrics endpoints deferred) | ✅ implemented |
-| `crates/pod-updater` | On-device OTA agent: Tier-2 app swaps and Tier-1 OS A/B slot updates (write + readback-verify + U-Boot-armed trial with auto-rollback) are live, both behind dry-run gates; Tier-3 MCU apply is still gated | ✅ implemented |
+| `crates/pod-update-agent` | On-device OTA agent: Tier-2 app swaps and Tier-1 OS A/B slot updates (write + readback-verify + U-Boot-armed trial with auto-rollback) are live, both behind dry-run gates; Tier-3 MCU apply is still gated | ✅ implemented |
 | `crates/pod-probe` | Read-only serial probe for validating `pod-proto` against live MCUs | ✅ implemented |
-| `crates/podd` | The control daemon: wires `podd-core` + `api` + `pod-updater` together; MCU writes gated behind `PODD_DRY_RUN` | ✅ implemented (live hardware cutover pending) |
+| `crates/podd` | The control daemon: wires `podd-core` + `api` + `pod-update-agent` together; MCU writes gated behind `PODD_DRY_RUN` | ✅ implemented (live hardware cutover pending) |
 
 Note on the earlier opensleep source map: `pod-hal` (reset + LED) is folded
-into `podd-core`; MCU `.bbin` flashing lives in `pod-updater` (Tier 3,
+into `podd-core`; MCU `.bbin` flashing lives in `pod-update-agent` (Tier 3,
 dry-run-gated); schedule persistence and endpoints live in `api`, with the
 thermostat curve in `pod-proto`'s `profile.rs`. Still genuinely **planned**:
 WiFi/onboarding bring-up, a full autonomous weekday scheduler loop, and the L2

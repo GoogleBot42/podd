@@ -118,7 +118,7 @@ async fn resolve_with(
     let armed = match env.get("upgrade_available") {
         Ok(v) => v.as_deref() == Some("1"),
         Err(e) => {
-            log::debug!("pod-updater: boot env unreadable ({e}); no OS trial handling");
+            log::debug!("pod-update-agent: boot env unreadable ({e}); no OS trial handling");
             return None;
         }
     };
@@ -135,12 +135,12 @@ async fn resolve_with(
             Err(_) => "0".into(),
         };
         if boots == "0" {
-            log::debug!("pod-updater: OS trial armed, awaiting activation reboot");
+            log::debug!("pod-update-agent: OS trial armed, awaiting activation reboot");
             return Some(OsTrialOutcome::AwaitingReboot);
         }
         if !health.healthy().await {
             log::warn!(
-                "pod-updater: OS trial armed but health check failed; leaving armed \
+                "pod-update-agent: OS trial armed but health check failed; leaving armed \
                  (U-Boot keeps guarding reboots) — will retry"
             );
             return Some(OsTrialOutcome::StillArmed);
@@ -152,17 +152,17 @@ async fn resolve_with(
             ("bootcount", "0"),
             ("ustate", "0"),
         ]) {
-            log::error!("pod-updater: failed to disarm OS trial env: {e}; will retry");
+            log::error!("pod-update-agent: failed to disarm OS trial env: {e}; will retry");
             return Some(OsTrialOutcome::StillArmed);
         }
         match pending {
             Some(p) if booted == Some(p.slot) => {
                 if let Err(e) = layout.record_version(ComponentKind::Os, &p.version) {
-                    log::error!("pod-updater: failed to record OS version: {e}");
+                    log::error!("pod-update-agent: failed to record OS version: {e}");
                 }
                 clear_pending(marker_dir);
                 log::info!(
-                    "pod-updater: OS {} committed on slot {} (healthy boot; env disarmed)",
+                    "pod-update-agent: OS {} committed on slot {} (healthy boot; env disarmed)",
                     p.version,
                     p.slot
                 );
@@ -175,7 +175,7 @@ async fn resolve_with(
                 // the inactive slot but will not be booted. Surface it.
                 clear_pending(marker_dir);
                 log::warn!(
-                    "pod-updater: OS trial for {} (slot {}) disarmed while still running \
+                    "pod-update-agent: OS trial for {} (slot {}) disarmed while still running \
                      slot {:?}; the staged OS will NOT activate — re-apply to retry",
                     p.version,
                     p.slot,
@@ -185,7 +185,7 @@ async fn resolve_with(
             }
             None => {
                 log::info!(
-                    "pod-updater: boot env was armed with no pending OS record \
+                    "pod-update-agent: boot env was armed with no pending OS record \
                      (external arm, e.g. podd-slot-install.sh); disarmed after healthy boot"
                 );
                 Some(OsTrialOutcome::Disarmed)
@@ -197,7 +197,7 @@ async fn resolve_with(
                 // Disarmed + on the new slot: a previous resolution disarmed
                 // but died before recording. Finish the commit.
                 if let Err(e) = layout.record_version(ComponentKind::Os, &p.version) {
-                    log::error!("pod-updater: failed to record OS version: {e}");
+                    log::error!("pod-update-agent: failed to record OS version: {e}");
                 }
                 clear_pending(marker_dir);
                 Some(OsTrialOutcome::Committed { version: p.version })
@@ -207,7 +207,7 @@ async fn resolve_with(
                 // attempts and auto-reverted (ustate=3).
                 clear_pending(marker_dir);
                 log::error!(
-                    "pod-updater: OS {} failed its boot trial on slot {}; U-Boot rolled \
+                    "pod-update-agent: OS {} failed its boot trial on slot {}; U-Boot rolled \
                      back to slot {:?}",
                     p.version,
                     p.slot,

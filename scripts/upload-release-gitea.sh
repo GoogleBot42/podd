@@ -2,7 +2,7 @@
 #
 # upload-release-gitea.sh - create/find a Gitea release for a tag and upload
 # every file in the given dir as an asset, via the Gitea API (no external
-# actions). Assets are uploaded with their bare filename so pod-updater's Gitea
+# actions). Assets are uploaded with their bare filename so pod-update-agent's Gitea
 # source resolves <host>/<owner>/<repo>/releases/download/<tag>/<filename>.
 #
 # Inputs (environment, all provided by Gitea Actions):

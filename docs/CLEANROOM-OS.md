@@ -11,7 +11,7 @@
 > kept as documentation — see [SD-BOOT.md](SD-BOOT.md)) and the interim
 > hand-derived "stockboot" image that borrowed Eight's bootloader region.
 > A/B slot switching + auto-rollback are wired (hand-rolled U-Boot env state
-> machine + pod-updater, replacing the originally planned RAUC — see "Install =
+> machine + pod-update-agent, replacing the originally planned RAUC — see "Install =
 > OTA" below; hardware verification of the full update cycle pending), and CI
 > publishes the OS OTA artifact + SD image on tag releases. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the userland (podd) and "Bring-up
@@ -41,7 +41,7 @@ can publish it.
 |---|---|---|
 | Clean-room scope | **OS image only** | Build bootloader + kernel + rootfs + podd from source. Eight's STM32 firmware keeps running *on the MCU chips* (it's on their own flash, not in the image; podd talks to it over UART). Rewriting the safety-critical STM32 thermal/sensor firmware is a separate, months-long, out-of-scope project. |
 | Rootfs builder | **Buildroot** (`BR2_EXTERNAL` tree under `os/`) | Minimal, reproducible, from-source appliance rootfs. Smallest surface for a headless device; strong i.MX8MM support. Nix stays a build tool for the `podd` binary only, not the on-device runtime. |
-| OTA engine | **pod-updater** (hand-rolled A/B; RAUC dropped 2026-08-29, closing #46–#48) | RAUC as shipped could never resolve its slot devices (by-partlabel on MBR), never had a keyring, and would have added a second (X.509) signing system beside podup's ed25519 manifests. REPLACEMENT_PLAN §9 blesses a minimal hand-rolled writer: pod-updater streams the release's OS image onto the inactive slot with readback verification, and a bootcount state machine scripted in the U-Boot env (`uboot-env.txt` owns the semantics) provides trial boots + auto-rollback; podd marks-good after a healthy boot. One updater, one trust policy, for app and OS alike. |
+| OTA engine | **pod-update-agent** (hand-rolled A/B; RAUC dropped 2026-08-29, closing #46–#48) | RAUC as shipped could never resolve its slot devices (by-partlabel on MBR), never had a keyring, and would have added a second (X.509) signing system beside podup's ed25519 manifests. REPLACEMENT_PLAN §9 blesses a minimal hand-rolled writer: pod-update-agent streams the release's OS image onto the inactive slot with readback verification, and a bootcount state machine scripted in the U-Boot env (`uboot-env.txt` owns the semantics) provides trial boots + auto-rollback; podd marks-good after a healthy boot. One updater, one trust policy, for app and OS alike. |
 
 ## The clean-room boundary (read this)
 
@@ -137,7 +137,7 @@ flows write a complete signed image to an inactive slot:
 
 - **First install:** `dd` the published SD image to a card and boot it, **or**
   write the eMMC inactive slot from a running system and flip the pointer.
-- **Update:** `pod-updater` fetches the release's `os-<version>.ext4.zst`
+- **Update:** `pod-update-agent` fetches the release's `os-<version>.ext4.zst`
   (manifest sha256 + optional ed25519, like every artifact), streams it onto
   the inactive slot, verifies the write by readback, and arms the U-Boot trial
   (`upgrade_available=1 bootcount=0 ustate=1` + the `mmcpart` flip). The next

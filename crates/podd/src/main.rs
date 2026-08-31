@@ -40,9 +40,9 @@ async fn main() -> anyhow::Result<()> {
     // freshly activated release keeps crashing during startup, this counts the
     // boot attempts, rolls the `current` symlink back to the previous release,
     // and exits so systemd respawns into the restored binary (ExecStart
-    // re-resolves the symlink). See `pod_updater::trial`.
-    if let pod_updater::BootDecision::RolledBack { failed_version } =
-        pod_updater::early_boot_guard_from_env()
+    // re-resolves the symlink). See `pod_update_agent::trial`.
+    if let pod_update_agent::BootDecision::RolledBack { failed_version } =
+        pod_update_agent::early_boot_guard_from_env()
     {
         log::error!("app release {failed_version} rolled back; exiting for systemd to respawn");
         std::process::exit(1);
@@ -99,13 +99,13 @@ async fn main() -> anyhow::Result<()> {
     // The on-device update agent: polls a signed release channel and applies
     // Tier-2 (app) updates atomically with a health-checked rollback; Tier-1
     // (OS) / Tier-3 (MCU) stay behind dry-run gates. Configured from the
-    // environment (see `pod_updater::UpdaterConfig::from_env`); default is
+    // environment (see `pod_update_agent::UpdaterConfig::from_env`); default is
     // enabled + manual + dry-run, so on a dev box (no sources, no release dir)
     // it simply idles and never tears the process down.
     //
     // The handle is shared with the API so `/api/updates` can report its status
     // and drive "check now" / "roll back" (REPLACEMENT_PLAN §9).
-    let (updater, updater_fut) = pod_updater::from_env_shared();
+    let (updater, updater_fut) = pod_update_agent::from_env_shared();
     let updates = updater.map(|u| u as Arc<dyn api::UpdateOps>);
 
     // Run the managers, the HTTP server, and the update agent together;

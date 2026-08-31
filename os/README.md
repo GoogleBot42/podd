@@ -3,7 +3,7 @@
 This is the `BR2_EXTERNAL` tree that builds podd's **clean-room L2 OS image**: a
 complete, from-source bootable system (bootloader + kernel + rootfs + podd) for
 the Eight Sleep i.MX8M-Mini Variscite "SD" hub, with A/B slots + rollback
-driven by the U-Boot env and pod-updater. It
+driven by the U-Boot env and pod-update-agent. It
 replaces the L1 "bolt podd onto Eight's Yocto rootfs" approach
 (`scripts/build-podd-sd.sh`).
 
@@ -135,7 +135,7 @@ sudo cmp -n "$(wc -c < /tmp/podd-sd.img)" /tmp/podd-sd.img /dev/sdX && echo OK
 ```
 
 CI wraps `build.sh` to publish `podd-sd-<version>.img.gz` + the OS OTA
-artifact (`os-<version>.ext4.zst`, consumed by pod-updater) on tag releases.
+artifact (`os-<version>.ext4.zst`, consumed by pod-update-agent) on tag releases.
 
 ### WiFi provisioning (no baked credentials needed)
 

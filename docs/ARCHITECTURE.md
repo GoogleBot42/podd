@@ -60,9 +60,9 @@ The eight workspace members and how the earlier planned split maps onto them:
 | `api` | axum REST + SSE + embedded SPA; free-sleep-compatible endpoints. Holds schedule/settings persistence + endpoints | new |
 | `pod-update` | shared, host+device update core: manifest schema, SHA-256 digests, Ed25519 sign/verify, `TrustPolicy` | new |
 | `podup` | host release CLI: `keygen` / `pack` / `release` / `verify` | new (on `pod-update`) |
-| `pod-updater` | on-device OTA agent: fetch manifest → verify (`pod-update`) → atomic release swap → health-gate → rollback; Tier-1 OS + Tier-3 MCU `.bbin` flash plumbing (dry-run-gated). Absorbs the planned `mcu-flash` and `update` crates | new (on `pod-update`) |
+| `pod-update-agent` | on-device OTA agent: fetch manifest → verify (`pod-update`) → atomic release swap → health-gate → rollback; Tier-1 OS + Tier-3 MCU `.bbin` flash plumbing (dry-run-gated). Absorbs the planned `mcu-flash` and `update` crates | new (on `pod-update`) |
 | `pod-probe` | read-only serial probe validating `pod-proto` against live MCUs | new |
-| `podd` | the daemon binary: wires `podd-core` + `api` + `pod-updater` together | opensleep fork |
+| `podd` | the daemon binary: wires `podd-core` + `api` + `pod-update-agent` together | opensleep fork |
 
 **Planned, not yet built:** a dedicated `onboarding` path (config-file /
 local-web WiFi bring-up) and the L2 OS-image release artifact
@@ -72,7 +72,7 @@ local-web WiFi bring-up) and the L2 OS-image release artifact
 
 1. **MCU flashing** — opensleep only *talks* to the MCUs (JumpToFirmware / GetFirmware);
    it has no erase/write/verify or `.bbin` parsing. That flashing path is new,
-   and lives in `pod-updater` (Tier-3), gated behind a dry-run default.
+   and lives in `pod-update-agent` (Tier-3), gated behind a dry-run default.
 2. **Scheduler** — opensleep has a per-side daily temperature curve
    (`profile.rs` lerp over a sleep→wake window) but no weekday schedules, manual
    override, or set-now. All three are new: the curve math is reused in
@@ -120,7 +120,7 @@ Beyond the free-sleep set, `GET /api/updates` is podd's own update-observability
 surface (`REPLACEMENT_PLAN` §9): the running build stamp plus the update agent's
 published `UpdateStatus` (channel, mode, installed version per tier, last check,
 available components, last error/apply), with `POST /api/updates/{check,apply,
-channel,rollback}` driving the controls `pod-updater` implements.
+channel,rollback}` driving the controls `pod-update-agent` implements.
 `updater: null` means no agent is wired — distinct from "no updates available".
 `apply` is Tier-2 only — it hands off to the trial machinery below, and answers
 `501` for the OS/MCU tiers whose live paths are still dry-run stubs (issue #43);
@@ -191,7 +191,7 @@ detection runs continuously instead.
 ## Update system
 
 See `docs/REPLACEMENT_PLAN.md` §9. `pod-update` is the shared core; `podup`
-builds/(optionally)signs releases on the host; the `pod-updater` crate applies
+builds/(optionally)signs releases on the host; the `pod-update-agent` crate applies
 them on the device. App releases are read-only squashfs images swapped via a `current`
 symlink behind a canary health check. Integrity (SHA-256) is always enforced;
 authenticity (Ed25519 signature) is **owner-controlled and optional**
@@ -202,15 +202,15 @@ own device or fork.
 
 | Tier | Component | `podup` builds it? | Applied by | Example |
 |---|---|---|---|---|
-| 2 | **App**: `podd` + web UI + config schema/migrations | yes (packs to squashfs) | `pod-updater` (symlink swap, no reboot) | ship a new scheduler / UI |
-| 3 | **MCU Frozen fw** (`.bbin`) | yes (records blob) | `pod-updater` Tier-3 (quiesce UART, flash, verify; dry-run-gated) | restore/replace STM32 fw |
-| 3 | **MCU Sensor fw** (`.bbin`) | yes | `pod-updater` Tier-3 (dry-run-gated) | " |
-| 1 | **OS image** (kernel+DTB+rootfs) — L2 | yes (records `os-<ver>.ext4.zst`) | `pod-updater` Tier-1 (`AbSlotWriter`, dry-run-gated): stream onto the inactive SD slot, readback-verify, arm the U-Boot boot-count trial; U-Boot auto-reverts a slot that can't boot and podd marks-good after a healthy boot (state machine owned by `os/board/.../uboot-env.txt`; see [CLEANROOM-OS.md](CLEANROOM-OS.md)) | kernel/lib bump |
+| 2 | **App**: `podd` + web UI + config schema/migrations | yes (packs to squashfs) | `pod-update-agent` (symlink swap, no reboot) | ship a new scheduler / UI |
+| 3 | **MCU Frozen fw** (`.bbin`) | yes (records blob) | `pod-update-agent` Tier-3 (quiesce UART, flash, verify; dry-run-gated) | restore/replace STM32 fw |
+| 3 | **MCU Sensor fw** (`.bbin`) | yes | `pod-update-agent` Tier-3 (dry-run-gated) | " |
+| 1 | **OS image** (kernel+DTB+rootfs) — L2 | yes (records `os-<ver>.ext4.zst`) | `pod-update-agent` Tier-1 (`AbSlotWriter`, dry-run-gated): stream onto the inactive SD slot, readback-verify, arm the U-Boot boot-count trial; U-Boot auto-reverts a slot that can't boot and podd marks-good after a healthy boot (state machine owned by `os/board/.../uboot-env.txt`; see [CLEANROOM-OS.md](CLEANROOM-OS.md)) | kernel/lib bump |
 | 0 | **Bootloader** | version recorded only | manual (never auto) | — |
 
 **Not in scope for `podup`:** personal runtime state (schedules/temps/history —
 device-local, never shipped or clobbered; only the config *schema* migrates); the
 initial eMMC install/provisioning (serial/UUU/mtkclient/SD — a separate flow);
-and *applying* updates (that's the device-side `pod-updater` agent, not
+and *applying* updates (that's the device-side `pod-update-agent` agent, not
 `podup`). A `podup release` can bundle any subset of {app, os, mcu-frozen,
 mcu-sensor} into one versioned manifest.
