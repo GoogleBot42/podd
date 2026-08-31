@@ -62,12 +62,13 @@ You can also trigger it manually via **workflow_dispatch** with an explicit
 `version` input.
 
 > **OS-level artifacts** (`podd-sd-<tag>.img.gz`, `os-<version>.ext4.zst`, the
-> L2 rootfs tarball, the recovery SD) are **not** built by the GitHub job — a
-> cold Buildroot run doesn't fit a hosted runner. They're built on the
-> self-hosted Gitea runner (cached Buildroot tree) and attached to the GitHub
-> release out of band; tracking issue #160. Until that lands, releases are
-> app-only (fully valid — the manifest simply has no Os component) and the OS
-> image is built locally per [CLEANROOM-OS.md](CLEANROOM-OS.md).
+> L2 rootfs tarball, the recovery SD) are **not** built by the release job
+> yet. The plan (issue #160) is a second GitHub Actions job building them on
+> hosted runners with an aggressively cached Buildroot tree — GitHub builds
+> everything itself; nothing is uploaded to a release from elsewhere. Until
+> that lands, releases are app-only (fully valid — the manifest simply has no
+> Os component) and the OS image is built locally per
+> [CLEANROOM-OS.md](CLEANROOM-OS.md).
 
 > The app version drops the leading `v` — tag `v0.1.0` produces
 > `app-0.1.0.squashfs`. The manifest carries the full version, and the device reads
