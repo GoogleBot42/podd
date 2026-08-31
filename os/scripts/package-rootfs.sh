@@ -50,7 +50,7 @@ VERIFY=1
 die() { printf 'package-rootfs.sh: %s\n' "$*" >&2; exit 1; }
 log() { printf '==> %s\n' "$*"; }
 
-usage() { sed -n '3,39p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '3,38p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 while [ "$#" -gt 0 ]; do
 	case "$1" in
