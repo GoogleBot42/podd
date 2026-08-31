@@ -49,6 +49,8 @@ PODD_PRE_INSTALL_TARGET_HOOKS += PODD_CHECK_ARTIFACTS
 
 define PODD_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0755 $(PODD_BIN) $(TARGET_DIR)/usr/bin/podd
+	$(INSTALL) -D -m 0755 $(BR2_EXTERNAL_PODD_PATH)/package/podd/podd-launch \
+		$(TARGET_DIR)/usr/bin/podd-launch
 	# Clean first: TARGET_DIR persists across builds and the UI bundle names are
 	# content-hashed, so stale assets from earlier builds accumulate otherwise.
 	rm -rf $(TARGET_DIR)/usr/share/podd/ui

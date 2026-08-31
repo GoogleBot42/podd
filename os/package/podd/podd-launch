@@ -1,0 +1,25 @@
+#!/bin/sh
+# podd-launch — exec the OTA-installed podd release when one is active, else
+# the binary baked into the OS image.
+#
+# The update agent's Tier-2 (app) layout lives on the persistent /data
+# partition (see podd.service's PODD_UPDATER_* environment): releases survive
+# both podd restarts and OS A/B slot swaps, while the baked /usr/bin/podd is
+# the always-there fallback — a broken or rolled-back release chain can never
+# leave the bed without a control daemon.
+#
+# The canary trial (mark-good / auto-rollback) runs inside podd itself; this
+# wrapper only decides which binary systemd execs on each (re)start.
+
+CUR="${PODD_UPDATER_CURRENT:-/data/podd/updates/current}"
+
+if [ -x "$CUR/rootfs/podd" ]; then
+	# The release bundles its own matching UI; serve that instead of the
+	# baked one so the SPA and API can't skew.
+	if [ -d "$CUR/rootfs/ui" ]; then
+		export PODD_SPA_DIR="$CUR/rootfs/ui"
+	fi
+	exec "$CUR/rootfs/podd" "$@"
+fi
+
+exec /usr/bin/podd "$@"
