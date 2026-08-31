@@ -6,7 +6,9 @@ use crate::metrics::{
     filter_records, MetricsFilter, MetricsQuery, MovementRecord, SleepRecord, VitalsRecord,
 };
 use crate::state::StateStore;
-use crate::updates::{DaemonBuild, UpdateOps, UpdatesReport};
+use crate::updates::{
+    ApplyRequest, ChannelRequest, DaemonBuild, UpdateOps, UpdateTier, UpdatesReport,
+};
 use crate::wire::*;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -666,6 +668,69 @@ pub async fn post_updates_check(State(app): State<AppState>) -> Response {
     match updates.check_now().await {
         Ok(()) => Json(updates.status()).into_response(),
         Err(e) => (StatusCode::BAD_GATEWAY, format!("update check failed: {e}")).into_response(),
+    }
+}
+
+/// `POST /api/updates/apply` — install the offered release for a tier.
+///
+/// Only the Tier-2 app path is implemented: it verifies + stages the release,
+/// flips `current`, and restarts podd into it as a canary that must pass its
+/// health check or be rolled back automatically. Like rollback, the restart
+/// usually kills the connection before the response lands — the UI treats a
+/// dropped request as "restarting", and `GET /api/updates` is the truth
+/// afterwards.
+///
+/// Tier-1 (OS) and Tier-3 (MCU) live applies are still gated behind their
+/// dry-run defaults (issue #43), so naming them here answers `501` rather than
+/// half-doing something destructive.
+pub async fn post_updates_apply(
+    State(app): State<AppState>,
+    ApiJson(req): ApiJson<ApplyRequest>,
+) -> Response {
+    let Some(updates) = app.updates.clone() else {
+        return no_updater();
+    };
+    if req.kind != UpdateTier::App {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            format!(
+                "applying the {:?} tier from the API is not supported yet (issue #43); \
+                 only the app tier can be applied here",
+                req.kind
+            ),
+        )
+            .into_response();
+    }
+    log::warn!("applying the app update on API request; podd will restart into it");
+    match updates.apply_app().await {
+        // The agent restarts podd on success, so this body is best-effort.
+        Ok(()) => Json(updates.status()).into_response(),
+        Err(e) => (StatusCode::CONFLICT, format!("update failed: {e}")).into_response(),
+    }
+}
+
+/// `POST /api/updates/channel` — switch the followed release channel. The
+/// agent persists it, so the switch survives a restart. Applies nothing: the
+/// caller polls `/api/updates/check` next.
+pub async fn post_updates_channel(
+    State(app): State<AppState>,
+    ApiJson(req): ApiJson<ChannelRequest>,
+) -> Response {
+    let Some(updates) = app.updates.clone() else {
+        return no_updater();
+    };
+    // Validate here so a junk name is a 400 (client error) rather than the 500
+    // an agent-side failure earns; the agent validates again regardless.
+    if let Err(e) = pod_updater::validate_channel(&req.channel) {
+        return (StatusCode::BAD_REQUEST, e.to_string()).into_response();
+    }
+    match updates.set_channel(&req.channel) {
+        Ok(()) => Json(updates.status()).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("could not switch channel: {e}"),
+        )
+            .into_response(),
     }
 }
 
