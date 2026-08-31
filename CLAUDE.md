@@ -56,8 +56,10 @@ anything on the actuation path as safety-critical.
 ## Git & forge
 
 - Canonical forge is Gitea: `git.neet.dev/zuckerberg/podd` (`origin`). The
-  GitHub mirror (`github` remote) is reference-only — never file issues or PRs
-  there. Use the `git-forges` skill for tea/issue/PR mechanics.
+  GitHub mirror (`github` remote) never takes issues or PRs, but it is the
+  **public release channel**: its Actions build+publish the release when a
+  `v*` tag arrives via the push mirror (docs/RELEASING.md owns the flow).
+  Use the `git-forges` skill for tea/issue/PR mechanics.
 - Commit work as you go: small commits per logical unit, never batched at the
   end. `main` is protected (server-enforced) — all work goes up as a branch
   plus a PR; reference the issue number when there is one.

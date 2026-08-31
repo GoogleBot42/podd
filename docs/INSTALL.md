@@ -17,8 +17,8 @@ single command that **cannot brick your Pod** and is fully reversible.
 From a root shell on the Pod:
 
 ```sh
-curl -fsSL https://git.neet.dev/zuckerberg/podd/raw/branch/main/install/install.sh \
-  | sh -s -- --source gitea:https://git.neet.dev/zuckerberg/podd
+curl -fsSL https://raw.githubusercontent.com/GoogleBot42/podd/main/install/install.sh \
+  | sh -s -- --source github:GoogleBot42/podd
 ```
 
 Then open **`http://<pod-ip>:3000`** in a browser. Done. podd is installed,
@@ -46,8 +46,8 @@ For a **fail-closed** install, pin the digest so a mismatch aborts before anythi
 runs:
 
 ```sh
-curl -fsSL https://git.neet.dev/zuckerberg/podd/raw/branch/main/install/install.sh \
-  | PODD_INSTALL_SHA256=<value-from-release-notes> sh -s -- --source gitea:https://git.neet.dev/zuckerberg/podd
+curl -fsSL https://raw.githubusercontent.com/GoogleBot42/podd/main/install/install.sh \
+  | PODD_INSTALL_SHA256=<value-from-release-notes> sh -s -- --source github:GoogleBot42/podd
 ```
 
 You can also override where the installer is fetched from with
