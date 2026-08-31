@@ -160,10 +160,14 @@ OS_IMAGE=dist/podd-os.ext4.zst VERSION=v0.1.0 scripts/build-release.sh
 (`OS_VERSION` defaults to the app version; a raw `rootfs.ext2` input is
 zstd-compressed automatically.)
 
-## Recovery-SD artifacts (not built yet)
+## Recovery-SD + rootfs-tarball artifacts
 
-The `recovery-sd` job is still intentionally **gated off** (`if: false`) — it
-depends on the L2 rootfs *tarball* (`podd-rootfs.tar.gz`) for the eMMC
-auto-installer, which isn't built yet (#52). See
-`scripts/build-recovery-sd.sh --plan` and `docs/research/flashing-method.md`
-§5–§6 for what's still needed.
+Built by the same `os-image` job, which already has the finished Buildroot tree:
+
+- **`podd-rootfs-<tag>.tar.gz`** (+ `.sha256`) — the L2 rootfs as a tarball, the
+  payload for [`install/podd-slot-install.sh`](../install/podd-slot-install.sh).
+  `os/scripts/build.sh` emits it; `os/scripts/package-rootfs.sh` re-packages it
+  from an existing Buildroot tree in seconds without rebuilding.
+- **`podd-recovery-sd-<tag>.img.gz`** — the SD image with that tarball spliced
+  into its data partition. `scripts/build-recovery-sd.sh --plan` prints the
+  assembly plan and what it deliberately does *not* do.

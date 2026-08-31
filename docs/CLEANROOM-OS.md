@@ -156,11 +156,14 @@ The `/opt/podd` symlink-swap remains the app tier's no-reboot update path.
   defconfig, U-Boot/ATF/kernel config fragments, our DTB, the U-Boot env
   (incl. the A/B state machine), a `genimage` layout for the A/B partitions,
   and post-build/post-image scripts that assemble `imx-boot`, the final
-  `.img`, and the OTA slot artifact (`podd-os.ext4.zst`).
+  `.img`, the OTA slot artifact (`podd-os.ext4.zst`) and the slot-install
+  tarball (`podd-rootfs.tar.gz` — same rootfs, for the consumers that extract
+  instead of `dd`; see [`os/README.md`](../os/README.md)).
 - **CI** (`.gitea/workflows/release.yml`): the `os-image` job builds the
-  Buildroot image on a `v*` tag and attaches `podd-sd-<tag>.img.gz` plus the
-  OS OTA artifact (`os-<version>.ext4.zst`, added to `manifest.json`) to the
-  tag's release — see [RELEASING.md](RELEASING.md). The image is our own
+  Buildroot image on a `v*` tag and attaches `podd-sd-<tag>.img.gz`, the OS OTA
+  artifact (`os-<version>.ext4.zst`, added to `manifest.json`),
+  `podd-rootfs-<tag>.tar.gz` and `podd-recovery-sd-<tag>.img.gz` to the tag's
+  release — see [RELEASING.md](RELEASING.md). Everything there is our own
   build, so publishing it is clean.
 
 ## Debug channels (no JTAG, no serial console)
