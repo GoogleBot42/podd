@@ -50,17 +50,9 @@ jobs:
             gh release upload "$TAG" dist/* --clobber
           fi
 
-  # Full-firmware / recovery-SD artifacts (flashing §5 + §6b items 2-4).
-  # GATED OFF: depends on the L2 rootfs (not built yet). Enable by removing
-  # `if: false` once scripts/build-recovery-sd.sh has its inputs. Also runnable
-  # manually to print its plan.
-  recovery-sd:
-    if: ${{ false }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Recovery-SD build plan (stub)
-        run: ./scripts/build-recovery-sd.sh --plan
-      # TODO(flashing-method §5): build the L2 podd-rootfs.tar.gz, then assemble
-      # podd-recovery-sd.img.gz (imx-boot@0x8400 + env@0x400000 + installer
-      # rootfs) and upload it as a release asset here.
+  # NOTE: the OS-level artifacts — podd-sd.img.gz, podd-os.ext4.zst, the L2
+  # podd-rootfs.tar.gz and podd-recovery-sd.img.gz (flashing §5 / §6b items 2-4,
+  # #52) — are built by the `os-image` job in .gitea/workflows/release.yml, on
+  # the self-hosted runner that carries the cached multi-hour Buildroot tree.
+  # This mirror only publishes the userland bundle; there is no second copy of
+  # that job here.

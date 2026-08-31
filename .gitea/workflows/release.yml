@@ -94,9 +94,15 @@ jobs:
         run: |
           set -eu
           ./os/scripts/build.sh
+          # Recovery SD = the image just built + the L2 rootfs tarball spliced
+          # into its data partition (#52). Seconds, and it reuses the Buildroot
+          # host mke2fs, so it belongs in this job rather than a second one.
+          ./scripts/build-recovery-sd.sh
           # Stage the artifacts out of dist/ — build-release.sh recreates
           # dist/ from scratch (rm -rf) and would delete them.
-          cp dist/podd-os.ext4.zst dist/podd-sd.img.gz "${RUNNER_TEMP}/"
+          cp dist/podd-os.ext4.zst dist/podd-sd.img.gz \
+             dist/podd-rootfs.tar.gz dist/podd-rootfs.tar.gz.sha256 \
+             dist/podd-recovery-sd.img.gz "${RUNNER_TEMP}/"
 
       - name: Rebuild release bundle with OS component
         env:
@@ -114,8 +120,9 @@ jobs:
           DIST_DIR: dist
         run: ./scripts/upload-release-gitea.sh
 
-      # Also attach the full flashable SD image for fresh installs.
-      - name: Publish SD image
+      # Also attach the flashable SD images + the L2 rootfs tarball
+      # (podd-slot-install.sh's payload — docs/RECOVERY.md).
+      - name: Publish SD images + rootfs tarball
         env:
           GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.inputs.version || github.ref_name }}
@@ -123,13 +130,9 @@ jobs:
           set -eu
           SD_DIR="$(mktemp -d)"
           cp "${RUNNER_TEMP}/podd-sd.img.gz" "$SD_DIR/podd-sd-${TAG}.img.gz"
+          cp "${RUNNER_TEMP}/podd-recovery-sd.img.gz" \
+             "$SD_DIR/podd-recovery-sd-${TAG}.img.gz"
+          cp "${RUNNER_TEMP}/podd-rootfs.tar.gz" "$SD_DIR/podd-rootfs-${TAG}.tar.gz"
+          cp "${RUNNER_TEMP}/podd-rootfs.tar.gz.sha256" \
+             "$SD_DIR/podd-rootfs-${TAG}.tar.gz.sha256"
           DIST_DIR="$SD_DIR" ./scripts/upload-release-gitea.sh
-
-  # Recovery-SD / L2 tarball artifacts - still gated off (#52).
-  recovery-sd:
-    if: ${{ false }}
-    runs-on: nixos
-    steps:
-      - uses: actions/checkout@v3
-      - name: Recovery-SD build plan (stub)
-        run: ./scripts/build-recovery-sd.sh --plan
