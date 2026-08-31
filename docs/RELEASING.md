@@ -35,9 +35,9 @@ GitHub and Gitea sources expect, so **don't rename them.**
 
 ## Cutting a release with CI (the normal path)
 
-The forges split the work (deliberate — decided 2026-08-31): day-to-day
-development, PRs, and test/build CI run on **Gitea**; **releases are built and
-published on the public GitHub mirror**, which reacts only to a new tag
+The forges split the work: day-to-day development, PRs, and test/build CI run
+on **Gitea**; **releases are built and published on the public GitHub mirror**,
+which reacts only to a new tag
 arriving via the push mirror. `.github/workflows/release.yml` builds the
 bundle via `scripts/build-release.sh` and publishes it to the GitHub Release
 for the tag — the URL shape `pod-update-agent`'s GitHub source resolves. To
@@ -63,11 +63,8 @@ You can also trigger it manually via **workflow_dispatch** with an explicit
 
 > **OS-level artifacts** (`podd-sd-<tag>.img.gz`, `os-<version>.ext4.zst`, the
 > L2 rootfs tarball, the recovery SD) are **not** built by the release job
-> yet. The plan (issue #160) is a second GitHub Actions job building them on
-> hosted runners with an aggressively cached Buildroot tree — GitHub builds
-> everything itself; nothing is uploaded to a release from elsewhere. Until
-> that lands, releases are app-only (fully valid — the manifest simply has no
-> Os component) and the OS image is built locally per
+> yet (issue #166). Until that lands, releases are app-only (fully valid — the
+> manifest simply has no Os component) and the OS image is built locally per
 > [CLEANROOM-OS.md](CLEANROOM-OS.md).
 
 > The app version drops the leading `v` — tag `v0.1.0` produces
@@ -133,37 +130,10 @@ enforced).
 
 ---
 
-## Gitea / Forgejo runner requirements
+## OS-bearing releases (by hand, for now)
 
-If you publish to a self-hosted Gitea/Forgejo, the runner needs a bit more than the
-GitHub one (which uses the DeterminateSystems Nix action):
-
-- **A runner with Nix, or an image the installer works in.** The canonical
-  setup (`runs-on: nixos`, same as `.gitea/workflows/ci.yml`) is a bare NixOS
-  host with `nix`, `git`, and `curl` in `/run/current-system/sw/bin`; the
-  workflow's Install Nix step no-ops there. On a Docker-image runner instead,
-  use an image with `curl`, `git`, and `sudo` (e.g. `catthehacker/ubuntu`) and
-  relabel the jobs — the step then installs Nix with the official Determinate
-  installer script.
-- **The auto-injected `GITHUB_TOKEN`** (Gitea provides `GITHUB_*` for
-  compatibility). `scripts/upload-release-gitea.sh` uses it to create/find the
-  release and upload assets via the Gitea API — no external actions required.
-
-The uploaded assets are given their bare filenames so the device resolves
-`<host>/<owner>/<repo>/releases/download/<tag>/manifest.json` (and the artifact)
-exactly as `pod-update-agent`'s Gitea source expects.
-
----
-
-## OS image lane (Gitea workflow)
-
-The Gitea release workflow's `os-image` job runs after the fast app-only job on
-the same `v*` tag: it builds the clean-room image (`os/scripts/build.sh`,
-buildroot — hours on a cold runner, mostly cached after), then re-runs
-`scripts/build-release.sh` with `OS_IMAGE` set and re-uploads `dist/` — the
-upload script replaces same-named assets, so `manifest.json` atomically gains
-the Os component. If the lane fails, the release simply stays app-only (still
-fully valid). To build an OS-bearing release by hand:
+CI builds app-only releases; the OS-level artifacts are built locally and
+attached to the GitHub release by hand until issue #166 lands:
 
 ```sh
 os/scripts/build.sh                              # -> dist/podd-os.ext4.zst
@@ -173,9 +143,7 @@ OS_IMAGE=dist/podd-os.ext4.zst VERSION=v0.1.0 scripts/build-release.sh
 (`OS_VERSION` defaults to the app version; a raw `rootfs.ext2` input is
 zstd-compressed automatically.)
 
-## Recovery-SD + rootfs-tarball artifacts
-
-Built by the same `os-image` job, which already has the finished Buildroot tree:
+Related artifacts, built from the same Buildroot tree:
 
 - **`podd-rootfs-<tag>.tar.gz`** (+ `.sha256`) — the L2 rootfs as a tarball, the
   payload for [`install/podd-slot-install.sh`](../install/podd-slot-install.sh).

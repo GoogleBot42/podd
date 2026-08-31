@@ -24,16 +24,12 @@ update it here, not in either skill.
    Other stray open PRs may be another session's in-flight work — check age
    before touching.
 
-2. **README.md "Status" paragraph's "Remaining work" list.** Read the block
-   under `> Status:` near the top of `README.md` — it names the current
-   remaining-work items in prose. As of 2026-08-30 (evening) that's: the
-   hardware verification pass for the OS A/B OTA cycle, validating the
-   biometrics numbers against a reference (issue #142; vitals landed in
-   PR #140, sleep/movement in PR #148), and an open Pod-4
-   sensor MCU reliability item (auto-recovers; see
-   `docs/research/pod4-sensor-protocol.md` §5). Don't
-   trust this cached list — re-read the paragraph; it's the one place this is
-   allowed to change.
+2. **README.md "What works" section.** Read the `## What works` section near
+   the top of `README.md` — its caveats and the "Known gaps" paragraph name
+   the current remaining-work items (as of 2026-08-31: OS-OTA hardware pass,
+   biometrics validation #142, live alarm verification, Pod-4 sensor MCU
+   reliability item, unsupported hubs #2). Don't trust this cached list —
+   re-read the section; it's the one place this is allowed to change.
 
 3. **`docs/REPLACEMENT_PLAN.md` planned-vs-done gaps.** The plan (esp. §6
    "Staged roadmap" and §9 "Update architecture") describes phases/features
