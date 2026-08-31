@@ -112,15 +112,16 @@ write (`cmp -n`, per the callout at the top of this page).
 
 Boot it and you have a working podd with the eMMC untouched — that alone
 recovers a Pod whose eMMC is in a bad state, and putting the stock card back
-undoes it completely. The payload is there if you additionally want podd on the
-eMMC; that step is **never automatic**, you run it yourself over SSH:
+undoes it completely.
 
-```sh
-sh /data/podd-recovery/podd-slot-install.sh              # inactive slot only
-sh /data/podd-recovery/podd-slot-install.sh --confirm-good   # once it boots healthy
-```
+The payload rides along so the eMMC slot-install artifact is on hand; it does
+not run by itself, and it does **not** run from this card. `podd-slot-install.sh`
+is the stock-U-Boot path (env `mmcdev=2`, so `mmcpart` selects an eMMC slot);
+booted from the podd card `mmcdev=1` and `mmcpart` selects a slot on the *card*,
+so the script detects the mismatch and refuses rather than repointing U-Boot at
+the wrong device. Use it from the rooted stock system — see
+[INSTALL.md](INSTALL.md) for what it does and does not touch.
 
-See [INSTALL.md](INSTALL.md) for what the slot install does and does not touch.
 Maintainers: `scripts/build-recovery-sd.sh --plan` prints the assembly plan.
 
 ### Net 3 — Full-disk restore from a backup image (`dd`)

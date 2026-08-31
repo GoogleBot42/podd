@@ -30,10 +30,15 @@
 #   The §5 sketch had the card rewrite the eMMC unattended at power-on. It does
 #   not, and will not: eMMC is only ever written through install/podd-slot-
 #   install.sh, into the INACTIVE slot, with the rollback state machine armed
-#   (.claude/rules/media-writes.md). The payload therefore ships the installer
-#   and its README, and a human runs one command over SSH. `--plan` prints that
-#   flow. This script itself only ever writes a regular file and refuses a
-#   block-device output.
+#   (.claude/rules/media-writes.md). This script itself only ever writes a
+#   regular file and refuses a block-device output.
+#
+#   Note also that podd-slot-install.sh cannot run FROM this card: the card's
+#   env has mmcdev=1, so its mmcpart selects a slot on the card, not on eMMC.
+#   The script detects that and refuses. Making an SD-booted eMMC install work
+#   needs mmcdev/mmcblk flipped as part of the same env write and needs a way
+#   to tell which eMMC slot still holds stock - open work, needs hardware. The
+#   payload rides along so it is available on the rooted stock system.
 #
 # Inputs (all defaulted from a finished `os/scripts/build.sh` run):
 #   --sd-img PATH      podd-sd.img to derive from   ($PODD_SD_IMG)
@@ -58,7 +63,7 @@ MODE="build"
 die() { printf 'build-recovery-sd.sh: %s\n' "$*" >&2; exit 1; }
 log() { printf '==> %s\n' "$*"; }
 
-usage() { sed -n '3,45p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '3,50p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 while [ "$#" -gt 0 ]; do
 	case "$1" in
@@ -116,11 +121,12 @@ What the card does when the user boots it:
   slot A from the card; podd comes up, WiFi provisioning included. The stock
   eMMC is untouched and the stock card remains a total, instant revert.
 
-Installing podd to eMMC afterwards (deliberate, over SSH - NOT automatic):
-  ssh root@<pod> 'sh /data/podd-recovery/podd-slot-install.sh'
-  It auto-locates /data/podd-recovery/podd-rootfs.tar.gz, verifies the .sha256,
-  writes the INACTIVE eMMC slot only, never touches p3/cage, and arms U-Boot's
-  3-failed-boots auto-revert. Run --confirm-good once it boots healthy.
+The eMMC payload it carries (/data/podd-recovery/ once booted):
+  podd-rootfs.tar.gz + .sha256 + podd-slot-install.sh + README.txt.
+  podd-slot-install.sh is the STOCK-U-Boot path (env mmcdev=2, so mmcpart means
+  an eMMC slot). Booted from this card mmcdev=1 and mmcpart means a slot on the
+  card, so the script detects the mismatch and refuses rather than repointing
+  U-Boot at the wrong device. Run it on the rooted stock system instead.
 
 Deliberately NOT done (see the header): no stock imx-boot is vendored, no
 bootloader is written to eMMC, and nothing installs itself unattended.
@@ -208,31 +214,34 @@ podd recovery payload
 =====================
 
 This card already IS a podd system: it boots podd from its own A/B rootfs
-slots and leaves the Pod's internal eMMC completely untouched. For most
-people that is the whole story - keep the stock card somewhere safe and you
-have an instant, total revert at any time.
+slots and leaves the Pod's internal eMMC completely untouched. That is the
+recovery - keep the stock card somewhere safe and swapping it back is an
+instant, total revert at any time.
 
-This directory is only needed if you want podd installed onto the eMMC as
-well, so the Pod runs podd with the card removed.
+This directory carries the eMMC slot-install artifact so it travels with the
+card. Nothing here runs by itself.
 
-  sh /data/podd-recovery/podd-slot-install.sh
-
-That writes the INACTIVE eMMC slot only, verifies podd-rootfs.tar.gz against
-the .sha256 here first, never touches the persistent data partition, and arms
-U-Boot's automatic revert after 3 failed boots. Once the new slot boots and
-looks healthy:
-
-  sh /data/podd-recovery/podd-slot-install.sh --confirm-good
-
-Nothing here runs by itself. Installing to eMMC is always a deliberate act.
-
-Note: no bootloader is written to the eMMC. The card's imx-boot and U-Boot
-env stay in charge of booting, which is also what makes the revert cheap.
-
-Files:
   podd-rootfs.tar.gz         the aarch64 rootfs (kernel + DTB under /boot)
   podd-rootfs.tar.gz.sha256  its digest, checked before any eMMC write
-  podd-slot-install.sh       the installer (docs/RECOVERY.md explains the nets)
+  podd-slot-install.sh       the eMMC A/B slot installer
+
+IMPORTANT - where the installer runs
+------------------------------------
+podd-slot-install.sh is the STOCK-U-Boot eMMC path: it belongs on a rooted
+stock system, whose U-Boot env has mmcdev=2 so that mmcpart selects an eMMC
+slot. Booted from THIS card the env has mmcdev=1, mmcpart selects a slot on
+the card itself, and flipping it after writing eMMC would repoint U-Boot at
+the wrong device - so the script detects that and refuses. Copy the tarball to
+the stock system and run it there:
+
+  sh podd-slot-install.sh --rootfs podd-rootfs.tar.gz
+  sh podd-slot-install.sh --confirm-good     # once the new slot boots healthy
+
+It writes the INACTIVE eMMC slot only, verifies the .sha256 first, never
+touches the persistent data partition, and arms U-Boot's automatic revert
+after 3 failed boots. No bootloader is ever written to the eMMC.
+
+See docs/RECOVERY.md and docs/INSTALL.md in the podd repo.
 README
 
 PAY_BYTES="$(du -sb "${WORK}/payload" | cut -f1)"

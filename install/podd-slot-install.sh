@@ -128,6 +128,21 @@ fi
 ALTBOOTCMD="$(fw_printenv -n altbootcmd 2>/dev/null || echo '')"
 [ -n "$ALTBOOTCMD" ] || die "this unit's U-Boot env has no 'altbootcmd' - the 3-failed-boots auto-revert this script relies on is absent, so a bad slot could NOT roll back. Refusing. Inspect 'fw_printenv' and see flashing-method.md §3c/§4."
 
+# mmcpart only means "which slot" RELATIVE TO mmcdev. On a rooted stock unit
+# mmcdev=2, so mmcpart selects an eMMC slot and everything below lines up. Boot
+# the clean-room podd SD instead and mmcdev=1: mmcpart then selects a slot on
+# the CARD, so reading the active slot from it and flipping it after writing
+# eMMC would silently repoint U-Boot at the wrong device. Refuse rather than
+# guess - the SD-booted eMMC install needs mmcdev/mmcblk flipped too, and needs
+# some way to tell which eMMC slot still holds stock, neither of which is
+# settled. (Booted from the podd SD you already have podd; OS updates there go
+# through pod-updater's SD slot writer.)
+MMCDEV="$(fw_printenv -n mmcdev 2>/dev/null || echo '')"
+DISK_INDEX="${DISK##*mmcblk}"
+if [ -n "$MMCDEV" ] && [ "$MMCDEV" != "$DISK_INDEX" ]; then
+  die "the U-Boot env in use has mmcdev=$MMCDEV, so its mmcpart selects a slot on /dev/mmcblk${MMCDEV}, not on the install target $DISK. Flipping mmcpart here would point U-Boot at the wrong device. This is the stock-U-Boot eMMC path (mmcdev=2); if you booted the podd SD (mmcdev=1) do not use this script - see docs/RECOVERY.md and flashing-method.md §3c."
+fi
+
 # Compute inactive slot + its partition. Refuse if the active slot is unknown.
 case "$ACTIVE" in
   1) INACTIVE=2 ;;

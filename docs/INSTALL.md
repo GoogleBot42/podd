@@ -266,6 +266,13 @@ the current directory) and tells you every path it tried if it finds nothing.
 An adjacent `<tarball>.sha256` is verified automatically; pass `--sha256 <hex>`
 to override it.
 
+> **This runs on a rooted *stock* system**, whose U-Boot env has `mmcdev=2` so
+> that `mmcpart` selects an eMMC slot. Booted from podd's own SD image `mmcdev=1`
+> and `mmcpart` selects a slot on the card, so flipping it after writing eMMC
+> would repoint U-Boot at the wrong device — the script checks `mmcdev` and
+> refuses. (From podd's SD you already have podd; OS updates there go through
+> pod-updater — [UPDATING.md](UPDATING.md).)
+
 Other flags: `--disk DEV` (override the auto-detected eMMC whole-disk device),
 `--no-reboot`, `--yes` (skip the interactive `YES` prompt). It backs up the env +
 MBR to `/opt/podd/backup/slot-<timestamp>/` before writing.
