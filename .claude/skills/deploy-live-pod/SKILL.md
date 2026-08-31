@@ -68,18 +68,29 @@ still holds.
    Also: parallel agent sessions have cross-deployed within minutes of each
    other (2026-08-16) — check `journalctl -u podd | grep "podd starting"`
    timestamps for deploys you didn't make before assuming yours is live.
-3. **Copy it to the device as a staged file, not in place.** `scp` the binary
+3. **OTA layout check (since 2026-08-31): is an OTA release active?** The
+   live unit execs through `/usr/bin/podd-launch`, which prefers an
+   OTA-installed release at `/data/podd/updates/current/rootfs/podd` and
+   only falls back to `/usr/bin/podd` when none is active. **If
+   `readlink /data/podd/updates/current` resolves, a dev-loop swap of
+   `/usr/bin/podd` is a silent no-op.** For a dev deploy either remove the
+   `current` symlink first (podd falls back to `/usr/bin/podd` on the next
+   restart; the release dir stays for instant re-apply via the UI) or
+   overwrite the release's own `rootfs/podd` — and say which you did in the
+   deploy report. Confirm what's actually running afterwards:
+   `readlink -f /proc/$(pidof podd)/exe`.
+4. **Copy it to the device as a staged file, not in place.** `scp` the binary
    to a `*.new`-style staging path on-device (see `CLAUDE.local.md` for the
    currently-live convention — it has been `/data/podd/podd.new` in recent
    sessions, installed with `install -m 0755` to `/usr/bin/podd`; the
    *release* layout is `/opt/podd/current/rootfs/podd`, which is a different
    thing — don't assume it's what's running). **Confirm the current binary
    path on-device before overwriting anything** — this has drifted before.
-4. **Back up the running binary before replacing it.** Copy whatever is
+5. **Back up the running binary before replacing it.** Copy whatever is
    currently at the live binary path to a `.orig`-suffixed sibling
    (`podd.orig` is the established convention) so a bad deploy has an
    instant, obvious revert.
-5. **Swap and restart:**
+6. **Swap and restart:**
    ```
    systemctl stop podd
    install -m 0755 <staged .new path> <live binary path>
@@ -89,11 +100,11 @@ still holds.
    podd` — that's enough time for the process itself to come up and either
    stay up or crash-loop visibly. It is **not** enough time to judge whether
    actuation is healthy — see "The 60-second zombie window" below.
-6. **Verify against the specific behavior you're chasing**, not just
+7. **Verify against the specific behavior you're chasing**, not just
    "is it running": `journalctl -u podd --since "2 minutes ago"` (or a tighter
    `--since` around when you restarted) and read for the actual symptom, not
    just the absence of a crash.
-7. **Confirm the build identity** (since PR #120, 2026-08-23): the startup
+8. **Confirm the build identity** (since PR #120, 2026-08-23): the startup
    journal logs `Starting podd v0.0.1-g<rev>` and
    `curl -s http://<pod>:3000/api/deviceStatus` reports it under
    `freeSleep.version` — match `<rev>` against the commit you built. This is
