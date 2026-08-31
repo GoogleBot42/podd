@@ -42,7 +42,7 @@ Key ideas:
 
 | Mode | Behavior |
 |---|---|
-| **Manual** (default) | Polls and *reports* that an update is available; you apply it explicitly. |
+| **Manual** (default) | Polls and *reports* that an update is available; you apply it explicitly (the panel's **Update to …** button, or the installer). |
 | **Auto** | Polls and applies auto-appliable updates (app tier) on its own. |
 
 Set the mode with `PODD_UPDATER_MODE=auto` (or `manual`).
@@ -97,7 +97,7 @@ Other knobs:
 | Variable | Default | Meaning |
 |---|---|---|
 | `PODD_UPDATER_ENABLED` | `true` | `false`/`0` disables the agent entirely. |
-| `PODD_UPDATER_CHANNEL` | `stable` | Which release channel to follow. |
+| `PODD_UPDATER_CHANNEL` | `stable` | Which release channel to follow (a channel switched from the UI persists an override that wins over this — see [Seeing what the agent is doing](#seeing-what-the-agent-is-doing)). |
 | `PODD_UPDATER_MODE` | `manual` | `auto` or `manual`. |
 | `PODD_UPDATER_POLL_SECS` | `3600` | Poll interval, seconds. |
 | `PODD_UPDATER_KEEP` | `3` | How many recent releases to retain for rollback (min 1). |
@@ -186,32 +186,54 @@ podup verify --pubkey keys/signing.pub --manifest dist/manifest.json --dir dist
 The web UI has an **Updates** panel under **Settings**: installed version per
 tier, whether the agent is enabled and in auto or manual mode, when it last
 checked (and whether that check succeeded), anything the channel is offering,
-the last error, and the last thing applied. Two buttons there drive the agent —
-**Check now** (poll the channel out of band) and **Roll back** (return to the
-previous app release; podd restarts).
+the last error, and the last thing applied. Its controls drive the agent —
+**Check now** (poll the channel out of band), **Update to \<version\>** (install
+the offered app release; appears only when one is offered), **Roll back**
+(return to the previous app release), and the **Release channel** selector.
+Installing and rolling back both restart podd.
 
 The same data is available over HTTP if you'd rather script it:
 
 ```sh
 curl -s http://<pod-ip>:3000/api/updates          # status
 curl -s -X POST http://<pod-ip>:3000/api/updates/check
+curl -s -X POST -H 'content-type: application/json' -d '{"kind":"app"}' \
+    http://<pod-ip>:3000/api/updates/apply
+curl -s -X POST -H 'content-type: application/json' -d '{"channel":"beta"}' \
+    http://<pod-ip>:3000/api/updates/channel
 curl -s -X POST http://<pod-ip>:3000/api/updates/rollback
 ```
 
 `"updater": null` means no update agent is running (it failed to build — check
 `journalctl -u podd` for a trust-policy error); that is *not* the same as
-"you're up to date". The release **channel is shown read-only**: it is read
-once at start-up from `PODD_UPDATER_CHANNEL`, so change it in the systemd
-drop-in above and restart. There is no "apply this update" button yet — in
-Manual mode, apply via the installer (below).
+"you're up to date".
+
+**Applying** is the app tier only: podd verifies and stages the release, flips
+`current`, and restarts into the new release as a canary that commits itself or
+is rolled back automatically (see [How rollback works](#how-rollback-works)).
+That restart usually kills the HTTP request before it can answer — a dropped
+connection there means "podd is restarting", and `GET /api/updates` is the
+truth once it is back. Asking to apply the OS or MCU tiers answers `501`: those
+live paths are still behind their dry-run gates, so apply them with the
+installer instead. With the agent switched off (`PODD_UPDATER_ENABLED=false`)
+an apply is refused outright rather than silently ignored.
+
+**Switching channels** takes effect immediately — no restart — and is
+*persisted* on the Pod as `<release-root>/channel.json` (by default
+`/opt/podd/releases/channel.json`). From then on that override outranks
+`PODD_UPDATER_CHANNEL`: the env var is the install-time default, the switch is
+your later decision. To go back to following the env var, delete that file and
+restart podd. Switching applies nothing on its own and drops the previous
+channel's offers — press **Check now** afterwards.
 
 ---
 
 ## Updating manually
 
-If you're in Manual mode (or just want to force an update now), re-running the
-installer is the simplest path — it's idempotent and does the same
-verify-then-activate flow:
+If the agent can't reach the channel, is switched off, or you want to move to a
+specific version, re-running the installer is the simplest path — it's
+idempotent and does the same verify-then-activate flow (this is also how the OS
+and MCU tiers are applied):
 
 ```sh
 curl -fsSL https://git.neet.dev/zuckerberg/podd/raw/branch/main/install/install.sh \

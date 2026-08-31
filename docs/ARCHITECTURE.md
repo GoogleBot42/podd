@@ -119,12 +119,16 @@ Assistant on a stale retained value until the next broker reconnect (#106).
 Beyond the free-sleep set, `GET /api/updates` is podd's own update-observability
 surface (`REPLACEMENT_PLAN` §9): the running build stamp plus the update agent's
 published `UpdateStatus` (channel, mode, installed version per tier, last check,
-available components, last error/apply), with `POST /api/updates/check` and
-`POST /api/updates/rollback` driving the two controls `pod-updater` implements.
+available components, last error/apply), with `POST /api/updates/{check,apply,
+channel,rollback}` driving the controls `pod-updater` implements.
 `updater: null` means no agent is wired — distinct from "no updates available".
-Applying an update is not routed (issue #1's other half), and the channel is
-read-only because it is fixed at start-up from `PODD_UPDATER_CHANNEL`. The UI
-renders all of it in Settings → Updates.
+`apply` is Tier-2 only — it hands off to the trial machinery below, and answers
+`501` for the OS/MCU tiers whose live paths are still dry-run stubs (issue #43);
+a disabled agent (`PODD_UPDATER_ENABLED=false`) refuses it outright rather than
+no-opping. `channel` switches channels at runtime and the agent persists the
+choice in `<release-root>/channel.json`, which outranks `PODD_UPDATER_CHANNEL`
+from then on (the env var is the install-time default). The UI renders all of it
+in Settings → Updates.
 
 `GET/POST /mqtt` is podd-only (free-sleep has no MQTT): the broker link's
 settings — `enabled`, `server`, `port`, `user`, `passwordSet` — behind the UI's
