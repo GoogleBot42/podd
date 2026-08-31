@@ -11,24 +11,21 @@ frontend), a local REST API (with server-sent-event log streaming), a
 thermostat/scheduler, MCU firmware flashing, and — the part the existing
 projects get wrong — a **signed, atomic, reproducible update system**.
 
-> Status: **running in production on real hardware (2026-07-20).** podd boots
-> from the clean-room OS image — from-source bootloader/kernel/rootfs, **zero
-> Eight Sleep binaries** ([docs/CLEANROOM-OS.md](docs/CLEANROOM-OS.md)) — and
-> **drives a live Pod nightly**: both bed sides tested on/off and holding their
-> setpoints (live MCU writes, `PODD_DRY_RUN=false`), scheduler, API, and web UI
-> all exercised against hardware. The full userland is unit-tested throughout
-> (100+ tests) with reproducible Nix builds and static aarch64 binaries.
-> OS A/B OTA is wired end-to-end (updater writes + verifies the inactive SD
-> slot, U-Boot counts boot attempts and auto-reverts, podd marks-good —
-> hardware verification of the full cycle pending). Biometrics (heart rate,
-> HRV, breathing rate, sleep sessions, and movement from the piezo +
-> capacitance streams) are computed and recorded on-device. Remaining work:
-> the OS-OTA hardware pass, validating the biometrics numbers against a
-> reference (issue #142), and an
-> open reliability item on the Pod-4 sensor MCU (auto-recovers; see
-> `docs/research/pod4-sensor-protocol.md` §5). See
-> [`docs/REPLACEMENT_PLAN.md`](docs/REPLACEMENT_PLAN.md) for the full design
-> and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the layout.
+> Status: **running in production on real hardware.** podd boots from the
+> clean-room OS image — from-source bootloader/kernel/rootfs, **zero Eight
+> Sleep binaries** ([docs/CLEANROOM-OS.md](docs/CLEANROOM-OS.md)) — and drives
+> a live Pod nightly: live MCU writes, scheduler, API, and web UI all
+> exercised against hardware. The userland is unit-tested throughout, with
+> reproducible Nix builds and static aarch64 binaries. OS A/B OTA is wired
+> end-to-end, with U-Boot boot-counting and auto-revert (hardware verification
+> of the full cycle pending). Biometrics (heart rate, HRV, breathing rate,
+> sleep sessions, movement) are computed and recorded on-device. Remaining
+> work: the OS-OTA hardware pass, validating the biometrics numbers against a
+> reference (issue #142), and an open reliability item on the Pod-4 sensor MCU
+> (auto-recovers; see `docs/research/pod4-sensor-protocol.md` §5). See
+> [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the as-built layout and
+> [`docs/REPLACEMENT_PLAN.md`](docs/REPLACEMENT_PLAN.md) for the original
+> design.
 
 ## Flashing & updating
 
@@ -94,23 +91,16 @@ legacy stock-clone image ([docs/SD-BOOT.md](docs/SD-BOOT.md)) shipped.
 
 ## Workspace
 
-| Crate | Purpose | Status |
-|---|---|---|
-| `crates/pod-update` | Signed, reproducible update core (manifests + SHA-256/Ed25519 verification), shared by host and device | ✅ implemented + tested |
-| `crates/podup` | Host release CLI: `keygen` / `pack` / `release` / `verify` | ✅ implemented |
-| `crates/pod-proto` | LSP UART protocol (framing/CRC, Frozen + Sensor packet/command tables, thermostat `profile.rs`), extracted from opensleep | ✅ implemented + tested; validated vs live Pod 4 |
-| `crates/podd-core` | opensleep control core: Frozen/Sensor subsystems, LED, reset, config, MQTT, state bus | ✅ implemented |
-| `crates/api` | free-sleep-compatible REST + SSE HTTP API and embedded-SPA server (biometrics endpoints deferred) | ✅ implemented |
-| `crates/pod-update-agent` | On-device OTA agent: Tier-2 app swaps and Tier-1 OS A/B slot updates (write + readback-verify + U-Boot-armed trial with auto-rollback) are live, both behind dry-run gates; Tier-3 MCU apply is still gated | ✅ implemented |
-| `crates/pod-probe` | Read-only serial probe for validating `pod-proto` against live MCUs | ✅ implemented |
-| `crates/podd` | The control daemon: wires `podd-core` + `api` + `pod-update-agent` together; MCU writes gated behind `PODD_DRY_RUN` | ✅ implemented (live hardware cutover pending) |
-
-Note on the earlier opensleep source map: `pod-hal` (reset + LED) is folded
-into `podd-core`; MCU `.bbin` flashing lives in `pod-update-agent` (Tier 3,
-dry-run-gated); schedule persistence and endpoints live in `api`, with the
-thermostat curve in `pod-proto`'s `profile.rs`. Still genuinely **planned**:
-WiFi/onboarding bring-up and a full autonomous weekday scheduler loop. See
-`docs/ARCHITECTURE.md`.
+| Crate | Purpose |
+|---|---|
+| `crates/pod-update` | Signed, reproducible update core (manifests + SHA-256/Ed25519 verification), shared by host and device |
+| `crates/podup` | Host release CLI: `keygen` / `pack` / `release` / `verify` |
+| `crates/pod-proto` | LSP UART protocol (framing/CRC, Frozen + Sensor packet/command tables, thermostat `profile.rs`); validated against a live Pod 4 |
+| `crates/podd-core` | Control core: Frozen/Sensor subsystems, biometrics, scheduler, LED, reset, config, MQTT, state bus |
+| `crates/api` | free-sleep-compatible REST + SSE HTTP API and embedded-SPA server |
+| `crates/pod-update-agent` | On-device OTA agent: Tier-2 app swaps and Tier-1 OS A/B slot updates (readback-verify, U-Boot-armed trial, auto-rollback); Tier-3 MCU flashing is still dry-run-gated |
+| `crates/pod-probe` | Read-only serial probe for validating `pod-proto` against live MCUs |
+| `crates/podd` | The control daemon: wires `podd-core` + `api` + `pod-update-agent` together; MCU writes gated behind `PODD_DRY_RUN` |
 
 ## Build & test
 
