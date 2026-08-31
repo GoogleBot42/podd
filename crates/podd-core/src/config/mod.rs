@@ -39,6 +39,16 @@ pub struct LEDConfig {
     #[serde(default)]
     pub cooling: Option<LedPattern>,
     pub band: CurrentBand,
+    /// Status-LED brightness, 0–100 %. Scales every pattern's color levels;
+    /// 0 turns the LED off outright. Edited live by the UI slider
+    /// (`Command::SetLedBrightness`), so configs predating the field parse
+    /// at full brightness.
+    #[serde(default = "default_led_brightness")]
+    pub brightness: u8,
+}
+
+fn default_led_brightness() -> u8 {
+    100
 }
 
 /// Broker link settings (the UI's Settings → MQTT section, issue #18).

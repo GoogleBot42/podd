@@ -68,8 +68,8 @@ pub struct DeviceSnapshot {
     pub cover_version: String,
     /// Sensor piezo gains `(left, right)` — the cover's `gain*` settings.
     pub gains: (u16, u16),
-    /// Cover status-LED brightness (0–100). Not yet driven by podd-core; the
-    /// field exists so the snapshot is a superset of the wire status block.
+    /// Hub status-LED brightness (0–100 %), mirroring `config.ron`'s
+    /// `led.brightness`. Published by the Frozen manager, which owns the LED.
     pub led_brightness: u8,
 }
 
@@ -226,6 +226,11 @@ pub enum Command {
     SetSettings(Box<crate::settings::Settings>),
     /// Fire an alarm immediately.
     FireAlarm(AlarmSpec),
+    /// Set the hub status-LED brightness, 0–100 % (the UI's Settings slider,
+    /// #10). Applied to `config.ron`'s `led.brightness` and persisted, like
+    /// [`Command::SetPrimeDaily`]; the Frozen manager rescales its patterns
+    /// off the config watch.
+    SetLedBrightness(u8),
     /// Apply an opaque CBOR device-settings block (gains / LED brightness).
     SetSettingsCbor(Vec<u8>),
     /// Reboot the device.

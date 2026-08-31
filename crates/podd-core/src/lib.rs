@@ -231,6 +231,31 @@ async fn apply_prime_daily(
     true
 }
 
+/// Apply a status-LED brightness change (UI settings slider, #10) to the live
+/// config. Same shape as [`apply_prime_daily`]: no-op changes are dropped so
+/// a settings save doesn't gratuitously reset manual overrides.
+async fn apply_led_brightness(
+    config_tx: &watch::Sender<Config>,
+    config_path: &str,
+    percent: u8,
+) -> bool {
+    let percent = percent.min(100);
+    let mut cfg = config_tx.borrow().clone();
+    if cfg.led.brightness == percent {
+        return false;
+    }
+    cfg.led.brightness = percent;
+    log::info!("Set LED brightness to {percent}%");
+    if let Err(e) = config_tx.send(cfg.clone()) {
+        log::error!("Error sending to config watch channel: {e}");
+        return false;
+    }
+    if let Err(e) = cfg.save(config_path).await {
+        log::error!("Failed to save config: {e}");
+    }
+    true
+}
+
 /// Apply a per-side away-mode change (UI settings page) to the live config.
 /// Same shape as [`apply_prime_daily`]: no-op changes are dropped so a
 /// settings save doesn't gratuitously reset manual overrides.
@@ -553,6 +578,11 @@ async fn dispatch_commands(
                 if settings_tx.send((**new_settings).clone()).is_err() {
                     log::warn!("settings watch closed; dropping SetSettings");
                 }
+            }
+            // LED brightness rides the config watch. No retained MQTT state
+            // topic for it today — nothing subscribes to brightness.
+            Command::SetLedBrightness(percent) => {
+                apply_led_brightness(&config_tx, &config_path, *percent).await;
             }
             Command::ClearAlarm { .. } | Command::FireAlarm(_) => {
                 if sensor_tx.send(cmd).await.is_err() {

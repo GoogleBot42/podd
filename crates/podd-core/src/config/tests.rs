@@ -190,3 +190,14 @@ async fn test_load_couples_config() {
         _ => panic!("Expected couples profile"),
     }
 }
+
+#[tokio::test]
+async fn test_led_brightness_defaults_when_absent() {
+    // configs written before `led.brightness` existed must parse at full
+    // brightness — a default-0 would blank the status LED on live units
+    let config = Config::load("example_solo.ron").await.unwrap();
+    assert_eq!(config.led.brightness, 100);
+    // the examples spell it out explicitly
+    let config = Config::load("../../config.example.ron").await.unwrap();
+    assert_eq!(config.led.brightness, 100);
+}
