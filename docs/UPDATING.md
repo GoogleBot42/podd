@@ -65,12 +65,13 @@ service reinstalls:
 sudo systemctl edit podd
 ```
 
-Add a block like this (a Gitea example, auto-updating, trusting your own key):
+Add a block like this (the project's GitHub releases, auto-updating, trusting
+your own key):
 
 ```ini
 [Service]
 # Where to fetch releases from (pick ONE source form; see the table below):
-Environment=PODD_UPDATER_GITEA=https://git.neet.dev/zuckerberg/podd
+Environment=PODD_UPDATER_GITHUB=GoogleBot42/podd
 # Apply updates automatically (omit for the default: manual/report-only):
 Environment=PODD_UPDATER_MODE=auto
 # Check hourly (value is in seconds; 3600 is the default):
@@ -242,14 +243,14 @@ idempotent and does the same verify-then-activate flow (this is also how the OS
 and MCU tiers are applied):
 
 ```sh
-curl -fsSL https://git.neet.dev/zuckerberg/podd/raw/branch/main/install/install.sh \
-  | sh -s -- --source gitea:https://git.neet.dev/zuckerberg/podd
+curl -fsSL https://raw.githubusercontent.com/GoogleBot42/podd/main/install/install.sh \
+  | sh -s -- --source github:GoogleBot42/podd
 ```
 
 Or point it at a pinned tag to move to a specific version:
 
 ```sh
-podd-install.sh --source gitea:https://git.neet.dev/zuckerberg/podd@v0.1.0
+podd-install.sh --source github:GoogleBot42/podd@v0.1.0
 ```
 
 Re-running is safe: it keeps your `/opt/podd/config.ron` and your systemd drop-ins,

@@ -35,16 +35,20 @@ GitHub and Gitea sources expect, so **don't rename them.**
 
 ## Cutting a release with CI (the normal path)
 
-Both `.github/workflows/release.yml` and `.gitea/workflows/release.yml` build the
-**same** bundle via `scripts/build-release.sh` and publish it to the release for
-the tag. To cut a release:
+The forges split the work (deliberate — decided 2026-08-31): day-to-day
+development, PRs, and test/build CI run on **Gitea**; **releases are built and
+published on the public GitHub mirror**, which reacts only to a new tag
+arriving via the push mirror. `.github/workflows/release.yml` builds the
+bundle via `scripts/build-release.sh` and publishes it to the GitHub Release
+for the tag — the URL shape `pod-update-agent`'s GitHub source resolves. To
+cut a release, tag on Gitea as usual:
 
 ```sh
 git tag v0.1.0
-git push origin v0.1.0
+git push origin v0.1.0    # Gitea; the push mirror forwards the tag to GitHub
 ```
 
-Pushing a `v*` tag triggers the workflow, which:
+The mirrored tag triggers the GitHub workflow, which:
 
 1. Installs Nix and runs `scripts/build-release.sh`.
 2. Builds the aarch64 `podd` binary, the web UI, and the host `podup` tool.
@@ -52,10 +56,18 @@ Pushing a `v*` tag triggers the workflow, which:
    `app-<version>.squashfs` via `podup release`.
 4. Signs the manifest **if** a signing key secret is set (otherwise unsigned).
 5. Self-verifies the release exactly as a device would (`podup verify`).
-6. Uploads every file in `dist/` to the GitHub / Gitea release for the tag.
+6. Uploads every file in `dist/` to the GitHub release for the tag.
 
 You can also trigger it manually via **workflow_dispatch** with an explicit
 `version` input.
+
+> **OS-level artifacts** (`podd-sd-<tag>.img.gz`, `os-<version>.ext4.zst`, the
+> L2 rootfs tarball, the recovery SD) are **not** built by the GitHub job — a
+> cold Buildroot run doesn't fit a hosted runner. They're built on the
+> self-hosted Gitea runner (cached Buildroot tree) and attached to the GitHub
+> release out of band; tracking issue #160. Until that lands, releases are
+> app-only (fully valid — the manifest simply has no Os component) and the OS
+> image is built locally per [CLEANROOM-OS.md](CLEANROOM-OS.md).
 
 > The app version drops the leading `v` — tag `v0.1.0` produces
 > `app-0.1.0.squashfs`. The manifest carries the full version, and the device reads
@@ -98,9 +110,9 @@ If you want signed releases so owners can require authenticity:
    ```
 
 2. **Add the secret to CI.** Put the *contents* of `keys/signing.key` (the base64
-   seed) into a repository secret named **`PODD_SIGNING_KEY`**:
-   - GitHub: *Settings → Secrets and variables → Actions → New repository secret.*
-   - Gitea: *Settings → Actions → Secrets.*
+   seed) into a repository secret named **`PODD_SIGNING_KEY`** on the **GitHub**
+   mirror (releases are built there): *Settings → Secrets and variables →
+   Actions → New repository secret.*
 
 3. **(Optional) `PODD_SIGNING_PUB`.** The build can derive `signing.pub` from the
    private seed automatically (via `openssl`), so you usually only need the one
