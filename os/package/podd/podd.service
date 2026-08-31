@@ -23,13 +23,23 @@ Type=simple
 # (incl. ExecStartPre), so it must already exist -> chicken/egg (status=200/CHDIR
 # on first boot). Run from /data (the mountpoint always exists) instead.
 ExecStartPre=/bin/sh -c 'mkdir -p /data/podd; test -f /data/podd/config.ron || cp /etc/podd/config.ron /data/podd/config.ron'
-ExecStart=/usr/bin/podd /data/podd/config.ron
+# podd-launch execs the OTA-installed app release under /data/podd/updates
+# when one is active (Tier-2 updates; see PODD_UPDATER_* below), else the
+# baked /usr/bin/podd. The wrapper also points PODD_SPA_DIR at the release's
+# bundled UI so daemon and SPA can't skew.
+ExecStart=/usr/bin/podd-launch /data/podd/config.ron
 WorkingDirectory=/data
 Restart=always
 RestartSec=3
 
 Environment=PODD_API_ADDR=0.0.0.0:3000
 Environment=PODD_SPA_DIR=/usr/share/podd/ui
+# Tier-2 (app) releases live on /data: persistent across restarts AND OS A/B
+# slot swaps, and the rootfs slots stay pristine. These paths are shared by
+# the agent (writes) and podd-launch (execs).
+Environment=PODD_UPDATER_RELEASE_ROOT=/data/podd/updates/releases
+Environment=PODD_UPDATER_CURRENT=/data/podd/updates/current
+Environment=PODD_UPDATER_STAGING=/data/podd/updates/staging
 # SAFETY: actuation (TEC/pump control, vibration alarms) is LOGGED, not sent,
 # until deliberately armed via a drop-in setting PODD_DRY_RUN=false. Sensing
 # config (piezo enable/gain) still goes to the MCU so presence data works.

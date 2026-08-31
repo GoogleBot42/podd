@@ -54,8 +54,15 @@ impl ReleaseInstaller for NoopInstaller {
     }
 }
 
-/// Real installer: mounts the squashfs read-only under `release_dir/rootfs`
-/// and restarts the systemd unit. Requires root; used on the device.
+/// Real installer: **extracts** the squashfs into `release_dir/rootfs` and
+/// restarts the systemd unit. Requires root; used on the device.
+///
+/// Extraction (not a loop mount) is deliberate: a mount does not survive a
+/// reboot, so a mounted release would come back as an empty `rootfs/` on the
+/// next boot — the service would exec nothing (installer layout) or silently
+/// fall back to the OS-baked binary (clean-room image), un-applying the
+/// update. Same strategy as `install/podd-install.sh`: `unsquashfs` when
+/// available, else mount + copy + umount.
 pub struct SystemInstaller {
     /// systemd unit to restart after the flip (e.g. `podd.service`).
     pub service: String,
@@ -63,7 +70,36 @@ pub struct SystemInstaller {
 
 impl ReleaseInstaller for SystemInstaller {
     fn stage(&self, release_dir: &Path, squashfs: &Path) -> Result<()> {
-        let mnt = release_dir.join("rootfs");
+        let rootfs = release_dir.join("rootfs");
+        // A leftover tree from an interrupted stage must not survive into the
+        // new release.
+        if rootfs.exists() {
+            std::fs::remove_dir_all(&rootfs)?;
+        }
+
+        let unsquash = std::process::Command::new("unsquashfs")
+            .arg("-f")
+            .arg("-d")
+            .arg(&rootfs)
+            .arg(squashfs)
+            .status();
+        match unsquash {
+            Ok(status) if status.success() => return Ok(()),
+            Ok(status) => log::warn!(
+                "pod-update-agent: unsquashfs of {} failed ({status}); falling back to mount+copy",
+                squashfs.display()
+            ),
+            Err(e) => log::info!(
+                "pod-update-agent: unsquashfs unavailable ({e}); falling back to mount+copy"
+            ),
+        }
+        // A failed unsquashfs may have left a partial tree.
+        if rootfs.exists() {
+            std::fs::remove_dir_all(&rootfs)?;
+        }
+        std::fs::create_dir_all(&rootfs)?;
+
+        let mnt = release_dir.join(".stage-mnt");
         std::fs::create_dir_all(&mnt)?;
         let status = std::process::Command::new("mount")
             .args(["-t", "squashfs", "-o", "ro,loop"])
@@ -71,10 +107,35 @@ impl ReleaseInstaller for SystemInstaller {
             .arg(&mnt)
             .status()?;
         if !status.success() {
+            let _ = std::fs::remove_dir(&mnt);
             return Err(Error::Config(format!(
-                "mount of {} failed: {status}",
+                "cannot unpack {}: unsquashfs failed/absent and mount failed: {status}",
                 squashfs.display()
             )));
+        }
+        let copied = std::process::Command::new("cp")
+            .arg("-a")
+            .arg(format!("{}/.", mnt.display()))
+            .arg(&rootfs)
+            .status();
+        let umounted = std::process::Command::new("umount").arg(&mnt).status();
+        let _ = std::fs::remove_dir(&mnt);
+        match copied {
+            Ok(status) if status.success() => {}
+            other => {
+                let _ = std::fs::remove_dir_all(&rootfs);
+                return Err(Error::Config(format!(
+                    "copy out of mounted {} failed: {other:?}",
+                    squashfs.display()
+                )));
+            }
+        }
+        if !matches!(umounted, Ok(s) if s.success()) {
+            log::warn!(
+                "pod-update-agent: umount of staging mount {} failed; continuing (release \
+                 already copied out)",
+                mnt.display()
+            );
         }
         Ok(())
     }

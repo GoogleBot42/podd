@@ -26,6 +26,12 @@ Key ideas:
   directory under `/opt/podd/releases/<version>/`, and a `current` symlink is
   flipped to activate it. The agent keeps the last few releases (default **3**) so
   it can flip back instantly.
+  On the **clean-room OS image** the same layout lives at
+  `/data/podd/updates/` instead (set via `PODD_UPDATER_*` in the shipped
+  `podd.service`): the persistent `/data` partition survives OS A/B slot
+  swaps, and the `podd-launch` wrapper execs the active release — falling
+  back to the OS-baked `/usr/bin/podd` whenever no release is installed, so
+  a broken release chain can never leave the Pod without a daemon.
 - **Every update is integrity-checked (SHA-256), always.** Whether a signature is
   *also* required is your choice (see [Trust policy](#trust-policy)).
 - **A new release is health-checked before it's trusted.** After activating an app
