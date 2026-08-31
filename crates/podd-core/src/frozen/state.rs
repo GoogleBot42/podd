@@ -138,7 +138,11 @@ impl FrozenState {
                 }
             }
             FrozenPacket::PrimingStarted => {
+                // The firmware's direct ack to a Prime command. Counts as
+                // confirmation (#9) just like the "[priming] start" message —
+                // whichever arrives first.
                 log::info!("Priming started!");
+                self.is_priming = true;
             }
             _ => {}
         }
