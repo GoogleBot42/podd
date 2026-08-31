@@ -13,8 +13,8 @@ RemainAfterExit=yes
 # the clean-room image: every byte of this rootfs is built from source, there
 # is nothing that phones home, and the OTA updater needs to reach the public
 # release host (GitHub). The strict egress muzzle belongs to installs onto a
-# STOCK rootfs, where Eight Sleep's binaries still exist disabled — see
-# issue #162 for deploying it there.
+# STOCK rootfs, where Eight Sleep's binaries still exist disabled —
+# install/podd-install.sh ships that one (same unit name, strict both ways).
 ExecStart=/usr/sbin/iptables-restore /etc/iptables/iptables.rules
 ExecStart=/usr/sbin/ip6tables-restore /etc/iptables/ip6tables.rules
 

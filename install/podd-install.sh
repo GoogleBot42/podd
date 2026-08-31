@@ -24,6 +24,7 @@
 #   --variant NAME    pod4 | pod3 - which default config to seed (PODD_VARIANT, default pod4)
 #   --prefix DIR      install root, default /opt/podd (PODD_PREFIX)
 #   --no-mask         do NOT mask the vendor OTA/control units
+#   --no-muzzle       do NOT install the egress muzzle firewall (PODD_NO_MUZZLE=1)
 #   --no-start        install but do not enable/start podd.service
 #   -h | --help       this help
 #
@@ -40,6 +41,7 @@ SRC_SPEC="${PODD_RELEASE_SOURCE:-}"
 SRC_URL="${PODD_RELEASE_URL:-}"
 SRC_DIR="${PODD_RELEASE_DIR:-}"
 DO_MASK=1
+DO_MUZZLE="${PODD_NO_MUZZLE:+0}"; DO_MUZZLE="${DO_MUZZLE:-1}"
 DO_START=1
 
 MANIFEST_NAME="manifest.json"
@@ -51,7 +53,7 @@ log()  { printf '==> %s\n' "$*"; }
 warn() { printf '!!  %s\n' "$*" >&2; }
 die()  { printf '!!  %s\n' "$*" >&2; exit 1; }
 
-usage() { sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 # ---- args ----------------------------------------------------------------
 while [ $# -gt 0 ]; do
@@ -64,6 +66,7 @@ while [ $# -gt 0 ]; do
     --variant) VARIANT="$2"; shift 2 ;;
     --prefix) PREFIX="$2"; shift 2 ;;
     --no-mask) DO_MASK=0; shift ;;
+    --no-muzzle) DO_MUZZLE=0; shift ;;
     --no-start) DO_START=0; shift ;;
     -h|--help) usage 0 ;;
     *) die "unknown argument: $1 (try --help)" ;;
@@ -299,7 +302,108 @@ else
   warn "bundle has no podd.service; leaving any existing unit in place"
 fi
 
-# ---- STEP E: mask vendor stack + enable podd -----------------------------
+# ---- STEP E: egress muzzle (stock rootfs still has Eight's binaries) -----
+# A stock install leaves Eight Sleep's userland ON DISK (masked, not removed),
+# and masked units have come back before (vendor watchdogs, manual re-enables,
+# a stock OTA slot flip). Defense in depth: a default-DROP firewall so nothing
+# on this box can phone home even if something vendor wakes up. Policy:
+#   inbound  — loopback + LAN only
+#   outbound — loopback, replies, LAN, DHCP broadcast, and NTP (udp/123)
+#              anywhere: the Pod has no RTC battery, alarms refuse to arm
+#              until time syncs, and most home routers don't serve NTP.
+# Deliberately blocked: WAN DNS (a WAN resolver would leak every vendor
+# hostname lookup — use your router's resolver) and therefore the public
+# release hosts. A muzzled install updates from a LAN source (--url/--dir,
+# LAN Gitea) or by temporarily lifting the muzzle:
+#   systemctl stop podd-muzzle    # open until restart/reboot
+install_muzzle() {
+  IPT_RESTORE="$(command -v iptables-restore || true)"
+  IP6T_RESTORE="$(command -v ip6tables-restore || true)"
+  if [ -z "$IPT_RESTORE" ]; then
+    warn "MUZZLE NOT INSTALLED: no iptables-restore on this system."
+    warn "Egress is OPEN — Eight Sleep leftovers are only masked, not firewalled."
+    return 0
+  fi
+  mkdir -p /etc/podd/muzzle
+  cat > /etc/podd/muzzle/iptables.rules <<'EOF'
+*filter
+:INPUT DROP [0:0]
+:FORWARD DROP [0:0]
+:OUTPUT DROP [0:0]
+-A INPUT -i lo -j ACCEPT
+-A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+-A INPUT -s 10.0.0.0/8 -j ACCEPT
+-A INPUT -s 172.16.0.0/12 -j ACCEPT
+-A INPUT -s 192.168.0.0/16 -j ACCEPT
+-A INPUT -s 169.254.0.0/16 -j ACCEPT
+-A OUTPUT -o lo -j ACCEPT
+-A OUTPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+-A OUTPUT -d 10.0.0.0/8 -j ACCEPT
+-A OUTPUT -d 172.16.0.0/12 -j ACCEPT
+-A OUTPUT -d 192.168.0.0/16 -j ACCEPT
+-A OUTPUT -d 169.254.0.0/16 -j ACCEPT
+-A OUTPUT -p udp --sport 68 --dport 67 -j ACCEPT
+-A OUTPUT -p udp --dport 123 -j ACCEPT
+COMMIT
+EOF
+  cat > /etc/podd/muzzle/ip6tables.rules <<'EOF'
+*filter
+:INPUT DROP [0:0]
+:FORWARD DROP [0:0]
+:OUTPUT DROP [0:0]
+-A INPUT -i lo -j ACCEPT
+-A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+-A INPUT -p ipv6-icmp -j ACCEPT
+-A INPUT -s fe80::/10 -j ACCEPT
+-A INPUT -s fc00::/7 -j ACCEPT
+-A OUTPUT -o lo -j ACCEPT
+-A OUTPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+-A OUTPUT -p ipv6-icmp -j ACCEPT
+-A OUTPUT -d fe80::/10 -j ACCEPT
+-A OUTPUT -d fc00::/7 -j ACCEPT
+-A OUTPUT -p udp --dport 547 -j ACCEPT
+COMMIT
+EOF
+  # Same unit name as the clean-room image's inbound-only firewall, but the
+  # stock-install flavor is strict both ways. `stop` opens the firewall until
+  # the next start/reboot — the documented "let one update through" lever.
+  V6_LINES=""
+  if [ -n "$IP6T_RESTORE" ]; then
+    V6_LINES="ExecStart=$IP6T_RESTORE /etc/podd/muzzle/ip6tables.rules
+ExecStop=/bin/sh -c 'ip6tables -P INPUT ACCEPT; ip6tables -P OUTPUT ACCEPT; ip6tables -P FORWARD DROP; ip6tables -F'"
+  else
+    warn "no ip6tables-restore: IPv6 egress not muzzled (v4 rules still installed)"
+  fi
+  cat > /etc/systemd/system/podd-muzzle.service <<EOF
+[Unit]
+Description=podd egress muzzle (default-DROP firewall for stock rootfs installs)
+# Load before the network comes up so the rules are in from the first packet.
+DefaultDependencies=no
+Before=network-pre.target
+Wants=network-pre.target
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=$IPT_RESTORE /etc/podd/muzzle/iptables.rules
+$V6_LINES
+ExecStop=/bin/sh -c 'iptables -P INPUT ACCEPT; iptables -P OUTPUT ACCEPT; iptables -P FORWARD DROP; iptables -F'
+
+[Install]
+WantedBy=sysinit.target
+EOF
+  systemctl daemon-reload || true
+  if systemctl enable --now podd-muzzle.service; then
+    log "egress muzzle active: outbound is LAN + NTP only (see --no-muzzle to opt out)"
+    log "NOTE: current SSH/API sessions survive (established), but new non-LAN ones won't"
+  else
+    warn "MUZZLE FAILED TO START (rules rejected by this kernel?) — egress is OPEN."
+    warn "Inspect: journalctl -u podd-muzzle; opt out explicitly with --no-muzzle."
+  fi
+}
+
+# ---- STEP F: mask vendor stack + enable podd -----------------------------
 if command -v systemctl >/dev/null 2>&1; then
   if [ "$DO_MASK" = "1" ]; then
     log "masking vendor OTA/control units (idempotent; never touches cage)"
@@ -307,6 +411,11 @@ if command -v systemctl >/dev/null 2>&1; then
       systemctl disable --now "$u" >/dev/null 2>&1 || true
       systemctl mask "$u" >/dev/null 2>&1 || true
     done
+  fi
+  if [ "$DO_MUZZLE" = "1" ]; then
+    install_muzzle
+  else
+    log "skipping egress muzzle (--no-muzzle); any previously installed muzzle is left as-is"
   fi
   systemctl daemon-reload || true
   if [ "$DO_START" = "1" ]; then
@@ -334,5 +443,7 @@ cat <<EOF
    - edit $PREFIX/config.ron, then: systemctl restart podd
    - check it:  systemctl status podd   /   journalctl -u podd -f
    - re-run this script any time to update; it is idempotent.
+     (muzzled installs can't reach GitHub: update from a LAN --url/--dir,
+      or 'systemctl stop podd-muzzle' for the download, then 'start' it)
 ==========================================================================
 EOF
