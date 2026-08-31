@@ -931,12 +931,25 @@ async fn poddcontrol_maps_calls_to_commands() {
     control.reboot().await.unwrap();
     assert_eq!(rx.recv().await.unwrap(), Command::Reboot);
 
-    // Execute / device settings are not wired to the hardware yet; they must
-    // fail with NotImplemented instead of queueing into the void (#32).
+    // Execute is not wired to the hardware yet; it must fail with
+    // NotImplemented instead of queueing into the void (#32).
     let err = control.execute("reboot", None).await.unwrap_err();
     assert!(err.downcast_ref::<api::NotImplemented>().is_some());
+
+    // Device settings: `ledBrightness` is appliable (#10) — clamped to
+    // 0–100 — while a block without it still fails honestly (#32).
+    control
+        .apply_device_settings(json!({"ledBrightness": 50, "gainLeft": 400}))
+        .await
+        .unwrap();
+    assert_eq!(rx.recv().await.unwrap(), Command::SetLedBrightness(50));
+    control
+        .apply_device_settings(json!({"ledBrightness": 900}))
+        .await
+        .unwrap();
+    assert_eq!(rx.recv().await.unwrap(), Command::SetLedBrightness(100));
     let err = control
-        .apply_device_settings(json!({"ledBrightness": 50}))
+        .apply_device_settings(json!({"gainLeft": 400}))
         .await
         .unwrap_err();
     assert!(err.downcast_ref::<api::NotImplemented>().is_some());

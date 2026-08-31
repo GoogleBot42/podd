@@ -302,3 +302,55 @@ fn test_multi_pattern_transitions() {
         (REG_COLOR_UPDATE, 0xC5),
     ]);
 }
+
+// ---- brightness scaling (#10) ----
+
+#[test]
+fn test_scaled_current_level_rounds_to_nearest() {
+    let cfg = IS31FL3194Config {
+        enabled: true,
+        mode: OperatingMode::CurrentLevel(200, 100, 1),
+        band: CurrentBand::Three,
+    };
+    let s = cfg.scaled(50);
+    assert!(s.enabled);
+    let OperatingMode::CurrentLevel(r, g, b) = s.mode else {
+        panic!("mode changed");
+    };
+    // 1 rounds up to 1 at 50% — a lit color must not vanish mid-range
+    assert_eq!((r, g, b), (100, 50, 1));
+}
+
+#[test]
+fn test_scaled_full_and_over_are_identity() {
+    for percent in [100, 255] {
+        let s = LedPattern::Fixed(10, 20, 30)
+            .get_config(CurrentBand::Three)
+            .scaled(percent);
+        let OperatingMode::CurrentLevel(r, g, b) = s.mode else {
+            panic!("mode changed");
+        };
+        assert_eq!((r, g, b), (10, 20, 30));
+    }
+}
+
+#[test]
+fn test_scaled_zero_disables_output() {
+    let s = LedPattern::Fixed(10, 20, 30)
+        .get_config(CurrentBand::Three)
+        .scaled(0);
+    assert!(!s.enabled);
+}
+
+#[test]
+fn test_scaled_pattern_scales_every_color() {
+    let s = LedPattern::SlowBreath(255, 30, 0)
+        .get_config(CurrentBand::Three)
+        .scaled(50);
+    assert!(s.enabled);
+    let OperatingMode::Pattern(Some(p1), _, _) = s.mode else {
+        panic!("expected a pattern in slot 1");
+    };
+    let c = &p1.colors[0];
+    assert_eq!((c.r, c.g, c.b), (128, 15, 0));
+}

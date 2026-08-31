@@ -259,6 +259,15 @@ fn to_alarm_pattern(p: VibrationPattern) -> AlarmPattern {
     }
 }
 
+/// Pull `ledBrightness` out of a device-settings JSON block, clamped to
+/// 0–100. `None` when the field is absent or not a number.
+fn led_brightness_from(settings: &serde_json::Value) -> Option<u8> {
+    settings
+        .get("ledBrightness")?
+        .as_i64()
+        .map(|n| n.clamp(0, 100) as u8)
+}
+
 /// The real [`PodControl`]: maps each API command to a [`Command`] and pushes it
 /// onto the bus's mpsc into `podd-core`'s managers. Whether a command actually
 /// reaches an MCU is decided downstream by the managers' `dry_run` gate.
@@ -346,11 +355,15 @@ impl PodControl for PoddControl {
         .await
     }
 
-    // Nothing downstream applies these yet: the dispatcher's warn arms in
-    // podd-core just drop them. Fail honestly instead of queueing into the
-    // void and reporting success (#32).
-    async fn apply_device_settings(&self, _settings: serde_json::Value) -> anyhow::Result<()> {
-        Err(NotImplemented("applying device settings").into())
+    // Of the device-settings block only `ledBrightness` has a downstream
+    // consumer (#10); the UI's other device-settings fields (piezo gains)
+    // are read-only snapshots today. A body without `ledBrightness` still
+    // fails honestly instead of queueing into the void (#32).
+    async fn apply_device_settings(&self, settings: serde_json::Value) -> anyhow::Result<()> {
+        let Some(percent) = led_brightness_from(&settings) else {
+            return Err(NotImplemented("applying device settings other than ledBrightness").into());
+        };
+        self.send(Command::SetLedBrightness(percent)).await
     }
 
     async fn reboot(&self) -> anyhow::Result<()> {

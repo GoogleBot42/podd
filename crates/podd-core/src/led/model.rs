@@ -8,6 +8,36 @@ pub struct IS31FL3194Config {
     pub band: CurrentBand,
 }
 
+impl IS31FL3194Config {
+    /// Scale every color level by `percent` (0–100) of its configured value.
+    /// 0 disables the output entirely; values above 100 clamp to 100. The
+    /// chip's own gamma then applies on top, so a 50 % slider reads as half
+    /// drive current, not half perceived brightness — good enough for a
+    /// status LED.
+    pub fn scaled(mut self, percent: u8) -> Self {
+        let percent = percent.min(100) as u32;
+        if percent == 0 {
+            self.enabled = false;
+            return self;
+        }
+        // Round to nearest so a nonzero color only hits 0 below 1% of drive.
+        let scale = |v: u8| ((v as u32 * percent + 50) / 100) as u8;
+        match &mut self.mode {
+            OperatingMode::CurrentLevel(r, g, b) => {
+                (*r, *g, *b) = (scale(*r), scale(*g), scale(*b));
+            }
+            OperatingMode::Pattern(p1, p2, p3) => {
+                for pattern in [p1, p2, p3].into_iter().flatten() {
+                    for color in &mut pattern.colors {
+                        (color.r, color.g, color.b) = (scale(color.r), scale(color.g), scale(color.b));
+                    }
+                }
+            }
+        }
+        self
+    }
+}
+
 #[derive(Clone)]
 pub struct PatternConfig {
     pub timing: Timing,

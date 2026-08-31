@@ -98,21 +98,10 @@ pub async fn run(
     );
 
     let cfg = config_rx.borrow_and_update();
-    let led_idle = cfg.led.idle.get_config(cfg.led.band.clone());
-    let led_holding = cfg.led.active.get_config(cfg.led.band.clone());
-    let led_heating = cfg
-        .led
-        .heating
-        .clone()
-        .unwrap_or(LedPattern::SlowBreath(255, 30, 0))
-        .get_config(cfg.led.band.clone());
-    let led_cooling = cfg
-        .led
-        .cooling
-        .clone()
-        .unwrap_or(LedPattern::SlowBreath(0, 60, 255))
-        .get_config(cfg.led.band.clone());
-    set_led(&mut led, &led_idle);
+    let mut led_cfg = cfg.led.clone();
+    let mut leds = LedPatterns::resolve(&led_cfg);
+    set_led(&mut led, &leds.idle);
+    status.send_modify(|s| s.led_brightness = led_cfg.brightness);
     let mut timezone = cfg.timezone.clone();
     let mut away_mode = cfg.away_mode;
     let mut prime = cfg.prime;
@@ -172,15 +161,7 @@ pub async fn run(
                     if led_state != Some(wanted_led) {
                         log::info!("LED: {:?} -> {wanted_led:?}", led_state);
                         led_state = Some(wanted_led);
-                        set_led(
-                            &mut led,
-                            match wanted_led {
-                                LedThermalState::Idle => &led_idle,
-                                LedThermalState::Heating => &led_heating,
-                                LedThermalState::Cooling => &led_cooling,
-                                LedThermalState::Holding => &led_holding,
-                            },
-                        );
+                        set_led(&mut led, leds.for_state(wanted_led));
                     }
                 }
                 Err(e) => {
@@ -253,13 +234,35 @@ pub async fn run(
 
             Ok(_) = config_rx.changed() => {
                 let cfg = config_rx.borrow();
+                // New *thermal* intent resets manual overrides. A cosmetic
+                // change (LED brightness slider, #10) must not: compare the
+                // intent-bearing fields against what we already hold.
+                let intent_changed = cfg.profile != side_config
+                    || cfg.away_mode != away_mode
+                    || cfg.timezone != timezone
+                    || cfg.prime != prime
+                    || cfg.prime_enabled != prime_enabled;
                 timezone = cfg.timezone.clone();
                 away_mode = cfg.away_mode;
                 prime = cfg.prime;
                 prime_enabled = cfg.prime_enabled;
                 side_config = cfg.profile.clone();
-                // New config = new intent; manual overrides don't outlive it.
-                overrides = ManualOverrides::default();
+                let led_changed = cfg.led != led_cfg;
+                if led_changed {
+                    led_cfg = cfg.led.clone();
+                }
+                drop(cfg);
+                if led_changed {
+                    leds = LedPatterns::resolve(&led_cfg);
+                    status.send_modify(|s| s.led_brightness = led_cfg.brightness);
+                    // Repaint whatever state is currently showing.
+                    if let Some(showing) = led_state {
+                        set_led(&mut led, leds.for_state(showing));
+                    }
+                }
+                if intent_changed {
+                    overrides = ManualOverrides::default();
+                }
             }
 
             // The UI's Schedule page saved: same deal as a config change — new
@@ -667,6 +670,42 @@ async fn send_command(writer: &mut Writer, cmd: FrozenCommand) {
     log::debug!(" -> {name}");
     if let Err(e) = writer.send(cmd).await {
         log::error!("Failed to write {name}: {e}");
+    }
+}
+
+/// The four thermal-state patterns from `config.ron`'s `led` block, resolved
+/// to chip configs with the brightness percentage (#10) applied.
+struct LedPatterns {
+    idle: IS31FL3194Config,
+    holding: IS31FL3194Config,
+    heating: IS31FL3194Config,
+    cooling: IS31FL3194Config,
+}
+
+impl LedPatterns {
+    fn resolve(cfg: &crate::config::LEDConfig) -> Self {
+        let pat = |p: &LedPattern| p.get_config(cfg.band.clone()).scaled(cfg.brightness);
+        LedPatterns {
+            idle: pat(&cfg.idle),
+            holding: pat(&cfg.active),
+            heating: pat(cfg
+                .heating
+                .as_ref()
+                .unwrap_or(&LedPattern::SlowBreath(255, 30, 0))),
+            cooling: pat(cfg
+                .cooling
+                .as_ref()
+                .unwrap_or(&LedPattern::SlowBreath(0, 60, 255))),
+        }
+    }
+
+    fn for_state(&self, state: LedThermalState) -> &IS31FL3194Config {
+        match state {
+            LedThermalState::Idle => &self.idle,
+            LedThermalState::Heating => &self.heating,
+            LedThermalState::Cooling => &self.cooling,
+            LedThermalState::Holding => &self.holding,
+        }
     }
 }
 
