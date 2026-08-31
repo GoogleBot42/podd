@@ -1,6 +1,6 @@
 ---
 name: build-sd-image
-description: Use when building podd's bootable SD image (the from-source clean-room L2 OS image, or the legacy L1 stock-clone image) or diagnosing why a built image won't boot on the Pod 3-SD / Pod 4 i.MX8M hub. This board has no serial console, JTAG, or USB debug port — post-mortem is entirely via a self-logging diag partition read back on a host. This skill is a thin pointer to already-automated scripts plus the gotchas those scripts don't tell you; read os/README.md and docs/CLEANROOM-OS.md for the architecture first.
+description: Use when building podd's bootable SD image (the from-source clean-room OS image) or diagnosing why a built image won't boot on the Pod 3-SD / Pod 4 i.MX8M hub. This board has no serial console, JTAG, or USB debug port — post-mortem is entirely via a self-logging diag partition read back on a host. This skill is a thin pointer to already-automated scripts plus the gotchas those scripts don't tell you; read os/README.md and docs/CLEANROOM-OS.md for the architecture first.
 ---
 
 # Building & debugging the podd SD image
@@ -10,31 +10,22 @@ gotchas, not to re-explain the scripts. Read `os/README.md` (L2 architecture,
 pinned versions, layout) and `docs/CLEANROOM-OS.md` (why it exists, the
 clean-room boundary, bring-up field notes) before or alongside this.
 
-## Which path
+## The build
 
-There are two, and they are not interchangeable:
+`os/scripts/build.sh` → `dist/podd-sd.img.gz` (also left under
+`build/buildroot/output/images/`). Builds bootloader + kernel + rootfs + podd
+entirely from pinned upstream source via Buildroot; contains zero Eight Sleep
+code; proven on hardware (`docs/CLEANROOM-OS.md`). `build.sh` wraps the
+lower-level `os/scripts/build-image.sh` (CI calls the latter directly;
+`--help` lists its flags: `--buildroot DIR`, `--no-nix` +
+`--podd-bin`/`--ui-dir`, `--jobs N`, `--output-dir`).
 
-- **L2 — clean-room, from-source, publishable (current, use this by
-  default).** `os/scripts/build.sh` → `dist/podd-sd.img.gz` (also left under
-  `build/buildroot/output/images/`). Builds bootloader + kernel + rootfs +
-  podd entirely from pinned upstream source via Buildroot; contains zero
-  Eight Sleep code. Status per `docs/CLEANROOM-OS.md`: **proven on hardware**
-  (2026-07-20) — it boots, joins WiFi, drives both bed sides, and serves the
-  UI. `os/scripts/build.sh` wraps the lower-level `os/scripts/build-image.sh`
-  (CI calls the latter directly; `--help` lists its flags: `--buildroot DIR`,
-  `--no-nix` + `--podd-bin`/`--ui-dir`, `--jobs N`, `--output-dir`).
-- **L1 — stock-clone, personal, not publishable (legacy, kept as
-  documentation).** `scripts/build-podd-sd.sh` → `dist/podd-sd.img.gz`. Bolts
-  podd onto a clone of *your own* stock eMMC dump — it needs your personal
-  backups (`../backup/mmcblk2.img.gz`, `mmcblk1-sd.img.gz`, etc., gitignored,
-  never committed) and produces an image tied to your unit's serial and
-  vendor rootfs. It cannot be published — see docs/SD-BOOT.md and the "Why
-  this exists" section of `docs/CLEANROOM-OS.md`. Only use this path if
-  you're specifically working on the legacy stock-clone flow, not for normal
-  iteration.
+(The legacy L1 stock-clone image and its `scripts/build-podd-sd.sh` /
+`slim-podd-sd.sh` / `patch-podd-sd-diag.sh` family were removed from the repo
+2026-08-31 — recover from git history if ever needed.)
 
-Both write to a **spare** SD card; the stock card stays untouched as an
-instant revert (see `docs/RECOVERY.md`, "SD-swap boot").
+Write to a **spare** SD card; the stock card stays untouched as an instant
+revert (see `docs/RECOVERY.md`, "SD-swap boot").
 
 ## Gotchas the scripts don't tell you
 
@@ -56,9 +47,7 @@ dd if=<known-good>.img of=<target>.img bs=512 skip=66 seek=66 count=8126 conv=no
 Sector 66 = byte offset `0x8400` (where `imx-boot` starts); 8126 sectors
 reaches exactly byte `0x400000` (where the U-Boot env starts) — so this
 copies precisely the `imx-boot` region and touches neither the env nor any
-rootfs partition. (These exact numbers are also how `scripts/slim-podd-sd.sh`
-verifies the imx-boot region is byte-identical between images — see its
-`rng_sha` calls — so they're load-bearing, not approximate.) If the spliced
+rootfs partition. (These numbers are load-bearing, not approximate.) If the spliced
 image boots and the un-spliced one didn't, the bug is in your bootloader
 assembly, not the kernel/rootfs; if it still doesn't boot, look upstream of
 the bootloader region (DDR training firmware, DTB selection).
@@ -124,9 +113,7 @@ see "Host mkimage workaround" in `os/README.md`.
   for claimed size; `f3probe --destructive` on spare cards to confirm).
 - **Always verify after writing:** `cmp -n <byte-count> image.img /dev/sdX`
   — this is a root-`CLAUDE.md` safety tripwire (raw media writes must be
-  verified), and `scripts/slim-podd-sd.sh` prints the exact invocation
-  (with the real byte count) in its own manifest output after building the
-  slim image.
+  verified).
 
 ### 4. If it won't boot: no serial console, no JTAG, no USB — read the diag partition
 

@@ -3,9 +3,7 @@
 This is the `BR2_EXTERNAL` tree that builds podd's **clean-room L2 OS image**: a
 complete, from-source bootable system (bootloader + kernel + rootfs + podd) for
 the Eight Sleep i.MX8M-Mini Variscite "SD" hub, with A/B slots + rollback
-driven by the U-Boot env and pod-update-agent. It
-replaces the L1 "bolt podd onto Eight's Yocto rootfs" approach
-(`scripts/build-podd-sd.sh`).
+driven by the U-Boot env and pod-update-agent.
 
 > **Hardware note:** the SoM is a Variscite **VAR-SOM-MX8M-MINI** (DDR4), *not*
 > a DART-MX8M-MINI (LPDDR4) — confirmed from the live device's U-Boot env

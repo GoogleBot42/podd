@@ -50,9 +50,7 @@ jobs:
             gh release upload "$TAG" dist/* --clobber
           fi
 
-  # NOTE: the OS-level artifacts — podd-sd.img.gz, podd-os.ext4.zst, the L2
-  # podd-rootfs.tar.gz and podd-recovery-sd.img.gz (flashing §5 / §6b items 2-4,
-  # #52) — are built by the `os-image` job in .gitea/workflows/release.yml, on
-  # the self-hosted runner that carries the cached multi-hour Buildroot tree.
-  # This mirror only publishes the userland bundle; there is no second copy of
-  # that job here.
+  # NOTE: the OS-level artifacts — podd-sd.img.gz, podd-os.ext4.zst,
+  # podd-rootfs.tar.gz and podd-recovery-sd.img.gz — are not built here yet;
+  # they are built locally and attached to the release by hand (issue #166
+  # tracks adding an os-image job to this workflow).
