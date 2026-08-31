@@ -11,21 +11,28 @@ frontend), a local REST API (with server-sent-event log streaming), a
 thermostat/scheduler, MCU firmware flashing, and — the part the existing
 projects get wrong — a **signed, atomic, reproducible update system**.
 
-> Status: **running in production on real hardware.** podd boots from the
-> clean-room OS image — from-source bootloader/kernel/rootfs, **zero Eight
-> Sleep binaries** ([docs/CLEANROOM-OS.md](docs/CLEANROOM-OS.md)) — and drives
-> a live Pod nightly: live MCU writes, scheduler, API, and web UI all
-> exercised against hardware. The userland is unit-tested throughout, with
-> reproducible Nix builds and static aarch64 binaries. OS A/B OTA is wired
-> end-to-end, with U-Boot boot-counting and auto-revert (hardware verification
-> of the full cycle pending). Biometrics (heart rate, HRV, breathing rate,
-> sleep sessions, movement) are computed and recorded on-device. Remaining
-> work: the OS-OTA hardware pass, validating the biometrics numbers against a
-> reference (issue #142), and an open reliability item on the Pod-4 sensor MCU
-> (auto-recovers; see `docs/research/pod4-sensor-protocol.md` §5). See
-> [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the as-built layout and
-> [`docs/REPLACEMENT_PLAN.md`](docs/REPLACEMENT_PLAN.md) for the original
-> design.
+## What works
+
+- **From-source OS image** — bootloader, kernel, and rootfs with zero Eight
+  Sleep binaries ([docs/CLEANROOM-OS.md](docs/CLEANROOM-OS.md)). Boots from a
+  swappable microSD; the eMMC is never touched, so the stock card reverts you
+  to stock.
+- **Temperature control** on both bed sides, with a per-side weekly schedule.
+- **Web UI and REST API** (free-sleep-compatible, with SSE log streaming).
+- **Biometrics on-device**: presence, heart rate, HRV, breathing rate, sleep
+  sessions, movement — recorded locally, never uploaded. Validation against a
+  reference device is open work (issue #142).
+- **Home Assistant** integration via MQTT discovery.
+- **Signed, atomic OTA updates** with A/B rollback. The app tier is verified
+  on hardware; the OS tier is wired end-to-end but its hardware pass is still
+  pending.
+- **Vibration alarms** (engine implemented; live-fire verification pending).
+
+Known gaps: the no-SD i.MX (Pod 4) and MediaTek hubs are unsupported (issue
+#2), and the Pod-4 sensor MCU has an open reliability item (auto-recovers; see
+`docs/research/pod4-sensor-protocol.md` §5). See
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the as-built layout and
+[`docs/REPLACEMENT_PLAN.md`](docs/REPLACEMENT_PLAN.md) for the original design.
 
 ## Flashing & updating
 
@@ -41,7 +48,7 @@ Full, beginner-friendly guides live in [`docs/`](docs/):
   image (no Eight Sleep binaries); dd it to a microSD, swap it in, eMMC
   untouched; swap the stock card back to revert.
 - **[docs/SD-BOOT.md](docs/SD-BOOT.md)** — the boot-flow analysis behind the
-  SD-swap model, plus the legacy L1 stock-clone image (superseded).
+  SD-swap model.
 - **[docs/INSTALL.md](docs/INSTALL.md)** — install podd once you have root (the
   one-command userland install; the advanced A/B slot install).
 - **[docs/UPDATING.md](docs/UPDATING.md)** — the on-device OTA agent: sources,
@@ -82,12 +89,11 @@ Eight Sleep app labels varies — it reports the mattress *cover*, not the hub; 
 [docs/FLASHING.md](docs/FLASHING.md#step-1--identify-your-pod) for identifying
 yours). The i.MX "no-SD" (Pod 4) hub and the MediaTek no-SD hub differ below the
 userland — see [`docs/REPLACEMENT_PLAN.md`](docs/REPLACEMENT_PLAN.md). The
-primary, validated install is the from-source clean-room OS image (L2) on a
+primary, validated install is the from-source clean-room OS image on a
 swappable microSD ([docs/CLEANROOM-OS.md](docs/CLEANROOM-OS.md)); podd also
-still runs as a userland-only install on the stock Yocto base (L1), which is
-what the one-command install above does on an already-rooted unit and what the
-legacy stock-clone image ([docs/SD-BOOT.md](docs/SD-BOOT.md)) shipped.
-**No secure boot is enforced on these units**, so custom code runs.
+runs as a userland-only install on the stock Yocto base, which is what the
+one-command install above does on an already-rooted unit.
+No secure boot is enforced on these units, so custom code runs.
 
 ## Workspace
 
