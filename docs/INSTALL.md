@@ -91,6 +91,7 @@ Useful flags:
 | `--pubkey PATH` | `PODD_PUBKEY` | Require a valid signature from this key (see [signatures](#signatures-optional-and-owner-controlled)). |
 | `--prefix DIR` | `PODD_PREFIX` | Install root, default `/opt/podd`. |
 | `--no-mask` | | Do **not** disable/mask Eight's vendor services. |
+| `--no-muzzle` | `PODD_NO_MUZZLE=1` | Do **not** install the [egress muzzle](#the-egress-muzzle-no-phoning-home) firewall. |
 | `--no-start` | | Install but don't enable/start `podd.service`. |
 
 ---
@@ -122,10 +123,50 @@ Step by step:
    `swupdate-progress`, `defibrillator`, `dac`, `frank`, `capybara`, `telegraf`,
    `vector`, `frankenfirmware`, `eight-kernel`. It **never touches `cage`** (your
    persistent data partition).
-8. **Enables and starts `podd.service`** (unless `--no-start`).
+8. **Installs the egress muzzle** (unless `--no-muzzle`) — a default-DROP
+   firewall (`podd-muzzle.service`) so the Eight Sleep software still on disk
+   can never phone home. See [the egress muzzle](#the-egress-muzzle-no-phoning-home).
+9. **Enables and starts `podd.service`** (unless `--no-start`).
 
 When it finishes it prints a summary with the binary path, your config path, the
 backup location, and the UI URL.
+
+---
+
+## The egress muzzle (no phoning home)
+
+A userland install leaves Eight Sleep's software **on disk** — masked, not
+removed (that's what makes it reversible). Masking alone isn't a guarantee:
+vendor watchdogs and a stock OTA slot flip have re-awakened "disabled" services
+before. So the installer also ships `podd-muzzle.service`, a default-DROP
+`iptables` firewall that makes phoning home impossible regardless of what wakes
+up:
+
+- **Inbound:** loopback + your LAN only.
+- **Outbound:** loopback, replies, your LAN, DHCP, and **NTP (udp/123)
+  anywhere** — the Pod has no RTC battery, podd refuses to arm alarms until
+  time syncs, and most home routers don't serve NTP.
+- **Everything else is dropped**, including DNS to WAN resolvers (a public
+  resolver would leak every vendor hostname lookup — the Pod should use your
+  router's resolver, which DHCP sets up anyway) and IPv6 to the open internet.
+
+The rules live in `/etc/podd/muzzle/*.rules` — edit them (e.g. to allow a
+Tailscale range) and `systemctl restart podd-muzzle` to apply.
+
+**The trade-off:** a muzzled Pod cannot reach GitHub, so `podd-install.sh`
+re-runs and the on-device update agent must use a **LAN release source**
+(`--url http://<lan-host>/...`, `--dir`, or a LAN Gitea) — or lift the muzzle
+just for the download:
+
+```sh
+systemctl stop podd-muzzle     # firewall open (until started again / reboot)
+podd-install.sh --source github:GoogleBot42/podd
+systemctl start podd-muzzle    # muzzled again
+```
+
+This applies to **stock-rootfs installs only**. podd's own clean-room OS image
+is built 100% from source with nothing to muzzle — there it runs a LAN-only
+*inbound* firewall and leaves egress open so OTA updates just work.
 
 ---
 

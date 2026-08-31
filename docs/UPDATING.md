@@ -99,6 +99,13 @@ verified manifest):
 | `PODD_UPDATER_MANIFEST_URL` + `PODD_UPDATER_ARTIFACT_BASE` | explicit URLs | Any host serving `manifest.json` + artifacts. |
 | `PODD_UPDATER_LOCAL_DIR` | a directory path | Offline / LAN mount / USB stick holding the release. |
 
+> **Muzzled stock installs:** if `podd-install.sh` installed its egress muzzle
+> (the default on a stock rootfs — see
+> [INSTALL.md](INSTALL.md#the-egress-muzzle-no-phoning-home)), GitHub and any
+> other WAN source are unreachable by design. Use a LAN source (Gitea, an HTTP
+> host, or `PODD_UPDATER_LOCAL_DIR`), or `systemctl stop podd-muzzle` for the
+> duration of the update and `start` it again after.
+
 Other knobs:
 
 | Variable | Default | Meaning |
