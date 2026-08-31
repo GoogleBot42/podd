@@ -37,8 +37,9 @@
 #   env has mmcdev=1, so its mmcpart selects a slot on the card, not on eMMC.
 #   The script detects that and refuses. Making an SD-booted eMMC install work
 #   needs mmcdev/mmcblk flipped as part of the same env write and needs a way
-#   to tell which eMMC slot still holds stock - open work, needs hardware. The
-#   payload rides along so it is available on the rooted stock system.
+#   to tell which eMMC slot still holds stock - open work, needs hardware
+#   (#155). The payload rides along so it is available on the rooted stock
+#   system.
 #
 # Inputs (all defaulted from a finished `os/scripts/build.sh` run):
 #   --sd-img PATH      podd-sd.img to derive from   ($PODD_SD_IMG)
@@ -63,7 +64,7 @@ MODE="build"
 die() { printf 'build-recovery-sd.sh: %s\n' "$*" >&2; exit 1; }
 log() { printf '==> %s\n' "$*"; }
 
-usage() { sed -n '3,50p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '3,51p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 while [ "$#" -gt 0 ]; do
 	case "$1" in

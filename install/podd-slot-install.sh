@@ -135,8 +135,8 @@ ALTBOOTCMD="$(fw_printenv -n altbootcmd 2>/dev/null || echo '')"
 # eMMC would silently repoint U-Boot at the wrong device. Refuse rather than
 # guess - the SD-booted eMMC install needs mmcdev/mmcblk flipped too, and needs
 # some way to tell which eMMC slot still holds stock, neither of which is
-# settled. (Booted from the podd SD you already have podd; OS updates there go
-# through pod-updater's SD slot writer.)
+# settled (#155). (Booted from the podd SD you already have podd; OS updates
+# there go through pod-updater's SD slot writer.)
 MMCDEV="$(fw_printenv -n mmcdev 2>/dev/null || echo '')"
 DISK_INDEX="${DISK##*mmcblk}"
 if [ -n "$MMCDEV" ] && [ "$MMCDEV" != "$DISK_INDEX" ]; then
