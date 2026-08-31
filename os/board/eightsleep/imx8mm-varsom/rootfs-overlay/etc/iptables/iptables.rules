@@ -1,7 +1,7 @@
 *filter
 :INPUT DROP [0:0]
 :FORWARD DROP [0:0]
-:OUTPUT DROP [0:0]
+:OUTPUT ACCEPT [0:0]
 -A INPUT -i lo -j ACCEPT
 -A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 -A INPUT -s 10.0.0.0/8 -j ACCEPT
@@ -10,11 +10,4 @@
 # DHCP server for the podd-setup provisioning AP: a client's DISCOVER/REQUEST
 # arrives from source 0.0.0.0, which the RFC1918 accepts above don't match.
 -A INPUT -p udp --dport 67 -j ACCEPT
--A OUTPUT -o lo -j ACCEPT
--A OUTPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
--A OUTPUT -d 10.0.0.0/8 -j ACCEPT
--A OUTPUT -d 172.16.0.0/12 -j ACCEPT
--A OUTPUT -d 192.168.0.0/16 -j ACCEPT
--A OUTPUT -p udp --dport 67:68 -j ACCEPT
--A OUTPUT -p udp --dport 123 -j ACCEPT
 COMMIT
