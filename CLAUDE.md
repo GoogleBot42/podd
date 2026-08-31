@@ -31,6 +31,10 @@ anything on the actuation path as safety-critical.
 
 - `cargo test` / `cargo build` — Rust workspace under `crates/`. The Nix dev
   shell (`nix develop`) provides the toolchain.
+- The tree carries rustfmt drift and CI does not enforce fmt — a bare
+  `cargo fmt` (even `-p <crate>`) sweeps a dozen unrelated files into your
+  diff. Format manually or revert the unrelated files before committing
+  (cost a force-push cycle 2026-08-30).
 - Cross builds: `nix build .#podd-aarch64` (static aarch64-musl), also
   `.#podup`, `.#ui`. Flake builds see only **git-tracked** files — a brand-new
   `.rs` file is invisible until `git add`ed, failing with E0583 "file not
