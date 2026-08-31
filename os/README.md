@@ -105,7 +105,22 @@ There is **no secure boot** on these units, so the container is unsigned.
 
 ```sh
 os/scripts/build.sh
-# -> dist/podd-sd.img.gz   (also build/buildroot/output/images/)
+# -> dist/podd-sd.img.gz        the flashable SD image
+#    dist/podd-os.ext4.zst      the OTA slot image pod-updater streams
+#    dist/podd-rootfs.tar.gz    the same rootfs as a tarball (+ .sha256)
+#    (also in build/buildroot/output/images/)
+```
+
+The **tarball** is for the consumers that populate a slot by *extracting*
+rather than by `dd`ing a filesystem image: `install/podd-slot-install.sh` (eMMC
+A/B) and `scripts/build-recovery-sd.sh`. It is not a second build — Buildroot
+tars the same `$TARGET_DIR` it builds `rootfs.ext2` from, under fakeroot, and
+[`scripts/package-rootfs.sh`](scripts/package-rootfs.sh) renames, content-checks
+and checksums it. That script also runs standalone, so an existing Buildroot
+tree can re-emit the tarball in seconds without rebuilding:
+
+```sh
+os/scripts/package-rootfs.sh --output-dir dist/
 ```
 
 `build.sh` orchestrates the whole thing: it Nix-builds the podd binary, the web
@@ -193,7 +208,9 @@ os/
   configs/
     podd_imx8mm_varsom_sd_defconfig         board defconfig (pinned)
   scripts/
+    build.sh                                one-command build (nix + FHS sandbox)
     build-image.sh                          fetch Buildroot + nix podd/UI + build
+    package-rootfs.sh                       verify/checksum podd-rootfs.tar.gz
   package/podd/                             installs podd binary + UI + service
   board/eightsleep/imx8mm-varsom/
     linux-podd.config                       kernel config seed (sibling-authored)

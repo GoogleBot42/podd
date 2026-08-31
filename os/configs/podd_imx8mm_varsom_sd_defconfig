@@ -204,6 +204,14 @@ BR2_TARGET_ROOTFS_EXT2_4=y
 BR2_TARGET_ROOTFS_EXT2_LABEL="podd_rootfs"
 # Sized to the A/B slot in genimage.cfg (512 MiB). Keep in sync with that file.
 BR2_TARGET_ROOTFS_EXT2_SIZE="512M"
+# ...and the SAME tree as a gzipped tarball. This is the L2 artifact the
+# extract-into-a-slot consumers need (install/podd-slot-install.sh and the
+# recovery-SD payload); post-image.sh renames + verifies it as
+# podd-rootfs.tar.gz via os/scripts/package-rootfs.sh. BR2_TARGET_ROOTFS_TAR
+# is default-y upstream, but state it explicitly so this artifact can't quietly
+# disappear on a Buildroot bump; _GZIP is not the default.
+BR2_TARGET_ROOTFS_TAR=y
+BR2_TARGET_ROOTFS_TAR_GZIP=y
 BR2_PACKAGE_HOST_GENIMAGE=y
 BR2_PACKAGE_HOST_UBOOT_TOOLS=y
 BR2_PACKAGE_HOST_UBOOT_TOOLS_MKENVIMAGE=y

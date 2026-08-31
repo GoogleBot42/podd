@@ -109,8 +109,8 @@ Note on the earlier opensleep source map: `pod-hal` (reset + LED) is folded
 into `podd-core`; MCU `.bbin` flashing lives in `pod-update-agent` (Tier 3,
 dry-run-gated); schedule persistence and endpoints live in `api`, with the
 thermostat curve in `pod-proto`'s `profile.rs`. Still genuinely **planned**:
-WiFi/onboarding bring-up, a full autonomous weekday scheduler loop, and the L2
-OS-image (`podd-rootfs.tar.gz`) release. See `docs/ARCHITECTURE.md`.
+WiFi/onboarding bring-up and a full autonomous weekday scheduler loop. See
+`docs/ARCHITECTURE.md`.
 
 ## Build & test
 

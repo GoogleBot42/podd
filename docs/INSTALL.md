@@ -246,25 +246,36 @@ the new slot fails to boot 3 times, U-Boot's `altbootcmd` automatically reverts 
 the old slot. It never touches the active slot and never touches `mmcblk2p3`
 (`cage`, your persistent data).
 
+The payload is `podd-rootfs.tar.gz`, published with each release (and carried on
+the recovery SD — see [RECOVERY.md](RECOVERY.md)). Download it next to its
+`.sha256`, or point the script at the URL and it fetches both.
+
 ```sh
 # Install podd's rootfs to the inactive slot (path or URL):
 podd-slot-install.sh --rootfs /path/podd-rootfs.tar.gz
-podd-slot-install.sh --rootfs https://host/podd-rootfs.tar.gz --sha256 <hex>
+podd-slot-install.sh --rootfs https://host/podd-rootfs.tar.gz
 
 # After it reboots into the new slot and podd comes up healthy, confirm it
 # so the rollback is disarmed and this slot becomes permanent:
 podd-slot-install.sh --confirm-good
 ```
 
+With no `--rootfs` it looks in the usual places (the recovery SD's
+`/data/podd-recovery/`, `/opt/images/Yocto/`, `/opt/podd/`, next to the script,
+the current directory) and tells you every path it tried if it finds nothing.
+An adjacent `<tarball>.sha256` is verified automatically; pass `--sha256 <hex>`
+to override it.
+
+> **This runs on a rooted *stock* system**, whose U-Boot env has `mmcdev=2` so
+> that `mmcpart` selects an eMMC slot. Booted from podd's own SD image `mmcdev=1`
+> and `mmcpart` selects a slot on the card, so flipping it after writing eMMC
+> would repoint U-Boot at the wrong device — the script checks `mmcdev` and
+> refuses. (From podd's SD you already have podd; OS updates there go through
+> pod-updater — [UPDATING.md](UPDATING.md).)
+
 Other flags: `--disk DEV` (override the auto-detected eMMC whole-disk device),
 `--no-reboot`, `--yes` (skip the interactive `YES` prompt). It backs up the env +
 MBR to `/opt/podd/backup/slot-<timestamp>/` before writing.
-
-> **Heads-up — not built yet.** The `podd-rootfs.tar.gz` artifact this script
-> needs (podd's own OS image, "L2") **is not produced by CI yet.** The script is
-> ready and will error clearly if the rootfs is missing, but until that artifact
-> exists, the **userland install is the only supported install path.** Track this
-> in the project's release notes.
 
 ---
 

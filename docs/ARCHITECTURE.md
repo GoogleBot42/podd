@@ -65,8 +65,7 @@ The eight workspace members and how the earlier planned split maps onto them:
 | `podd` | the daemon binary: wires `podd-core` + `api` + `pod-update-agent` together | opensleep fork |
 
 **Planned, not yet built:** a dedicated `onboarding` path (config-file /
-local-web WiFi bring-up) and the L2 OS-image release artifact
-(`podd-rootfs.tar.gz`).
+local-web WiFi bring-up).
 
 ## The three gaps opensleep leaves us
 

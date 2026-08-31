@@ -229,6 +229,16 @@ flip the pointer, keeping stock as instant rollback. This mirrors Eight's own `s
 
 ## 5. Recovery-SD one-step auto-installer — design (i.MX only) ✅ FEASIBLE
 
+> **Superseded in two places (2026-08-30, #52).** This section was written
+> before the clean-room L2 build existed, so it assumes stock ingredients and an
+> unattended installer. As built (`scripts/build-recovery-sd.sh`, see its header
+> and `--plan`): (1) `imx-boot` and the DTB are **from source**, never vendored
+> from Eight's card — [CLEANROOM-OS.md](../CLEANROOM-OS.md); (2) there is **no
+> `install_yocto.sh` clone and no auto-run** — eMMC is written only through
+> `install/podd-slot-install.sh` into the inactive slot with rollback armed
+> (`.claude/rules/media-writes.md`), triggered by a human. The evidence below is
+> still accurate about what *Eight's* recovery SD does.
+
 **This is the definitive answer to the project's big question: YES, an auto-installing recovery SD is feasible
 for the i.MX variants — because it is exactly what Eight already ships, and we recovered the entire flow.**
 
@@ -276,6 +286,13 @@ back to serial + mtkclient/UUU.*
   never touch `mmcblk2p3`/`cage` unless asked, keep the stock slot pristine when doing A/B.
 
 ### 6b. CI artifacts (build all of these)
+
+> **Items 2–4 are done and items 2–3 were re-decided (2026-08-30, #52).** The L2
+> rootfs is `podd-rootfs.tar.gz`, built by `os/scripts/build.sh` from the
+> clean-room Buildroot tree — it does **not** reuse the stock DTB or `imx-boot`
+> (item 3 is dropped entirely: nothing of Eight's is vendored, and no bootloader
+> is written to eMMC). Item 4 is `scripts/build-recovery-sd.sh`. See
+> [../RELEASING.md](../RELEASING.md).
 1. **podd userland bundle** — cross-compiled `aarch64-unknown-linux-musl` `podd` binary + `podd.service` +
    default `config.pod3/pod4.ron`, wrapped in a **signed `pod-update` manifest** (podup already does this). This
    is the primary deliverable and covers §3a/b.

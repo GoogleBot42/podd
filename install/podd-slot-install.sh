@@ -23,25 +23,36 @@
 # CAN require serial-U-Boot recovery - read flashing-method.md §3c and §4 first.
 # **************************************************************************
 #
-# The podd rootfs tarball (podd-rootfs.tar.gz) is an L2 artifact that is NOT
-# BUILT YET (see flashing-method.md §6b item 2). This script accepts a path or
-# URL to it and errors clearly if it is absent, so it is ready the moment L2
-# lands.
+# The payload is podd-rootfs.tar.gz, the L2 rootfs tarball built by the
+# clean-room OS build (os/scripts/build.sh -> dist/podd-rootfs.tar.gz; see
+# os/scripts/package-rootfs.sh). It ships as a release asset and on the recovery
+# SD. With no --rootfs the script looks in the usual places (see ROOTFS_SEARCH
+# below) and, if it finds one, picks up an adjacent .sha256 automatically.
 #
 # Usage:
+#   podd-slot-install.sh                                          # auto-locate
 #   podd-slot-install.sh --rootfs /path/podd-rootfs.tar.gz        # install
 #   podd-slot-install.sh --rootfs https://host/podd-rootfs.tar.gz # download+install
 #   podd-slot-install.sh --confirm-good                           # mark boot healthy
 #
 # Options:
-#   --rootfs PATH|URL   the podd eMMC rootfs.tar.gz (required for install)
-#   --sha256 HEX        expected SHA-256 of the tarball (verified if given)
+#   --rootfs PATH|URL   the podd eMMC rootfs.tar.gz (default: auto-locate)
+#   --sha256 HEX        expected SHA-256 (default: adjacent <tarball>.sha256)
 #   --disk DEV          eMMC whole-disk device, default auto (/dev/mmcblk2|0)
 #   --confirm-good      set ustate=OK bootcount=0 (run this from a booted podd)
 #   --no-reboot         do everything except the final reboot
 #   --yes               skip the interactive confirmation
 #   -h | --help         this help
 set -eu
+
+# Where an unqualified run looks for the payload, in order: the recovery-SD
+# payload dir (its data partition mounts at /data), the stock recovery-SD
+# convention, an installed podd tree, next to this script, and the cwd.
+ROOTFS_SEARCH="/data/podd-recovery/podd-rootfs.tar.gz
+/opt/images/Yocto/podd-rootfs.tar.gz
+/opt/podd/podd-rootfs.tar.gz
+$(dirname "$0")/podd-rootfs.tar.gz
+./podd-rootfs.tar.gz"
 
 ROOTFS=""
 EXPECT_SHA=""
@@ -53,7 +64,7 @@ ASSUME_YES=0
 log()  { printf '==> %s\n' "$*"; }
 warn() { printf '!!  %s\n' "$*" >&2; }
 die()  { printf '!!  %s\n' "$*" >&2; exit 1; }
-usage() { sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -87,7 +98,20 @@ if [ "$CONFIRM_GOOD" = "1" ]; then
 fi
 
 # ================= install path (writes the INACTIVE slot) =================
-[ -n "$ROOTFS" ] || die "no --rootfs given (path or URL to podd-rootfs.tar.gz). NOTE: this L2 artifact is not built yet (flashing-method §6b item 2)."
+# No --rootfs: look for the payload in the standard places before giving up, and
+# say exactly where we looked (this used to be a hard "not built yet" error).
+if [ -z "$ROOTFS" ]; then
+  for cand in $ROOTFS_SEARCH; do
+    if [ -f "$cand" ]; then ROOTFS="$cand"; break; fi
+  done
+  if [ -n "$ROOTFS" ]; then
+    log "found rootfs payload: $ROOTFS"
+  else
+    warn "no --rootfs given and no podd-rootfs.tar.gz found. Looked in:"
+    for cand in $ROOTFS_SEARCH; do warn "    $cand"; done
+    die "pass --rootfs PATH|URL. Build one with os/scripts/build.sh (-> dist/podd-rootfs.tar.gz) or take it from a release asset / the recovery SD."
+  fi
+fi
 
 # Resolve the whole-disk eMMC device.
 if [ -z "$DISK" ]; then
@@ -103,6 +127,21 @@ fi
 # slot boot-looping with no fallback, needing serial-U-Boot recovery (#51).
 ALTBOOTCMD="$(fw_printenv -n altbootcmd 2>/dev/null || echo '')"
 [ -n "$ALTBOOTCMD" ] || die "this unit's U-Boot env has no 'altbootcmd' - the 3-failed-boots auto-revert this script relies on is absent, so a bad slot could NOT roll back. Refusing. Inspect 'fw_printenv' and see flashing-method.md §3c/§4."
+
+# mmcpart only means "which slot" RELATIVE TO mmcdev. On a rooted stock unit
+# mmcdev=2, so mmcpart selects an eMMC slot and everything below lines up. Boot
+# the clean-room podd SD instead and mmcdev=1: mmcpart then selects a slot on
+# the CARD, so reading the active slot from it and flipping it after writing
+# eMMC would silently repoint U-Boot at the wrong device. Refuse rather than
+# guess - the SD-booted eMMC install needs mmcdev/mmcblk flipped too, and needs
+# some way to tell which eMMC slot still holds stock, neither of which is
+# settled (#155). (Booted from the podd SD you already have podd; OS updates
+# there go through pod-updater's SD slot writer.)
+MMCDEV="$(fw_printenv -n mmcdev 2>/dev/null || echo '')"
+DISK_INDEX="${DISK##*mmcblk}"
+if [ -n "$MMCDEV" ] && [ "$MMCDEV" != "$DISK_INDEX" ]; then
+  die "the U-Boot env in use has mmcdev=$MMCDEV, so its mmcpart selects a slot on /dev/mmcblk${MMCDEV}, not on the install target $DISK. Flipping mmcpart here would point U-Boot at the wrong device. This is the stock-U-Boot eMMC path (mmcdev=2); if you booted the podd SD (mmcdev=1) do not use this script - see docs/RECOVERY.md and flashing-method.md §3c."
+fi
 
 # Compute inactive slot + its partition. Refuse if the active slot is unknown.
 case "$ACTIVE" in
@@ -129,16 +168,32 @@ MNT="$WORK/mnt"
 cleanup() { umount "$MNT" 2>/dev/null || true; rm -rf "$WORK"; }
 trap cleanup EXIT INT TERM
 
+fetch() { # <url> <dest>  -> 0 on success
+  if command -v curl >/dev/null 2>&1; then curl -fsSL -o "$2" "$1"
+  elif command -v wget >/dev/null 2>&1; then wget -q -O "$2" "$1"
+  else die "need curl or wget to download $1"; fi
+}
+
 TARBALL="$ROOTFS"
+SHAFILE="$ROOTFS.sha256"
 case "$ROOTFS" in
   http://*|https://*)
     TARBALL="$WORK/podd-rootfs.tar.gz"
+    SHAFILE="$WORK/podd-rootfs.tar.gz.sha256"
     log "downloading rootfs: $ROOTFS"
-    if command -v curl >/dev/null 2>&1; then curl -fsSL -o "$TARBALL" "$ROOTFS"
-    elif command -v wget >/dev/null 2>&1; then wget -q -O "$TARBALL" "$ROOTFS"
-    else die "need curl or wget to download $ROOTFS"; fi ;;
+    fetch "$ROOTFS" "$TARBALL"
+    # Best-effort: the release/recovery-SD layout ships <tarball>.sha256 beside
+    # it. Absent is fine (we warn below); present means we verify for free.
+    fetch "$ROOTFS.sha256" "$SHAFILE" 2>/dev/null || rm -f "$SHAFILE" ;;
 esac
 [ -f "$TARBALL" ] || die "rootfs tarball not found: $TARBALL"
+
+# os/scripts/package-rootfs.sh emits `<sha>  podd-rootfs.tar.gz` next to the
+# tarball; use it when the caller did not pass --sha256 explicitly.
+if [ -z "$EXPECT_SHA" ] && [ -f "$SHAFILE" ]; then
+  EXPECT_SHA="$(cut -d' ' -f1 < "$SHAFILE")"
+  log "using digest from $SHAFILE"
+fi
 
 if [ -n "$EXPECT_SHA" ]; then
   command -v sha256sum >/dev/null 2>&1 || die "sha256sum missing; cannot verify --sha256"

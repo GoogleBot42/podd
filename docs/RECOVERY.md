@@ -102,6 +102,28 @@ reflash eMMC from it with **no serial adapter**:
 > keep an **un-backdoored, golden `rootfs.tar.gz`** on the SD so this button reset
 > restores clean stock, not your modified image.
 
+### Net 2b — podd's own recovery SD
+
+Releases ship **`podd-recovery-sd-<tag>.img.gz`**. It is an ordinary podd SD
+image (see [CLEANROOM-OS.md](CLEANROOM-OS.md)) carrying an extra payload in
+`/data/podd-recovery/`: the rootfs tarball, its `.sha256`, and
+`podd-slot-install.sh`. Write it to a spare card the usual way and verify the
+write (`cmp -n`, per the callout at the top of this page).
+
+Boot it and you have a working podd with the eMMC untouched — that alone
+recovers a Pod whose eMMC is in a bad state, and putting the stock card back
+undoes it completely.
+
+The payload rides along so the eMMC slot-install artifact is on hand; it does
+not run by itself, and it does **not** run from this card. `podd-slot-install.sh`
+is the stock-U-Boot path (env `mmcdev=2`, so `mmcpart` selects an eMMC slot);
+booted from the podd card `mmcdev=1` and `mmcpart` selects a slot on the *card*,
+so the script detects the mismatch and refuses rather than repointing U-Boot at
+the wrong device. Use it from the rooted stock system — see
+[INSTALL.md](INSTALL.md) for what it does and does not touch.
+
+Maintainers: `scripts/build-recovery-sd.sh --plan` prints the assembly plan.
+
 ### Net 3 — Full-disk restore from a backup image (`dd`)
 
 The nuclear-but-simple option: write a whole-disk image back over eMMC (or the SD).
