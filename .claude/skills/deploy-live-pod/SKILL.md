@@ -77,7 +77,12 @@ still holds.
    `current` symlink first (podd falls back to `/usr/bin/podd` on the next
    restart; the release dir stays for instant re-apply via the UI) or
    overwrite the release's own `rootfs/podd` — and say which you did in the
-   deploy report. Confirm what's actually running afterwards:
+   deploy report. Overwriting in place is safe: the update agent never
+   re-hashes installed release files (verified 2026-09-02, used for the
+   #174 deploy; backups go next to the file as `podd.pre-<change>`). The
+   cost is that the Updates panel keeps reporting the release's version
+   while the binary is newer — the journal's `Starting podd v…-g<rev>` is
+   the truth. Confirm what's actually running afterwards:
    `readlink -f /proc/$(pidof podd)/exe`.
 4. **Copy it to the device as a staged file, not in place.** `scp` the binary
    to a `*.new`-style staging path on-device (see `CLAUDE.local.md` for the
@@ -114,9 +119,13 @@ still holds.
 ## Procedure — deploying UI only (no restart needed)
 
 A UI-only change does **not** require stopping or restarting podd: the SPA is
-served from disk per request (`PODD_SPA_DIR`, live value in `systemctl cat
-podd` — `/usr/share/podd/ui` as of 2026-08-22), so an atomic dir swap is
+served from disk per request (`PODD_SPA_DIR`), so an atomic dir swap is
 picked up immediately and there is no zombie window and no bed disruption.
+**Which dir is served depends on the OTA layout check above**: the unit file
+says `/usr/share/podd/ui`, but while an OTA release is active `podd-launch`
+overrides `PODD_SPA_DIR` to that release's `rootfs/ui` — swapping
+`/usr/share/podd/ui` then changes nothing (2026-09-02). Check `readlink
+/data/podd/updates/current` first and swap the dir podd is actually serving.
 Since PR #97 clients revalidate `index.html`, so no stale-client worries.
 
 1. Build from a clean checkout of origin/main: `nix build .#ui -o
