@@ -1,10 +1,17 @@
 //! Per-side streaming vitals processor: buffers the 500 Hz piezo stream,
-//! gates on piezo-derived presence, runs the heart pipeline at free-sleep's
-//! cadences, and emits one [`VitalsRecord`] per side per ~minute (#12).
+//! gates on presence, runs the heart pipeline at free-sleep's cadences, and
+//! emits one [`VitalsRecord`] per side per ~minute (#12).
 //!
-//! Cadences and thresholds mirror free-sleep's stream path:
-//! presence = peak-to-peak of the last 3 s > 200 000 raw ADC counts (10
-//! consecutive absent seconds reset all state); HR every 1 s after 3 s of
+//! Presence needs BOTH signals: the piezo peak-to-peak of the last 3 s must
+//! exceed 200 000 raw ADC counts (free-sleep's gate) AND the calibrated
+//! capacitance detector (`sensor::presence`) must say the side is occupied.
+//! The piezo gate alone is not enough — pump and TEC vibration trips it on an
+//! empty bed (both sides flipped "occupied" in the same second on the live
+//! Pod, and daytime vitals were recorded with nobody in the bed), and the
+//! capacitance verdict is the one signal that actually measures a body.
+//! 10 consecutive absent seconds reset all state.
+//!
+//! Cadences mirror free-sleep's stream path: HR every 1 s after 3 s of
 //! presence (3 s window); breathing every 10 s after 30 s (30 s window);
 //! HRV every 30 s after 300 s (300 s window). Acceptance gates: breathing
 //! 8–20 br/min (last ≤6 averaged), HRV 8–200 ms SDNN (last ≤10 averaged),
@@ -88,10 +95,15 @@ impl SideProcessor {
         self.present
     }
 
-    /// Feed one packet's samples; returns a record when the ~60 s emit fires.
+    /// Feed one packet's samples plus the current debounced capacitance
+    /// presence verdict for this side; returns a record when the ~60 s emit
+    /// fires. `cap_present` is false until presence is calibrated, which
+    /// keeps the processor inert (like the sleep tracker) rather than
+    /// recording pump noise as a heartbeat.
     pub fn push_samples<I: IntoIterator<Item = f64>>(
         &mut self,
         samples: I,
+        cap_present: bool,
         now_unix: i64,
     ) -> Option<VitalsRecord> {
         for s in samples {
@@ -106,7 +118,7 @@ impl SideProcessor {
         // One iteration per accumulated second of signal.
         while self.pending >= SAMPLE_RATE {
             self.pending -= SAMPLE_RATE;
-            if let Some(rec) = self.iterate(now_unix) {
+            if let Some(rec) = self.iterate(cap_present, now_unix) {
                 out = Some(rec);
             }
         }
@@ -117,24 +129,25 @@ impl SideProcessor {
         (self.samples.len() >= len).then(|| &self.samples[self.samples.len() - len..])
     }
 
-    fn iterate(&mut self, now_unix: i64) -> Option<VitalsRecord> {
+    fn iterate(&mut self, cap_present: bool, now_unix: i64) -> Option<VitalsRecord> {
         self.iteration += 1;
         let hr_win = self.window(HR_WINDOW)?;
 
-        // Presence: peak-to-peak of the 3 s window.
+        // Presence: peak-to-peak of the 3 s window AND the capacitance
+        // verdict (see the module docs for why piezo alone is not trusted).
         let min = hr_win.iter().copied().fold(f64::INFINITY, f64::min);
         let max = hr_win.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        if max - min > PRESENCE_PTP {
+        if max - min > PRESENCE_PTP && cap_present {
             self.not_present_for = 0;
             self.present_for += 1;
             if !self.present {
                 self.present = true;
-                log::info!("biometrics: {} side occupied (piezo)", self.side);
+                log::info!("biometrics: {} side occupied (piezo+cap)", self.side);
             }
         } else {
             self.not_present_for += 1;
             if self.not_present_for == NO_PRESENCE_TOLERANCE && self.present {
-                log::info!("biometrics: {} side vacated (piezo)", self.side);
+                log::info!("biometrics: {} side vacated", self.side);
                 self.reset();
             }
             // While absent, nothing below runs (present_for stays 0 after a
@@ -314,7 +327,8 @@ mod tests {
         let mut p = SideProcessor::new(BedSide::Left);
         let mut emitted = Vec::new();
         for sec in 0..180 {
-            if let Some(rec) = p.push_samples(beat_second(sec, 62.0, 5), 1_700_000_000 + sec as i64)
+            if let Some(rec) =
+                p.push_samples(beat_second(sec, 62.0, 5), true, 1_700_000_000 + sec as i64)
             {
                 emitted.push(rec);
             }
@@ -342,7 +356,7 @@ mod tests {
         // Flat, low-ptp signal: never present, never emits.
         for sec in 0..120 {
             let flat: Vec<f64> = (0..SAMPLE_RATE).map(|i| (i % 7) as f64).collect();
-            assert!(p.push_samples(flat, sec as i64).is_none());
+            assert!(p.push_samples(flat, true, sec as i64).is_none());
         }
         assert!(!p.present());
     }
@@ -351,14 +365,47 @@ mod tests {
     fn vacating_resets_history() {
         let mut p = SideProcessor::new(BedSide::Left);
         for sec in 0..70 {
-            p.push_samples(beat_second(sec, 60.0, 9), sec as i64);
+            p.push_samples(beat_second(sec, 60.0, 9), true, sec as i64);
         }
         assert!(p.present());
         for sec in 70..85 {
             let flat: Vec<f64> = vec![0.0; SAMPLE_RATE];
-            p.push_samples(flat, sec as i64);
+            p.push_samples(flat, true, sec as i64);
         }
         assert!(!p.present(), "10 flat seconds must clear presence");
+        assert!(p.heart_rates.is_empty(), "history must reset");
+    }
+
+    #[test]
+    fn piezo_signal_without_capacitance_presence_is_ignored() {
+        // Pump/TEC vibration looks like a strong piezo signal on an empty
+        // bed; the capacitance verdict must veto it.
+        let mut p = SideProcessor::new(BedSide::Left);
+        for sec in 0..180 {
+            assert!(
+                p.push_samples(beat_second(sec, 62.0, 5), false, 1_700_000_000 + sec as i64)
+                    .is_none(),
+                "no record while capacitance says empty"
+            );
+        }
+        assert!(!p.present());
+        assert!(p.heart_rates.is_empty());
+    }
+
+    #[test]
+    fn capacitance_dropout_vacates_like_a_flat_piezo() {
+        let mut p = SideProcessor::new(BedSide::Right);
+        for sec in 0..70 {
+            p.push_samples(beat_second(sec, 60.0, 9), true, sec as i64);
+        }
+        assert!(p.present());
+        for sec in 70..85 {
+            p.push_samples(beat_second(sec, 60.0, 9), false, sec as i64);
+        }
+        assert!(
+            !p.present(),
+            "10 s of capacitance-absent must clear presence"
+        );
         assert!(p.heart_rates.is_empty(), "history must reset");
     }
 }

@@ -154,7 +154,9 @@ It runs streaming off the live MCU streams rather than post-hoc over raw dumps;
 podd keeps no raw sensor files.
 
 - `processor.rs` — per-side vitals (HR / HRV / breathing) from the piezo
-  stream, presence-gated, ~1 record/side/minute.
+  stream, ~1 record/side/minute. Gated on the piezo 3 s peak-to-peak
+  (> 200 000 counts) AND the calibrated capacitance presence verdict — piezo
+  alone trips on pump/TEC vibration and recorded vitals on an empty bed.
 - `sleep.rs` — per-side sleep sessions and movement. Presence is the piezo 10 s
   rolling range (>= 20 000 counts for >= 70 % of the window) AND the calibrated
   capacitance presence (>= 90 % of the window); runs under 60 s are ignored,
