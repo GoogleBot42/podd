@@ -156,12 +156,11 @@ bootcount rollback fires.
   `.img`, the OTA slot artifact (`podd-os.ext4.zst`) and the slot-install
   tarball (`podd-rootfs.tar.gz` — same rootfs, for the consumers that extract
   instead of `dd`; see [`os/README.md`](../os/README.md)).
-- **Publishing**: releases are cut by CI on a `v*` tag, but the OS-level
-  artifacts (`podd-sd-<tag>.img.gz`, `os-<version>.ext4.zst`,
-  `podd-rootfs-<tag>.tar.gz`, `podd-recovery-sd-<tag>.img.gz`) are built
-  locally and attached by hand until issue #166 adds them to the release
-  workflow — see [RELEASING.md](RELEASING.md). Everything is our own build,
-  so publishing it is clean.
+- **Publishing**: releases are cut by CI on a `v*` tag; the OS-level artifacts
+  (`podd-sd-<tag>.img.gz`, `os-<version>.ext4.zst`, `podd-rootfs-<tag>.tar.gz`,
+  `podd-recovery-sd-<tag>.img.gz`) come from the release workflow's `os-image`
+  job — see [RELEASING.md](RELEASING.md#the-os-image-lane). Everything is our
+  own build, so publishing it is clean.
 
 ## Debug channels (no JTAG, no serial console)
 
