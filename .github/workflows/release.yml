@@ -183,22 +183,30 @@ jobs:
           echo "BR2_CCACHE_DIR=$RUNNER_TEMP/br-ccache" >> "$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/br-dl" "$RUNNER_TEMP/br-ccache"
 
+      # Both caches are restore/save pairs rather than actions/cache, because
+      # actions/cache only saves when the job succeeds — and a failed 2 h
+      # Buildroot run is exactly when the downloads and the ccache are worth
+      # keeping (the v0.1.2 runs paid the full cold cost twice). The save
+      # steps below run `if: always()`.
+      #
       # ~1.2 GB of upstream source tarballs (the bare git mirrors are pruned
-      # before the cache is saved — see "Stage the OS artifacts"). A hit skips
-      # the ~5 GB linux-imx clone entirely: with the cached
-      # linux-<sha>-git4.tar.gz in place Buildroot never touches the mirror.
-      - name: Cache Buildroot downloads
-        uses: actions/cache@v4
+      # before the save). A hit skips the ~5 GB linux-imx clone entirely: with
+      # the cached linux-<sha>-git4.tar.gz in place Buildroot never touches the
+      # mirror.
+      - name: Restore Buildroot downloads
+        uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/br-dl
-          key: br-dl-${{ hashFiles('os/configs/podd_imx8mm_varsom_sd_defconfig', 'os/scripts/build-image.sh') }}
-          restore-keys: br-dl-
+          key: br-dl-${{ hashFiles('os/configs/podd_imx8mm_varsom_sd_defconfig', 'os/scripts/build-image.sh') }}-${{ github.run_id }}
+          restore-keys: |
+            br-dl-${{ hashFiles('os/configs/podd_imx8mm_varsom_sd_defconfig', 'os/scripts/build-image.sh') }}-
+            br-dl-
 
       # output/ (15 GB) is far too big for the 10 GB per-repo cache budget, so
       # every run is a cold compile — ccache is what makes that affordable.
       # Host side only; it cannot change what lands in the image.
-      - name: Cache Buildroot ccache
-        uses: actions/cache@v4
+      - name: Restore Buildroot ccache
+        uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/br-ccache
           key: br-ccache-${{ hashFiles('os/configs/podd_imx8mm_varsom_sd_defconfig', 'os/scripts/build-image.sh') }}-${{ github.run_id }}
@@ -219,6 +227,55 @@ jobs:
           ./scripts/build-recovery-sd.sh
           df -h /
 
+      # The bot that watches these runs cannot read job logs (that needs repo
+      # admin), and a Buildroot `make` failure is just "exit code 2" from the
+      # outside. Put the facts that decide the next move where the run
+      # summary shows them: disk, memory, OOM kills, and the tail of the last
+      # package log Buildroot touched.
+      - name: Diagnose the build failure
+        if: failure()
+        run: |
+          set +e
+          {
+            echo "## os-image build failure diagnostics"
+            echo '```'
+            echo "### disk"; df -h / "$RUNNER_TEMP" 2>/dev/null
+            echo "### memory"; free -m
+            echo "### OOM / kills"; sudo dmesg 2>/dev/null | grep -i -E "out of memory|oom-kill|killed process" | tail -20
+            echo "### newest Buildroot package dirs (stamps show how far each got)"
+            LAST=""
+            for d in $(find build/buildroot/output/build -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -5 | cut -d' ' -f2-); do
+              stamps=""
+              for s in "$d"/.stamp_*; do [ -e "$s" ] && stamps="$stamps ${s##*/}"; done
+              echo "$d:$stamps"
+              [ -n "$LAST" ] || LAST="$d"
+            done
+            echo "### last package: $LAST"
+            [ -n "$LAST" ] && [ -f "$LAST/config.log" ] && { echo "--- tail config.log"; tail -60 "$LAST/config.log"; }
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Prune before saving: drop the bare git mirrors Buildroot keeps beside
+      # the source tarballs (5 GB for linux-imx alone). The tarballs are what
+      # a later run actually needs; this keeps the saved cache near 1 GB.
+      - name: Prune and save the Buildroot caches
+        if: always()
+        run: |
+          set -eu
+          [ -n "${BR2_DL_DIR:-}" ] || { echo "BR2_DL_DIR unset; refusing to rm" >&2; exit 1; }
+          rm -rf "${BR2_DL_DIR:?}"/*/git
+          du -sh "$BR2_DL_DIR" "$BR2_CCACHE_DIR" || true
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: ${{ runner.temp }}/br-dl
+          key: br-dl-${{ hashFiles('os/configs/podd_imx8mm_varsom_sd_defconfig', 'os/scripts/build-image.sh') }}-${{ github.run_id }}
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: ${{ runner.temp }}/br-ccache
+          key: br-ccache-${{ hashFiles('os/configs/podd_imx8mm_varsom_sd_defconfig', 'os/scripts/build-image.sh') }}-${{ github.run_id }}
+
       - name: Stage the OS artifacts
         run: |
           set -eu
@@ -228,12 +285,6 @@ jobs:
           cp dist/podd-os.ext4.zst dist/podd-sd.img.gz \
              dist/podd-rootfs.tar.gz dist/podd-rootfs.tar.gz.sha256 \
              dist/podd-recovery-sd.img.gz "$RUNNER_TEMP/os/"
-          # Drop the bare git mirrors Buildroot keeps beside the source
-          # tarballs (5 GB for linux-imx alone). The tarballs are what a later
-          # run actually needs; this keeps the saved cache near 1 GB.
-          [ -n "${BR2_DL_DIR:-}" ] || { echo "BR2_DL_DIR unset; refusing to rm" >&2; exit 1; }
-          rm -rf "${BR2_DL_DIR:?}"/*/git
-          du -sh "$BR2_DL_DIR" "$BR2_CCACHE_DIR" || true
           ls -l "$RUNNER_TEMP/os"
 
       # Re-run the release build with OS_IMAGE set: the app bundle rebuild is a
