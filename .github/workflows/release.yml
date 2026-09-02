@@ -1,8 +1,23 @@
 name: release
 
-# Build + (optionally) sign the podd userland bundle and publish it to the
-# GitHub Release for the tag, named exactly how pod-update-agent's GitHub source
+# Build + (optionally) sign the podd release and publish it to the GitHub
+# Release for the tag, named exactly how pod-update-agent's GitHub source
 # resolves it: releases/latest/download/manifest.json + app-<version>.squashfs.
+#
+# Two jobs, deliberately split by cost:
+#
+#   userland-bundle  minutes. Creates the release. This IS the release.
+#   os-image         hours. Builds the clean-room OS image (Buildroot) and
+#                    attaches the OS artifacts to that release. Optional and
+#                    additive: if it fails, the release stays app-only and
+#                    fully valid (the manifest simply has no Os component), so
+#                    the job carries continue-on-error and never gates the run.
+#
+# A workflow_dispatch with no `version` input is a build-only smoke test: it
+# publishes nothing and keeps the artifacts on the run.
+#
+# See docs/RELEASING.md for the artifact list, the runner budget and how to
+# move the OS build to a self-hosted runner.
 on:
   push:
     tags:
@@ -10,7 +25,11 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version tag to build (e.g. v0.1.0)'
+        description: 'Version tag to publish to (e.g. v0.1.0). Empty = build only, publish nothing.'
+        required: false
+        default: ''
+      ref:
+        description: 'Git ref to build (default: the ref this run was dispatched on)'
         required: false
         default: ''
 
@@ -23,13 +42,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - name: Resolve the version
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: ./scripts/ci-resolve-version.sh
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
 
+      # $VERSION and $CHANNEL come from the resolve step via $GITHUB_ENV.
       - name: Build release bundle
         env:
-          VERSION: ${{ github.event.inputs.version || github.ref_name }}
           CHANNEL: stable
           # Optional signing secrets. If PODD_SIGNING_KEY is unset the manifest
           # is published UNSIGNED (artifact digests are still enforced).
@@ -38,9 +66,9 @@ jobs:
         run: ./scripts/build-release.sh
 
       - name: Publish release assets
+        if: env.PUBLISH == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.inputs.version || github.ref_name }}
         run: |
           set -eu
           # Create the release if it doesn't exist yet, else upload/overwrite.
@@ -50,7 +78,209 @@ jobs:
             gh release upload "$TAG" dist/* --clobber
           fi
 
-  # NOTE: the OS-level artifacts — podd-sd.img.gz, podd-os.ext4.zst,
-  # podd-rootfs.tar.gz and podd-recovery-sd.img.gz — are not built here yet;
-  # they are built locally and attached to the release by hand (issue #166
-  # tracks adding an os-image job to this workflow).
+      - name: Keep the bundle on the run instead
+        if: env.PUBLISH != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: podd-userland-bundle
+          path: dist
+          if-no-files-found: error
+          retention-days: 14
+
+  # OS-level artifacts: podd-sd-<tag>.img.gz (the flashable clean-room SD
+  # image), os-<version>.ext4.zst (the Tier-1 OTA slot image, folded into
+  # manifest.json), podd-rootfs-<tag>.tar.gz (+ .sha256) and
+  # podd-recovery-sd-<tag>.img.gz — all out of ONE Buildroot tree (#166).
+  #
+  # `needs` only orders this after the release exists; `!cancelled()` means a
+  # failure of that job doesn't skip this one, and `continue-on-error` means a
+  # failure of THIS job doesn't fail the run — the release is already valid
+  # without it. So check this job explicitly when you expect OS artifacts.
+  os-image:
+    needs: userland-bundle
+    if: ${{ !cancelled() }}
+    continue-on-error: true
+    # A GitHub-hosted runner (4 vCPU, 6 h hard job limit, ~21 GB free disk) is
+    # the default. Set the repository variables OS_IMAGE_RUNNER (a self-hosted
+    # runner label) and OS_IMAGE_TIMEOUT to move the build off it without
+    # touching this file — docs/RELEASING.md says what such a host must provide.
+    runs-on: ${{ vars.OS_IMAGE_RUNNER || 'ubuntu-latest' }}
+    # Hosted jobs are hard-killed at 360 min with no log flush; stop first.
+    timeout-minutes: ${{ fromJSON(vars.OS_IMAGE_TIMEOUT || '350') }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - name: Resolve the version
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: ./scripts/ci-resolve-version.sh
+
+      # The Buildroot tree peaks around 22 GB (output/ 15 GB + dl/ 7 GB with
+      # the bare git mirrors) and Nix wants several more on top; a stock hosted
+      # runner starts with ~21 GB free. Everything removed here is a
+      # preinstalled toolchain nothing in this build uses.
+      - name: Free disk space
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -eu
+          df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/powershell \
+            /usr/local/lib/node_modules || true
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          df -h /
+
+      - name: Install Nix
+        if: runner.environment == 'github-hosted'
+        uses: DeterminateSystems/nix-installer-action@v22
+
+      # A self-hosted runner has to bring its own nix (the installer above is
+      # hosted-only: on e.g. a NixOS host nix is already in the system profile
+      # and the installer would fail). Fail loudly here, not 40 minutes in.
+      - name: Check the toolchain
+        run: |
+          set -eu
+          nix --version
+          command -v mke2fs >/dev/null \
+            || { echo "mke2fs missing (e2fsprogs); build-recovery-sd.sh needs it" >&2; exit 1; }
+          command -v zstd >/dev/null \
+            || { echo "zstd missing; build-release.sh needs it" >&2; exit 1; }
+
+      # Keep both caches out of the checkout: `nix build` only sees git-tracked
+      # files, but a gigabyte of untracked cache sitting in the workspace is a
+      # trap waiting to be copied somewhere.
+      - name: Point Buildroot at the cached dirs
+        run: |
+          set -eu
+          echo "BR2_DL_DIR=$RUNNER_TEMP/br-dl" >> "$GITHUB_ENV"
+          echo "BR2_CCACHE_DIR=$RUNNER_TEMP/br-ccache" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/br-dl" "$RUNNER_TEMP/br-ccache"
+
+      # ~1.2 GB of upstream source tarballs (the bare git mirrors are pruned
+      # before the cache is saved — see "Stage the OS artifacts"). A hit skips
+      # the ~5 GB linux-imx clone entirely: with the cached
+      # linux-<sha>-git4.tar.gz in place Buildroot never touches the mirror.
+      - name: Cache Buildroot downloads
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/br-dl
+          key: br-dl-${{ hashFiles('os/configs/podd_imx8mm_varsom_sd_defconfig', 'os/scripts/build-image.sh') }}
+          restore-keys: br-dl-
+
+      # output/ (15 GB) is far too big for the 10 GB per-repo cache budget, so
+      # every run is a cold compile — ccache is what makes that affordable.
+      # Host side only; it cannot change what lands in the image.
+      - name: Cache Buildroot ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/br-ccache
+          key: br-ccache-${{ hashFiles('os/configs/podd_imx8mm_varsom_sd_defconfig', 'os/scripts/build-image.sh') }}-${{ github.run_id }}
+          restore-keys: |
+            br-ccache-${{ hashFiles('os/configs/podd_imx8mm_varsom_sd_defconfig', 'os/scripts/build-image.sh') }}-
+            br-ccache-
+
+      - name: Build the OS image (Buildroot, FHS sandbox)
+        env:
+          PODD_BR_CCACHE: '1'
+          CCACHE_MAXSIZE: 2G
+        run: |
+          set -eu
+          ./os/scripts/build.sh
+          # The recovery SD is the image just built with the L2 rootfs tarball
+          # spliced into its data partition — seconds, same tree, so it belongs
+          # in this job rather than a second one.
+          ./scripts/build-recovery-sd.sh
+          df -h /
+
+      - name: Stage the OS artifacts
+        run: |
+          set -eu
+          # build-release.sh recreates dist/ from scratch (rm -rf), so move the
+          # OS artifacts out of its way first.
+          mkdir -p "$RUNNER_TEMP/os"
+          cp dist/podd-os.ext4.zst dist/podd-sd.img.gz \
+             dist/podd-rootfs.tar.gz dist/podd-rootfs.tar.gz.sha256 \
+             dist/podd-recovery-sd.img.gz "$RUNNER_TEMP/os/"
+          # Drop the bare git mirrors Buildroot keeps beside the source
+          # tarballs (5 GB for linux-imx alone). The tarballs are what a later
+          # run actually needs; this keeps the saved cache near 1 GB.
+          [ -n "${BR2_DL_DIR:-}" ] || { echo "BR2_DL_DIR unset; refusing to rm" >&2; exit 1; }
+          rm -rf "${BR2_DL_DIR:?}"/*/git
+          du -sh "$BR2_DL_DIR" "$BR2_CCACHE_DIR" || true
+          ls -l "$RUNNER_TEMP/os"
+
+      # Re-run the release build with OS_IMAGE set: the app bundle rebuild is a
+      # Nix cache hit and reproducible, and manifest.json atomically gains the
+      # Os component. dist/ ends up holding manifest.json + app-<v>.squashfs +
+      # os-<v>.ext4.zst (+ signing.pub when signing).
+      - name: Rebuild the release bundle with the OS component
+        env:
+          CHANNEL: stable
+          PODD_SIGNING_KEY: ${{ secrets.PODD_SIGNING_KEY }}
+          PODD_SIGNING_PUB: ${{ secrets.PODD_SIGNING_PUB }}
+          OS_IMAGE: ${{ runner.temp }}/os/podd-os.ext4.zst
+        run: ./scripts/build-release.sh
+
+      - name: Name the release assets
+        run: |
+          set -eu
+          OUT="$RUNNER_TEMP/assets"
+          mkdir -p "$OUT"
+          cp "$RUNNER_TEMP/os/podd-sd.img.gz"          "$OUT/podd-sd-$TAG.img.gz"
+          cp "$RUNNER_TEMP/os/podd-recovery-sd.img.gz" "$OUT/podd-recovery-sd-$TAG.img.gz"
+          cp "$RUNNER_TEMP/os/podd-rootfs.tar.gz"      "$OUT/podd-rootfs-$TAG.tar.gz"
+          # Rewrite the digest sidecar's filename field to the published name so
+          # `sha256sum -c` works as-is. (podd-slot-install.sh reads only the hex,
+          # but a human running sha256sum -c would hit "No such file".)
+          awk -v n="podd-rootfs-$TAG.tar.gz" '{ printf "%s  %s\n", $1, n }' \
+            "$RUNNER_TEMP/os/podd-rootfs.tar.gz.sha256" \
+            > "$OUT/podd-rootfs-$TAG.tar.gz.sha256"
+          # Carried along so a non-publishing run still shows the whole set.
+          cp dist/manifest.json "$OUT/"
+          cp dist/os-*.ext4.zst "$OUT/"
+          ls -l "$OUT"
+
+      - name: Is there a release to attach to?
+        id: target
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "No release for '$TAG' — keeping the artifacts on the run." >&2
+          fi
+
+      # Idempotent: --clobber replaces same-named assets, so re-running this
+      # job just overwrites what is there. manifest.json and app-<v>.squashfs
+      # are replaced as a consistent pair.
+      - name: Publish the OS assets to the release
+        if: steps.target.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          gh release upload "$TAG" dist/* --clobber
+          gh release upload "$TAG" "$RUNNER_TEMP"/assets/podd-* --clobber
+
+      - name: Keep the OS artifacts on the run instead
+        if: steps.target.outputs.found != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: podd-os-artifacts
+          path: ${{ runner.temp }}/assets
+          if-no-files-found: error
+          retention-days: 14

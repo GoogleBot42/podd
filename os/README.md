@@ -147,8 +147,10 @@ gunzip -c dist/podd-sd.img.gz > /tmp/podd-sd.img
 sudo cmp -n "$(wc -c < /tmp/podd-sd.img)" /tmp/podd-sd.img /dev/sdX && echo OK
 ```
 
-CI wraps `build.sh` to publish `podd-sd-<version>.img.gz` + the OS OTA
-artifact (`os-<version>.ext4.zst`, consumed by pod-update-agent) on tag releases.
+On a `v*` tag the GitHub release workflow's `os-image` job wraps `build.sh` to
+publish these as release assets — see
+[../docs/RELEASING.md](../docs/RELEASING.md#the-os-image-lane) for the lane and
+its runner budget.
 
 ### WiFi provisioning (no baked credentials needed)
 
