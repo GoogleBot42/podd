@@ -144,6 +144,18 @@ jobs:
         if: runner.environment == 'github-hosted'
         uses: DeterminateSystems/nix-installer-action@v22
 
+      # `.#buildrootEnv` is a buildFHSEnv, i.e. bubblewrap, i.e. an unprivileged
+      # user namespace. Ubuntu 24.04 (the ubuntu-latest image) ships with
+      # kernel.apparmor_restrict_unprivileged_userns=1, which makes bwrap die
+      # with "setting up uid map: Permission denied" — after nix has spent ten
+      # minutes building podd/ui/the env. Lift the restriction first.
+      - name: Allow unprivileged user namespaces (bubblewrap)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -eu
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 2>/dev/null || true
+
       # A self-hosted runner has to bring its own nix (the installer above is
       # hosted-only: on e.g. a NixOS host nix is already in the system profile
       # and the installer would fail). Fail loudly here, not 40 minutes in.
@@ -155,6 +167,11 @@ jobs:
             || { echo "mke2fs missing (e2fsprogs); build-recovery-sd.sh needs it" >&2; exit 1; }
           command -v zstd >/dev/null \
             || { echo "zstd missing; build-release.sh needs it" >&2; exit 1; }
+          # Prove the FHS sandbox can be entered at all (seconds), before
+          # build.sh spends minutes building things it can then not run.
+          nix shell nixpkgs#bubblewrap -c \
+            bwrap --ro-bind / / --dev /dev --proc /proc --unshare-user true \
+            || { echo "bubblewrap cannot create a user namespace on this runner; the Buildroot FHS sandbox will not work" >&2; exit 1; }
 
       # Keep both caches out of the checkout: `nix build` only sees git-tracked
       # files, but a gigabyte of untracked cache sitting in the workspace is a
