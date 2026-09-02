@@ -77,7 +77,10 @@ fi
 SRC_GZ="${IMAGES_DIR}/rootfs.tar.gz"
 SRC_TAR="${IMAGES_DIR}/rootfs.tar"
 TMP=""
-cleanup() { [ -n "${TMP}" ] && rm -rf "${TMP}"; }
+# Not `[ -n ] && rm`: with TMP empty that list returns 1, and under set -e a
+# failing command inside the EXIT trap turns a successful run into exit 1
+# (this failed the first CI OS build after 2 h of successful Buildroot work).
+cleanup() { if [ -n "${TMP}" ]; then rm -rf "${TMP}"; fi; }
 trap cleanup EXIT INT TERM
 
 if [ -f "${SRC_GZ}" ] && { [ ! -f "${SRC_TAR}" ] || [ "${SRC_GZ}" -nt "${SRC_TAR}" ]; }; then
