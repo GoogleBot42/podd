@@ -8,10 +8,10 @@ name: release
 #
 #   userland-bundle  minutes. Creates the release. This IS the release.
 #   os-image         hours. Builds the clean-room OS image (Buildroot) and
-#                    attaches the OS artifacts to that release. Optional and
-#                    additive: if it fails, the release stays app-only and
-#                    fully valid (the manifest simply has no Os component), so
-#                    the job carries continue-on-error and never gates the run.
+#                    attaches the OS artifacts to that release. Additive: if
+#                    it fails, the release stays app-only and fully valid (the
+#                    manifest simply has no Os component) — but the run goes
+#                    red so the missing SD image is noticed (decided 2026-09-02).
 #
 # A workflow_dispatch with no `version` input is a build-only smoke test: it
 # publishes nothing and keeps the artifacts on the run.
@@ -93,13 +93,13 @@ jobs:
   # podd-recovery-sd-<tag>.img.gz — all out of ONE Buildroot tree (#166).
   #
   # `needs` only orders this after the release exists; `!cancelled()` means a
-  # failure of that job doesn't skip this one, and `continue-on-error` means a
-  # failure of THIS job doesn't fail the run — the release is already valid
-  # without it. So check this job explicitly when you expect OS artifacts.
+  # failure of that job doesn't skip this one. A failure of THIS job fails the
+  # run (no continue-on-error, deliberately): the release is already published
+  # and valid without it, but a green run would hide that the SD image never
+  # landed.
   os-image:
     needs: userland-bundle
     if: ${{ !cancelled() }}
-    continue-on-error: true
     # A GitHub-hosted runner (4 vCPU, 6 h hard job limit, ~21 GB free disk) is
     # the default. Set the repository variables OS_IMAGE_RUNNER (a self-hosted
     # runner label) and OS_IMAGE_TIMEOUT to move the build off it without
@@ -245,6 +245,11 @@ jobs:
           awk -v n="podd-rootfs-$TAG.tar.gz" '{ printf "%s  %s\n", $1, n }' \
             "$RUNNER_TEMP/os/podd-rootfs.tar.gz.sha256" \
             > "$OUT/podd-rootfs-$TAG.tar.gz.sha256"
+          # Digests for the two SD images too, so a download can be checked
+          # before it is written to a card (FLASHING.md verifies the write;
+          # this verifies the fetch).
+          ( cd "$OUT" && sha256sum "podd-sd-$TAG.img.gz" > "podd-sd-$TAG.img.gz.sha256" \
+                      && sha256sum "podd-recovery-sd-$TAG.img.gz" > "podd-recovery-sd-$TAG.img.gz.sha256" )
           # Carried along so a non-publishing run still shows the whole set.
           cp dist/manifest.json "$OUT/"
           cp dist/os-*.ext4.zst "$OUT/"

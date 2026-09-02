@@ -20,8 +20,8 @@ manifest.json                 # the release manifest (signed if you have a key, 
 app-<version>.squashfs        # the podd binary + UI + default configs, packed by `podup`
 signing.pub                   # the public verifying key — ONLY present when signing
 os-<version>.ext4.zst         # the OS slot image (Tier 1)
-podd-sd-<tag>.img.gz          # full flashable SD image for fresh installs
-podd-recovery-sd-<tag>.img.gz # that image + the eMMC-install payload (RECOVERY.md)
+podd-sd-<tag>.img.gz          # full flashable SD image for fresh installs (+ .sha256)
+podd-recovery-sd-<tag>.img.gz # that image + the eMMC-install payload (RECOVERY.md) (+ .sha256)
 podd-rootfs-<tag>.tar.gz      # the L2 rootfs tarball (+ .sha256), podd-slot-install.sh's
                               # payload
 ```
@@ -141,19 +141,20 @@ enforced).
 
 The `os-image` job in `.github/workflows/release.yml` builds one Buildroot tree
 and gets four artifacts out of it: `os-<version>.ext4.zst` (the OTA slot image),
-`podd-sd-<tag>.img.gz`, `podd-rootfs-<tag>.tar.gz` (+ `.sha256`) and
-`podd-recovery-sd-<tag>.img.gz`. It runs `os/scripts/build.sh` and
+`podd-sd-<tag>.img.gz`, `podd-rootfs-<tag>.tar.gz` and
+`podd-recovery-sd-<tag>.img.gz` (each with a `.sha256`). It runs `os/scripts/build.sh` and
 `scripts/build-recovery-sd.sh`, then re-runs `scripts/build-release.sh` with
 `OS_IMAGE` set so `manifest.json` gains the Os component, and uploads
 everything with `--clobber` (so a re-run just overwrites).
 
-It is **additive**: the release already exists when it starts, it never gates
-the workflow (`continue-on-error`), and if it fails the release simply stays
-app-only. That is a valid release — the manifest has no Os component and
-devices keep updating the app tier.
+It is **additive**: the release already exists when it starts, and if it
+fails the release simply stays app-only. That is a valid release — the
+manifest has no Os component and devices keep updating the app tier.
 
-**Watch it, though**: `continue-on-error` means the run goes green either way.
-When you expect OS artifacts, open the run and check the `os-image` job.
+It does, however, **fail the workflow run** when it fails (no
+`continue-on-error`, decided 2026-09-02): the release is fine, but a red run
+is how you find out the SD image never landed. Fix the cause and re-run the
+job; the uploads use `--clobber`, so a re-run just fills in the gap.
 
 ### Runner budget
 
