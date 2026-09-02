@@ -381,10 +381,16 @@ pub async fn run(
                     };
                     if let Some(per_side) = piezo_samples {
                         let now = jiff::Timestamp::now().as_second();
+                        // Vitals need the capacitance verdict too: pump/TEC
+                        // vibration alone trips the piezo presence gate.
+                        let presence = presense_man.presence_state();
+                        let cap_present = [presence.left, presence.right];
                         for (ix, samples) in per_side.iter().enumerate() {
-                            if let Some(rec) =
-                                vitals_procs[ix].push_samples(samples.iter().copied(), now)
-                            {
+                            if let Some(rec) = vitals_procs[ix].push_samples(
+                                samples.iter().copied(),
+                                cap_present[ix],
+                                now,
+                            ) {
                                 log::debug!(
                                     "vitals: {} hr={} hrv={} br={}",
                                     rec.side,
