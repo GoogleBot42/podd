@@ -16,14 +16,21 @@ A podd release is these files, named exactly how the on-device update agent
 resolves them:
 
 ```
-manifest.json           # the release manifest (signed if you have a key, else unsigned)
-app-<version>.squashfs  # the podd binary + UI + default configs, packed by `podup`
-signing.pub             # the public verifying key — ONLY present when signing
-os-<version>.ext4.zst   # the OS slot image (Tier 1) — added by the slower os-image
-                        # CI job; a release is valid app-only until/unless it lands
-podd-sd-<tag>.img.gz    # full flashable SD image for fresh installs (not in the
-                        # manifest; humans dd it)
+manifest.json                 # the release manifest (signed if you have a key, else unsigned)
+app-<version>.squashfs        # the podd binary + UI + default configs, packed by `podup`
+signing.pub                   # the public verifying key — ONLY present when signing
+os-<version>.ext4.zst         # the OS slot image (Tier 1)
+podd-sd-<tag>.img.gz          # full flashable SD image for fresh installs
+podd-recovery-sd-<tag>.img.gz # that image + the eMMC-install payload (RECOVERY.md)
+podd-rootfs-<tag>.tar.gz      # the L2 rootfs tarball (+ .sha256), podd-slot-install.sh's
+                              # payload
 ```
+
+Everything from `os-<version>.ext4.zst` down comes from the slower `os-image`
+CI job ([below](#the-os-image-lane)); a release without them is app-only and
+fully valid. Only the OS slot image is in the manifest — the SD images and the
+rootfs tarball are for humans (`dd` / extract; see
+[FLASHING.md](FLASHING.md) and [RECOVERY.md](RECOVERY.md)).
 
 The device fetches `manifest.json`, checks each artifact's SHA-256 (always),
 checks the signature (if the owner requires one), then activates the app
@@ -48,7 +55,7 @@ git tag v0.1.0
 git push origin v0.1.0    # Gitea; the push mirror forwards the tag to GitHub
 ```
 
-The mirrored tag triggers the GitHub workflow, which:
+The mirrored tag triggers the GitHub workflow's `userland-bundle` job, which:
 
 1. Installs Nix and runs `scripts/build-release.sh`.
 2. Builds the aarch64 `podd` binary, the web UI, and the host `podup` tool.
@@ -58,14 +65,14 @@ The mirrored tag triggers the GitHub workflow, which:
 5. Self-verifies the release exactly as a device would (`podup verify`).
 6. Uploads every file in `dist/` to the GitHub release for the tag.
 
-You can also trigger it manually via **workflow_dispatch** with an explicit
-`version` input.
+That takes minutes and is the release. The `os-image` job then spends hours
+adding the OS artifacts to it ([below](#the-os-image-lane)).
 
-> **OS-level artifacts** (`podd-sd-<tag>.img.gz`, `os-<version>.ext4.zst`, the
-> L2 rootfs tarball, the recovery SD) are **not** built by the release job
-> yet (issue #166). Until that lands, releases are app-only (fully valid — the
-> manifest simply has no Os component) and the OS image is built locally per
-> [CLEANROOM-OS.md](CLEANROOM-OS.md).
+You can also trigger the workflow manually via **workflow_dispatch**: an
+explicit `version` input publishes to that tag's release, an empty one is a
+build-only smoke test that publishes nothing and leaves the artifacts on the
+run instead. The optional `ref` input picks the commit to build.
+`scripts/ci-resolve-version.sh` makes that call once for both jobs.
 
 > The app version drops the leading `v` — tag `v0.1.0` produces
 > `app-0.1.0.squashfs`. The manifest carries the full version, and the device reads
@@ -130,25 +137,68 @@ enforced).
 
 ---
 
-## OS-bearing releases (by hand, for now)
+## The OS image lane
 
-CI builds app-only releases; the OS-level artifacts are built locally and
-attached to the GitHub release by hand until issue #166 lands:
+The `os-image` job in `.github/workflows/release.yml` builds one Buildroot tree
+and gets four artifacts out of it: `os-<version>.ext4.zst` (the OTA slot image),
+`podd-sd-<tag>.img.gz`, `podd-rootfs-<tag>.tar.gz` (+ `.sha256`) and
+`podd-recovery-sd-<tag>.img.gz`. It runs `os/scripts/build.sh` and
+`scripts/build-recovery-sd.sh`, then re-runs `scripts/build-release.sh` with
+`OS_IMAGE` set so `manifest.json` gains the Os component, and uploads
+everything with `--clobber` (so a re-run just overwrites).
+
+It is **additive**: the release already exists when it starts, it never gates
+the workflow (`continue-on-error`), and if it fails the release simply stays
+app-only. That is a valid release — the manifest has no Os component and
+devices keep updating the app tier.
+
+**Watch it, though**: `continue-on-error` means the run goes green either way.
+When you expect OS artifacts, open the run and check the `os-image` job.
+
+### Runner budget
+
+Everything about this job is shaped by two hard numbers on a GitHub-hosted
+runner: a **6 h job limit** and **~21 GB free disk** on 4 vCPU. The Buildroot
+tree peaks around 22 GB (`output/` 15 GB, `dl/` 7 GB with the bare git
+mirrors), so the job:
+
+- deletes the preinstalled toolchains it doesn't use (dotnet, Android, GHC,
+  CodeQL, Swift, …) — about 20 GB back;
+- caches Buildroot's `dl/` (~1.2 GB once the git mirrors are pruned — the
+  source *tarballs* are what a later run needs, and having them means the 5 GB
+  `linux-imx` clone never happens);
+- caches ccache and builds through it (`PODD_BR_CCACHE=1`). `output/` itself
+  can't be cached — 15 GB against a 10 GB per-repo cache budget — so every run
+  is a cold compile and ccache is what keeps that affordable.
+
+**If a hosted runner can't do it** (the job hits its timeout, or runs out of
+disk), move it without editing the workflow: on the GitHub mirror, under
+*Settings → Secrets and variables → Actions → Variables*, set
+
+- **`OS_IMAGE_RUNNER`** — a self-hosted runner's label, and
+- **`OS_IMAGE_TIMEOUT`** — minutes (the default 350 exists only to stop just
+  short of the hosted 6 h kill).
+
+What such a host must provide: `nix` with flakes on `PATH` (the workflow's Nix
+installer step is hosted-only, so it would fail on e.g. a NixOS runner),
+`e2fsprogs`, `zstd`, and ~40 GB of free disk. Nothing else — the build brings
+its own toolchain.
+
+### Test-running it
+
+Dispatch the workflow with an empty `version` (optionally a `ref`): nothing is
+published, and the artifacts land on the run itself as `podd-os-artifacts`
+instead. Budget several hours.
+
+### Building the same thing by hand
 
 ```sh
-os/scripts/build.sh                              # -> dist/podd-os.ext4.zst
+os/scripts/build.sh                              # -> dist/podd-os.ext4.zst + the rest
 OS_IMAGE=dist/podd-os.ext4.zst VERSION=v0.1.0 scripts/build-release.sh
 ```
 
 (`OS_VERSION` defaults to the app version; a raw `rootfs.ext2` input is
-zstd-compressed automatically.)
-
-Related artifacts, built from the same Buildroot tree:
-
-- **`podd-rootfs-<tag>.tar.gz`** (+ `.sha256`) — the L2 rootfs as a tarball, the
-  payload for [`install/podd-slot-install.sh`](../install/podd-slot-install.sh).
-  `os/scripts/build.sh` emits it; `os/scripts/package-rootfs.sh` re-packages it
-  from an existing Buildroot tree in seconds without rebuilding.
-- **`podd-recovery-sd-<tag>.img.gz`** — the SD image with that tarball spliced
-  into its data partition. `scripts/build-recovery-sd.sh --plan` prints the
-  assembly plan and what it deliberately does *not* do.
+zstd-compressed automatically.) From an existing Buildroot tree,
+`os/scripts/package-rootfs.sh` re-emits the rootfs tarball in seconds without
+rebuilding, and `scripts/build-recovery-sd.sh --plan` prints the recovery-SD
+assembly plan and what it deliberately does *not* do.
