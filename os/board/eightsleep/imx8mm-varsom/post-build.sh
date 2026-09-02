@@ -75,6 +75,16 @@ mask_unit systemd-networkd-varlink.socket
 # Boot diagnostics -> /data/bootlog (no serial console; read the card post-mortem).
 enable_unit podd-bootlog-early.service sysinit.target
 enable_unit podd-bootlog.timer timers.target
+# Hardware watchdog: PID 1 kicks /dev/watchdog (issue #172). The drop-in comes
+# from the overlay; its absence is silent at runtime (systemd just never opens
+# the watchdog and a kernel hang rides out), so fail the build instead.
+WDT_DROPIN="$TARGET_DIR/etc/systemd/system.conf.d/10-watchdog.conf"
+if ! grep -q '^RuntimeWatchdogSec=' "$WDT_DROPIN" 2>/dev/null; then
+	echo "post-build: FATAL $WDT_DROPIN missing or has no RuntimeWatchdogSec=" \
+	     "— the hardware watchdog would never be kicked (see issue #172)" >&2
+	exit 1
+fi
+echo "post-build: systemd hardware-watchdog drop-in present"
 # Make sure sshd reads /etc/ssh/sshd_config.d/*.conf (older configs may not).
 if [ -f "$TARGET_DIR/etc/ssh/sshd_config" ] \
    && ! grep -q '^Include /etc/ssh/sshd_config.d' "$TARGET_DIR/etc/ssh/sshd_config"; then
