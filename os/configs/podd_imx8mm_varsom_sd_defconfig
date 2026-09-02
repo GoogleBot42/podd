@@ -190,7 +190,7 @@ BR2_PACKAGE_LINUX_FIRMWARE_BRCM_BCM43XXX=y
 # Loads correctly now that cfg80211 is a module (probes after rootfs mount).
 BR2_PACKAGE_WIRELESS_REGDB=y
 
-# --- rootfs overlay (non-secret reachability config: NM.conf, muzzle, sshd) ---
+# --- rootfs overlay (non-secret config: NM.conf, muzzle, sshd, watchdog) -----
 # Owner-specific secrets (WiFi PSK, SSH authorized_keys) are NOT here — they are
 # injected by post-build.sh from a gitignored dir if present (see post-build.sh).
 BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_PODD_PATH)/board/eightsleep/imx8mm-varsom/rootfs-overlay"
