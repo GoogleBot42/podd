@@ -99,6 +99,43 @@ blobs," not "100% FOSS."
 - **podd** is cross-compiled by the existing `nix build .#podd-aarch64` and
   installed into the rootfs as a Buildroot package.
 
+## Hardware watchdog
+
+The SoC watchdog (`imx2-wdt` @ `0x30280000`, `CONFIG_IMX2_WDT=y`) probes on
+every boot and exposes `/dev/watchdog`, but nothing opened it until issue #172:
+`Restart=always` on `podd.service` covers a podd crash and does nothing for a
+kernel or PID-1 hang, which rode out — heaters still holding their last
+setpoint — until the Pod was physically power-cycled.
+
+The base layer is systemd's own watchdog support, turned on by the overlay
+drop-in `os/board/eightsleep/imx8mm-varsom/rootfs-overlay/etc/systemd/system.conf.d/10-watchdog.conf`
+(that file owns the exact values and the reasoning for each). PID 1 opens
+`/dev/watchdog`, programs a 30 s hardware timeout and kicks it every 15 s; a
+hang longer than that resets the SoC. The drop-in is part of the rootfs, so it
+ships to fresh SD images and to existing installs through the ordinary OS OTA
+(`os-<version>.ext4.zst` is the whole slot filesystem — see
+[Install = OTA](#install--ota)) with no migration step.
+
+Why an unscheduled reboot is safe here — it lands inside invariants that
+already exist:
+
+- podd comes back through `podd.service` (`Restart=always`) and re-enters the
+  ~60 s sensor-MCU zombie window exactly as it does after any restart, so the
+  actuation path's retry-until-confirmed rule covers it (`.claude/rules/actuation-safety.md`).
+- Alarms do not arm before NTP sync, and there is no RTC battery, so a reboot
+  cannot resurrect a stale alarm time.
+- The heat setpoint does not survive as a latch: podd hard-resets both STM32s
+  through the PCAL6416A expander during startup (`crates/podd-core/src/reset.rs`,
+  called from `podd_core::run`) and then drives the target from the schedule —
+  the same sequence as any other restart.
+- The U-Boot A/B state machine counts boot attempts, so a watchdog reboot loop
+  on a bad slot reverts to the previous one instead of cycling forever.
+
+Not part of this layer, deliberately: `WatchdogSec=` + `sd_notify` supervision
+on `podd.service`. That would make podd's own liveness a reboot trigger, and a
+spurious restart costs a 60 s actuation-deaf window — a separate decision from
+"the kernel must not be allowed to hang".
+
 ## Slot & partition layout
 
 Two rootfs slots plus a persistent data partition. Kernel + DTB live inside
