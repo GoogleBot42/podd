@@ -38,6 +38,8 @@ PODD_FIT_MKIMAGE="${GOODMK}" \
 PODD_FIT_MKIMAGE_LIBS="${SSL_LIBDIR}" \
 	./result-brenv/bin/podd-buildroot-env -c \
 	"cd '${REPO_ROOT}' && PODD_FIT_MKIMAGE='${GOODMK}' PODD_FIT_MKIMAGE_LIBS='${SSL_LIBDIR}' \
+	 PODD_BR_CCACHE='${PODD_BR_CCACHE:-0}' \
+	 BR2_DL_DIR='${BR2_DL_DIR:-}' BR2_CCACHE_DIR='${BR2_CCACHE_DIR:-}' \
 	 os/scripts/build-image.sh --no-nix \
 	   --podd-bin '${REPO_ROOT}/result-podd/bin/podd' \
 	   --ui-dir '${REPO_ROOT}/result-ui' \

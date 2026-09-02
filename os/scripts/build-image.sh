@@ -40,6 +40,11 @@
 #                       REQUIRED (for CI runners / offline builds).
 #   -h, --help          Show this help and exit.
 #
+# Environment:
+#   PODD_BR_CCACHE=1    Build through ccache (host-side speed only; the image
+#                       is unaffected). BR2_DL_DIR / BR2_CCACHE_DIR relocate
+#                       Buildroot's download and ccache dirs — CI caches both.
+#
 # The build itself is long (hours) and large (GBs of downloads + objects); this
 # script only orchestrates it.
 set -euo pipefail
@@ -75,7 +80,7 @@ log() { printf '==> %s\n' "$*"; }
 usage() {
 	# Print the leading comment block (up to the first blank comment terminator)
 	# as the help text, so this stays the single source of truth.
-	sed -n '3,44p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+	sed -n '3,49p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 while [ "$#" -gt 0 ]; do
@@ -146,6 +151,22 @@ fi
 # `make` runs the whole build. PODD_BIN / PODD_UI_DIR flow through to podd.mk.
 log "applying ${DEFCONFIG} (BR2_EXTERNAL=${BR2_EXTERNAL_DIR})"
 make -C "${BUILDROOT_DIR}" BR2_EXTERNAL="${BR2_EXTERNAL_DIR}" "${DEFCONFIG}"
+
+# Optional host compiler cache, opt-in via PODD_BR_CCACHE=1 (CI sets it; see
+# .github/workflows/release.yml). It stays OUT of the defconfig on purpose:
+# this is a build-host speed knob, not part of the image definition. ccache
+# wraps the host/target compilers only and cannot change what lands in the
+# rootfs. The cache dir is $HOME/.buildroot-ccache unless BR2_CCACHE_DIR says
+# otherwise (Buildroot reads that from the environment).
+if [ "${PODD_BR_CCACHE:-0}" = "1" ]; then
+	log "enabling BR2_CCACHE (host compiler cache; does not affect image contents)"
+	echo 'BR2_CCACHE=y' >> "${BUILDROOT_DIR}/.config"
+	make -C "${BUILDROOT_DIR}" BR2_EXTERNAL="${BR2_EXTERNAL_DIR}" olddefconfig
+	# BR2_CCACHE depends on BR2_HOST_GCC_AT_LEAST_8; an unmet dependency makes
+	# olddefconfig drop the line silently. Slower, not broken - say so and go on.
+	grep -qx 'BR2_CCACHE=y' "${BUILDROOT_DIR}/.config" \
+		|| echo "build-image.sh: warning: BR2_CCACHE did not stick (host gcc < 8?); building without it" >&2
+fi
 
 # Work around a Buildroot bug: its host u-boot-tools (mkimage 2025.10) is built
 # with an empty CONFIG_MKIMAGE_DTC_PATH, so the host mkimage cannot compile the
