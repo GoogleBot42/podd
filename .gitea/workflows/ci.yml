@@ -21,6 +21,14 @@ on:
     branches: [main]
   pull_request:
 
+# One run per ref: a new push to a PR branch (or to main) cancels the run
+# still in flight for that ref. Without this every rapid-fire push queued a
+# full cold cross-build behind the last one and ate the runner for hours.
+# Supported since Gitea 1.25; the server is 1.26.
+concurrency:
+  group: ci-${{ gitea.ref }}
+  cancel-in-progress: true
+
 env:
   PATH: /run/current-system/sw/bin/
   XDG_CONFIG_HOME: ${{ runner.temp }}/.config
