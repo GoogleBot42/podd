@@ -31,6 +31,31 @@ export const postUpdatesApply = async () => {
   return response.data;
 };
 
+// True when a request died without any HTTP answer (connection reset, network
+// error, timeout) — on apply/rollback that is podd restarting, not a failure.
+export const isConnectionDrop = (e: unknown) =>
+  typeof e === 'object' && e !== null && !('response' in e && (e as { response?: unknown }).response);
+
+// After an apply/rollback restart, poll GET /updates until podd answers again
+// (or the deadline passes) and resolve with the fresh report. A canary
+// rollback restarts podd a second time, so keep polling a little past the
+// first answer that shows the agent has settled (lastApplied set).
+export const waitForPoddRestart = async (deadlineMs = 90_000, everyMs = 2_000): Promise<UpdatesReport | null> => {
+  const until = Date.now() + deadlineMs;
+  let last: UpdatesReport | null = null;
+  while (Date.now() < until) {
+    await new Promise(resolve => setTimeout(resolve, everyMs));
+    try {
+      const response = await axios.get<UpdatesReport>('/updates', { timeout: everyMs });
+      last = response.data;
+      if (last.updater?.lastApplied) return last;
+    } catch {
+      // still restarting
+    }
+  }
+  return last;
+};
+
 // Switches the followed release channel. podd persists it, so the switch
 // survives a restart; nothing is applied until the next check.
 export const postUpdatesChannel = async (channel: string) => {
