@@ -173,6 +173,11 @@ BR2_PACKAGE_DNSMASQ=y
 BR2_PACKAGE_OPENSSH=y
 BR2_PACKAGE_IPTABLES=y
 BR2_PACKAGE_E2FSPROGS=y
+# squashfs-tools with zstd: the app-tier releases are zstd squashfs (podup), and
+# a gzip-only unsquashfs makes every OTA apply fall back to mount+copy
+# (observed on the v0.1.3 apply, 2026-09-03 — the fallback works, this is faster).
+BR2_PACKAGE_SQUASHFS=y
+BR2_PACKAGE_SQUASHFS_ZSTD=y
 # tzdata: podd (jiff) parses a timezone from its config and needs the zoneinfo
 # database, else it fails "failed to find time zone ... in time zone database".
 # NOTE: BR2_PACKAGE_TZDATA is a *blind* (promptless) symbol — setting it in a

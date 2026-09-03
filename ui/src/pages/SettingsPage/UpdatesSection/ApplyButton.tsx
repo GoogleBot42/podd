@@ -8,7 +8,7 @@ import DialogTitle from '@mui/material/DialogTitle';
 import Slide from '@mui/material/Slide';
 import { TransitionProps } from '@mui/material/transitions';
 
-import { postUpdatesApply } from '@api/updates.ts';
+import { isConnectionDrop, postUpdatesApply, waitForPoddRestart } from '@api/updates.ts';
 
 
 const Transition = forwardRef(function Transition(
@@ -45,17 +45,34 @@ export default function ApplyButton({ version, disabled, onDone }: ApplyButtonPr
         setStarted(true);
         onDone?.();
       })
-      .catch((e: unknown) => {
-        console.error(e);
-        // A 409 carries the agent's own message (disabled agent, unreachable
-        // source, failed verification); anything else is most likely podd
-        // restarting into the new release before it could answer.
-        const message = (e as { response?: { data?: unknown } }).response?.data;
-        setError(
-          typeof message === 'string' && message.length > 0
-            ? message
-            : 'Update failed (or podd restarted before answering) — check the status above.',
-        );
+      .catch(async (e: unknown) => {
+        // A 409/501 carries the agent's own message (disabled agent,
+        // unreachable source, failed verification). A dropped connection is
+        // podd restarting into the new release before it could answer: wait
+        // for it to come back and report what actually happened.
+        if (!isConnectionDrop(e)) {
+          console.error(e);
+          const message = (e as { response?: { data?: unknown } }).response?.data;
+          setError(
+            typeof message === 'string' && message.length > 0
+              ? message
+              : 'Update failed — check the status above.',
+          );
+          return;
+        }
+        const report = await waitForPoddRestart();
+        const running = report?.updater?.currentVersions.find(v => v.kind === 'app')?.version;
+        if (running === version) {
+          setStarted(true);
+        } else if (report === null) {
+          setError('podd has not answered since the restart — reload this page in a minute.');
+        } else {
+          setError(
+            report.updater?.lastError
+              ?? `podd is back on ${running ?? 'the previous release'}; the update was rolled back.`,
+          );
+        }
+        onDone?.();
       })
       .finally(() => setApplying(false));
   };
@@ -96,7 +113,7 @@ export default function ApplyButton({ version, disabled, onDone }: ApplyButtonPr
         onClose={ () => setStarted(false) }
       >
         <Alert severity="success" onClose={ () => setStarted(false) }>
-          Installing { version }; podd is restarting into it
+          Updated to { version }; podd restarted into it
         </Alert>
       </Snackbar>
       <Snackbar

@@ -8,7 +8,7 @@ import DialogTitle from '@mui/material/DialogTitle';
 import Slide from '@mui/material/Slide';
 import { TransitionProps } from '@mui/material/transitions';
 
-import { postUpdatesRollback } from '@api/updates.ts';
+import { isConnectionDrop, postUpdatesRollback, waitForPoddRestart } from '@api/updates.ts';
 
 
 const Transition = forwardRef(function Transition(
@@ -38,12 +38,24 @@ export default function RollbackButton({ disabled, onDone }: RollbackButtonProps
         setRestored(result.restored);
         onDone?.();
       })
-      .catch((e: unknown) => {
-        console.error(e);
-        // podd restarts itself on a successful rollback, so the request can
-        // legitimately die in flight — say what happened rather than claiming
-        // the rollback failed.
-        setError('Rollback failed (or podd restarted before answering).');
+      .catch(async (e: unknown) => {
+        // podd restarts itself on a successful rollback, so the request
+        // usually dies in flight. Wait for it to come back and report the
+        // release it is actually running instead of claiming a failure.
+        if (!isConnectionDrop(e)) {
+          console.error(e);
+          const message = (e as { response?: { data?: unknown } }).response?.data;
+          setError(typeof message === 'string' && message.length > 0 ? message : 'Rollback failed.');
+          return;
+        }
+        const report = await waitForPoddRestart();
+        const running = report?.updater?.currentVersions.find(v => v.kind === 'app')?.version;
+        if (report === null) {
+          setError('podd has not answered since the restart — reload this page in a minute.');
+        } else {
+          setRestored(running ?? 'the previous release');
+        }
+        onDone?.();
       });
   };
 
