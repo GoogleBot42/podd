@@ -26,6 +26,9 @@ anything on the actuation path as safety-critical.
 - `printf '%s'` does not expand `\t`/`\n` escapes — a literal `\t` in a
   generated fstab once took out the `/data` mount. Use `printf '%b'`, `echo`,
   or literal characters when generating config lines in shell.
+- Under `set -e`, a `[ -n "$X" ] && cmd` in an EXIT trap returns 1 when `$X`
+  is empty and fails the whole script *after* it succeeded (cost two 2-hour
+  CI OS builds, 2026-09-02). Use `if`/`then` in traps and cleanup functions.
 
 ## Build & test
 
