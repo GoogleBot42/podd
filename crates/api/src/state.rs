@@ -281,6 +281,7 @@ fn side_from_snapshot(side: &SideSnapshot, prev: &SideStatus) -> SideStatus {
         seconds_remaining: side.seconds_remaining,
         is_on: side.is_on,
         is_alarm_vibrating: side.is_alarm_vibrating,
+        is_thawing: side.is_thawing,
         taps: prev.taps.clone(),
     }
 }

@@ -58,6 +58,10 @@ pub struct SideStatus {
     pub seconds_remaining: i64,
     pub is_on: bool,
     pub is_alarm_vibrating: bool,
+    /// podd extension: the freeze guard has this side off to thaw an iced heat
+    /// exchanger (#186). `isOn` reads false meanwhile; cooling resumes alone.
+    #[serde(default)]
+    pub is_thawing: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub taps: Option<Taps>,
 }
@@ -109,6 +113,7 @@ impl SideStatus {
             seconds_remaining: 0,
             is_on: false,
             is_alarm_vibrating: false,
+            is_thawing: false,
             taps: Some(Taps {
                 double_tap: 0,
                 triple_tap: 0,
