@@ -1,3 +1,4 @@
+pub mod freeze;
 pub mod manager;
 pub mod state;
 

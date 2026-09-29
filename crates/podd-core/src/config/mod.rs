@@ -187,6 +187,47 @@ pub enum SidesConfig {
     Couples { left: SideConfig, right: SideConfig },
 }
 
+/// Freeze protection for the water loop (issue #186).
+///
+/// The Frozen MCU's PID runs the TEC unbounded: with a target well below the
+/// water temperature the cold plate drops under 0 °C and the heat exchanger
+/// ices over. Water then stops flowing past the plate, the loop warms up while
+/// the MCU keeps "cooling", and the side never recovers until the TEC is
+/// switched off long enough to thaw. It has happened at steady state in the
+/// middle of the night, so the guard runs continuously, not just on setpoint
+/// changes. Every field has a default; an absent section enables the guard
+/// with those defaults. `enabled: false` turns the whole guard off.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FreezeProtectionConfig {
+    pub enabled: bool,
+    /// Prevention: the MCU target is never set more than this far (°C) below
+    /// the current water temperature. The setpoint steps down as the water
+    /// follows, bounding the PID error and so the TEC drive.
+    pub max_cooling_error_c: f64,
+    /// Detection: how far back (seconds) to look for the water's minimum
+    /// while cooling is demanded.
+    pub detect_window_s: u64,
+    /// Detection: a sustained rise (°C) of the water above that minimum,
+    /// while the target is still below the water, is a frozen exchanger.
+    pub detect_rise_c: f64,
+    /// Recovery: how long (seconds) the side is forced off to thaw before
+    /// cooling resumes through the ramp.
+    pub thaw_s: u64,
+}
+
+impl Default for FreezeProtectionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_cooling_error_c: 1.5,
+            detect_window_s: 1800,
+            detect_rise_c: 1.0,
+            thaw_s: 900,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     #[serde(deserialize_with = "timezone_de", serialize_with = "timezone_ser")]
@@ -210,6 +251,11 @@ pub struct Config {
     /// section => historical hard-coded defaults (see [`DeviceConfig`]).
     #[serde(default)]
     pub device: DeviceConfig,
+    /// Water-loop freeze guard (ramp limiter + freeze detection + thaw).
+    /// Absent section => enabled with the defaults (see
+    /// [`FreezeProtectionConfig`]).
+    #[serde(default)]
+    pub freeze_protection: FreezeProtectionConfig,
 }
 
 impl Config {
