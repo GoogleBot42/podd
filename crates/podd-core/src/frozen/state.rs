@@ -25,6 +25,9 @@ pub(crate) const TOPIC_RIGHT_TEMP: &str = "opensleep/state/frozen/right_temp";
 pub(crate) const TOPIC_HEATSINK_TEMP: &str = "opensleep/state/frozen/heatsink_temp";
 pub(crate) const TOPIC_LEFT_TARGET_TEMP: &str = "opensleep/state/frozen/left_target_temp";
 pub(crate) const TOPIC_RIGHT_TARGET_TEMP: &str = "opensleep/state/frozen/right_target_temp";
+/// Freeze guard (#186): retained `"ok"` / `"thawing"` per side.
+pub(crate) const TOPIC_LEFT_FREEZE: &str = "opensleep/state/frozen/left_freeze";
+pub(crate) const TOPIC_RIGHT_FREEZE: &str = "opensleep/state/frozen/right_freeze";
 
 impl FrozenState {
     pub fn is_awake(&self) -> bool {

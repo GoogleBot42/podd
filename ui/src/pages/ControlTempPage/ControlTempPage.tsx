@@ -9,6 +9,7 @@ import AlarmDismissal from './AlarmDismissal.tsx';
 import AlarmNotification from './AlarmNotification.tsx';
 import AwayNotification from './AwayNotification.tsx';
 import ErrorBoundary from '@components/ErrorBoundary.tsx';
+import FreezeNotification from './FreezeNotification.tsx';
 import PageContainer from '../PageContainer.tsx';
 import PowerButton from './PowerButton.tsx';
 import PrimingNotification from './PrimingNotification.tsx';
@@ -97,6 +98,7 @@ export default function ControlTempPage() {
         </ErrorBoundary>
         <AwayNotification settings={ settings }/>
         <WaterNotification/>
+        <FreezeNotification/>
       </Box>
       <AlarmDismissal refetch={ refetch }/>
       { isUpdating && <CircularProgress/> }

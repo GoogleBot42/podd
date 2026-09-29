@@ -201,3 +201,45 @@ async fn test_led_brightness_defaults_when_absent() {
     let config = Config::load("../../config.example.ron").await.unwrap();
     assert_eq!(config.led.brightness, 100);
 }
+
+/// Parse a `FreezeProtectionConfig` from a RON snippet with the loader's options.
+fn parse_freeze(src: &str) -> FreezeProtectionConfig {
+    let opts = ron::Options::default().with_default_extension(Extensions::IMPLICIT_SOME);
+    opts.from_str(src).unwrap()
+}
+
+#[tokio::test]
+async fn freeze_protection_is_on_by_default_when_absent() {
+    // Neither example config mentions the block: the guard is still on with
+    // the built-in thresholds — nobody has to configure it (#186).
+    for path in ["example_solo.ron", "example_couples.ron"] {
+        let config = Config::load(path).await.unwrap();
+        assert_eq!(config.freeze_protection, FreezeProtectionConfig::default());
+        assert!(config.freeze_protection.enabled);
+    }
+}
+
+#[test]
+fn freeze_protection_partial_block_fills_defaults() {
+    let fp = parse_freeze("(thaw_s: 600)");
+    assert!(fp.enabled);
+    assert_eq!(fp.thaw_s, 600);
+    assert_eq!(fp.max_cooling_error_c, 1.5);
+    assert_eq!(fp.detect_window_s, 1800);
+    assert_eq!(fp.detect_rise_c, 1.0);
+    let off = parse_freeze("(enabled: false)");
+    assert!(!off.enabled);
+}
+
+#[test]
+fn freeze_protection_round_trips_through_save_format() {
+    let cfg = FreezeProtectionConfig {
+        enabled: true,
+        max_cooling_error_c: 2.0,
+        detect_window_s: 900,
+        detect_rise_c: 0.8,
+        thaw_s: 1200,
+    };
+    let s = ron::ser::to_string(&cfg).unwrap();
+    assert_eq!(parse_freeze(&s), cfg);
+}
