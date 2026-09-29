@@ -1,8 +1,10 @@
 use crate::bus::{Command, DeviceSnapshot, SideSnapshot, StatusTx};
 use crate::config::{AwayMode, Config, SidesConfig};
-use crate::frozen::state::FrozenState;
+use crate::frozen::freeze::{FreezeGuard, FreezeParams, FreezeStatus};
+use crate::frozen::state::{FrozenState, TOPIC_LEFT_FREEZE, TOPIC_RIGHT_FREEZE};
 use crate::health::{self, Health, HealthRegistry};
 use crate::led::{IS31FL3194Config, IS31FL3194Controller, LedPattern};
+use crate::mqtt::publish_state_retained;
 use crate::schedule::{self, Schedules};
 use crate::settings::{Settings, TemperatureScheduleOverride};
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
@@ -113,7 +115,23 @@ pub async fn run(
     let mut prime = cfg.prime;
     let mut prime_enabled = cfg.prime_enabled;
     let mut side_config = cfg.profile.clone();
+    let mut freeze_params = FreezeParams::from(&cfg.freeze_protection);
     drop(cfg);
+    // Water-loop freeze guard (#186): ramps cooling setpoints, detects an
+    // iced heat exchanger and forces a thaw. Runs on every setpoint tick.
+    let mut freeze = FreezeGuard::default();
+    let mut freeze_shown = [FreezeStatus::default(); 2];
+    if freeze_params.enabled {
+        log::info!(
+            "Freeze guard on: cooling ramp {:.2}°C, detect +{:.2}°C over {} min, thaw {} min",
+            freeze_params.max_cooling_error as f64 / 100.0,
+            freeze_params.detect_rise as f64 / 100.0,
+            freeze_params.detect_window.as_secs() / 60,
+            freeze_params.thaw.as_secs() / 60,
+        );
+    } else {
+        log::warn!("Freeze guard DISABLED by config — a frozen heat exchanger will not be detected");
+    }
     // The per-weekday schedule, refreshed by `Command::SetSchedules`. It only
     // *replaces* the config profile for sides it owns (see [`wanted_target`]).
     let mut schedules = schedules_rx.borrow_and_update().clone();
@@ -220,6 +238,8 @@ pub async fn run(
                 &schedules,
                 &temp_overrides,
                 &mut overrides,
+                &mut freeze,
+                &freeze_params,
             ) {
                 let now = Instant::now();
 
@@ -272,7 +292,9 @@ pub async fn run(
                         log::error!("Failed to send JumpToFirmware: {e}");
                     }
                 }
-            }},
+            }
+            publish_freeze(&status, &mut client, &freeze, &mut freeze_shown);
+            },
 
             Ok(_) = config_rx.changed() => {
                 let cfg = config_rx.borrow();
@@ -289,6 +311,11 @@ pub async fn run(
                 prime = cfg.prime;
                 prime_enabled = cfg.prime_enabled;
                 side_config = cfg.profile.clone();
+                let new_freeze = FreezeParams::from(&cfg.freeze_protection);
+                if new_freeze != freeze_params {
+                    log::info!("Freeze guard config changed: {new_freeze:?}");
+                    freeze_params = new_freeze;
+                }
                 let led_changed = cfg.led != led_cfg;
                 if led_changed {
                     led_cfg = cfg.led.clone();
@@ -330,7 +357,9 @@ pub async fn run(
                 if !dry_run && matches!(cmd, Command::Prime) {
                     prime_verify = Some(PrimeVerify { sent_at: Instant::now(), attempts: 1 });
                 }
-                if let Some((side, target, expires_at)) = handle_command(&mut writer, &state, dry_run, cmd).await {
+                if let Some((side, target, expires_at)) =
+                    handle_command(&mut writer, &state, dry_run, cmd, &mut freeze, &freeze_params).await
+                {
                     // Must be the *same* wanted target `get_next_command`
                     // computes, weekly path included: this flag is what the
                     // override's schedule-boundary expiry compares against.
@@ -409,23 +438,33 @@ fn f_to_centi_c(f: i32) -> u16 {
 /// the live cutover — see `TODO(live-cutover)`.
 /// Returns the `(side, target, session expiry)` of a manual
 /// SetTargetTemperature it actually sent (never in dry-run), so the caller can
-/// register a [`ManualOverride`].
+/// register a [`ManualOverride`]. The returned target is what the user
+/// *wants*; the frame carries what the freeze guard allows right now (ramped,
+/// or off during a thaw) — the override must hold the wanted value so the
+/// ramp keeps converging on it from the scheduler tick.
 async fn handle_command(
     writer: &mut Writer,
     state: &FrozenState,
     dry_run: bool,
     cmd: Command,
+    freeze: &mut FreezeGuard,
+    freeze_params: &FreezeParams,
 ) -> Option<(BedSide, FrozenTarget, Option<Instant>)> {
     let mut expires_at = None;
+    let mut manual = None;
     let frame = match cmd {
-        Command::SetTargetTempF { side, f } => Some(FrozenCommand::SetTargetTemperature {
-            side,
-            tar: FrozenTarget {
+        Command::SetTargetTempF { side, f } => {
+            let wanted = FrozenTarget {
                 enabled: true,
                 temp: f_to_centi_c(f),
             }
-            .delimiter_safe(side),
-        }),
+            .delimiter_safe(side);
+            manual = Some((side, wanted.clone()));
+            Some(FrozenCommand::SetTargetTemperature {
+                side,
+                tar: guarded(freeze, freeze_params, state, side, wanted),
+            })
+        }
         Command::SetPower {
             side,
             on,
@@ -441,13 +480,15 @@ async fn handle_command(
                 BedSide::Left => state.left_target.as_ref(),
                 BedSide::Right => state.right_target.as_ref(),
             };
+            let wanted = FrozenTarget {
+                enabled: on,
+                temp: power_on_temp(last),
+            }
+            .delimiter_safe(side);
+            manual = Some((side, wanted.clone()));
             Some(FrozenCommand::SetTargetTemperature {
                 side,
-                tar: FrozenTarget {
-                    enabled: on,
-                    temp: power_on_temp(last),
-                }
-                .delimiter_safe(side),
+                tar: guarded(freeze, freeze_params, state, side, wanted),
             })
         }
         Command::Prime => Some(FrozenCommand::Prime),
@@ -466,15 +507,74 @@ async fn handle_command(
         );
         None
     } else {
-        let manual = if let FrozenCommand::SetTargetTemperature { side, tar } = &frame {
-            Some((*side, tar.clone(), expires_at))
-        } else {
-            None
-        };
         // TODO(live-cutover): live setpoint/control write to the Frozen MCU.
         // Gate behind the safety supervisor (heartbeat, setpoint clamp, faults).
         send_command(writer, frame).await;
-        manual
+        manual.map(|(side, wanted)| (side, wanted, expires_at))
+    }
+}
+
+/// Latest water temperature (centi-°C) for `side`, if telemetry has arrived.
+fn water_temp(state: &FrozenState, side: BedSide) -> Option<u16> {
+    state.temp.as_ref().map(|t| match side {
+        BedSide::Left => t.left_temp,
+        BedSide::Right => t.right_temp,
+    })
+}
+
+/// Run a wanted target through the freeze guard, logging when the guard
+/// changes what a *live user command* actually does.
+fn guarded(
+    freeze: &mut FreezeGuard,
+    params: &FreezeParams,
+    state: &FrozenState,
+    side: BedSide,
+    wanted: FrozenTarget,
+) -> FrozenTarget {
+    let effective = freeze.effective(
+        side,
+        wanted.clone(),
+        water_temp(state, side),
+        Instant::now(),
+        params,
+    );
+    if wanted.enabled && !effective.enabled {
+        log::warn!(
+            "Manual target on {side:?} accepted, but the side is thawing a frozen heat exchanger — \
+             it stays off until the thaw ends, then ramps to {}",
+            wanted.temp
+        );
+    }
+    effective
+}
+
+/// Publish the freeze guard's per-side status (snapshot + retained MQTT) when
+/// it changes. Read-only with respect to actuation.
+fn publish_freeze(
+    status: &StatusTx,
+    client: &mut AsyncClient,
+    freeze: &FreezeGuard,
+    shown: &mut [FreezeStatus; 2],
+) {
+    for (i, side) in [BedSide::Left, BedSide::Right].into_iter().enumerate() {
+        let now = freeze.status(side);
+        if now == shown[i] {
+            continue;
+        }
+        shown[i] = now;
+        status.send_modify(|s: &mut DeviceSnapshot| {
+            let snap = match side {
+                BedSide::Left => &mut s.left,
+                BedSide::Right => &mut s.right,
+            };
+            snap.is_thawing = now.thawing;
+            snap.freeze_count = now.freeze_count;
+        });
+        let topic = match side {
+            BedSide::Left => TOPIC_LEFT_FREEZE,
+            BedSide::Right => TOPIC_RIGHT_FREEZE,
+        };
+        publish_state_retained(client, topic, if now.thawing { "thawing" } else { "ok" });
     }
 }
 
@@ -599,6 +699,8 @@ fn get_next_command(
     schedules: &Schedules,
     temp_overrides: &[TemperatureScheduleOverride; 2],
     overrides: &mut ManualOverrides,
+    freeze: &mut FreezeGuard,
+    freeze_params: &FreezeParams,
 ) -> Option<FrozenCommand> {
     let now = Instant::now();
 
@@ -611,7 +713,10 @@ fn get_next_command(
     // must not disagree about what time it is.
     let now_zoned = Timestamp::now().to_zoned(timezone.clone());
 
-    // Per side: the schedule's target, unless a live manual override holds.
+    // Per side: the schedule's target, unless a live manual override holds —
+    // then through the freeze guard, which may ramp it or force a thaw. The
+    // guard's answer is what gets compared against the MCU's echo below, so
+    // a thaw's off frame is re-sent until the firmware confirms it.
     let mut wanted_for = |side: BedSide| -> FrozenTarget {
         let wanted = scheduled_target(
             side,
@@ -622,7 +727,8 @@ fn get_next_command(
             timezone,
             &now_zoned,
         );
-        resolve_target(overrides.side_mut(&side), wanted, side, now)
+        let wanted = resolve_target(overrides.side_mut(&side), wanted, side, now);
+        freeze.effective(side, wanted, water_temp(state, side), now, freeze_params)
     };
 
     if now.duration_since(timers.last_left_temp) > TEMP_INT {

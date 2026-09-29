@@ -62,6 +62,25 @@ fn presence_sensor(node: &str, device: &Value, object: &str, name: &str, state_t
     )
 }
 
+/// Freeze-guard problem sensor: on while the side is forced off to thaw an
+/// iced heat exchanger (payloads `"thawing"` / `"ok"`, retained by the
+/// Frozen manager).
+fn freeze_sensor(node: &str, device: &Value, object: &str, name: &str, state_topic: &str) -> DiscoveryMsg {
+    (
+        format!("homeassistant/binary_sensor/{node}/{object}/config"),
+        json!({
+            "name": name,
+            "unique_id": format!("{node}_{object}"),
+            "state_topic": state_topic,
+            "device_class": "problem",
+            "payload_on": "thawing",
+            "payload_off": "ok",
+            "availability_topic": TOPIC_AVAILABILITY,
+            "device": device,
+        }),
+    )
+}
+
 /// All discovery messages for this device.
 fn discovery_messages(device_label: &str) -> Vec<DiscoveryMsg> {
     let node = node_id(device_label);
@@ -85,6 +104,8 @@ fn discovery_messages(device_label: &str) -> Vec<DiscoveryMsg> {
         presence_sensor(&node, &device, "presence_left", "Left presence", sensor::presence::TOPIC_LEFT),
         presence_sensor(&node, &device, "presence_right", "Right presence", sensor::presence::TOPIC_RIGHT),
         presence_sensor(&node, &device, "presence_any", "Bed presence", sensor::presence::TOPIC_ANY),
+        freeze_sensor(&node, &device, "left_freeze", "Left side thawing", frozen::state::TOPIC_LEFT_FREEZE),
+        freeze_sensor(&node, &device, "right_freeze", "Right side thawing", frozen::state::TOPIC_RIGHT_FREEZE),
     ];
 
     // Humidity has its own class/unit; diagnostic-ish but useful.
@@ -144,7 +165,7 @@ mod tests {
     #[test]
     fn discovery_messages_are_well_formed() {
         let msgs = discovery_messages("test-pod");
-        assert_eq!(msgs.len(), 12);
+        assert_eq!(msgs.len(), 14);
         for (topic, payload) in &msgs {
             assert!(topic.starts_with("homeassistant/"), "{topic}");
             assert!(topic.ends_with("/config"), "{topic}");
@@ -169,6 +190,6 @@ mod tests {
         let mut ids: Vec<_> = msgs.iter().map(|(_, p)| p["unique_id"].as_str().unwrap().to_string()).collect();
         ids.sort();
         ids.dedup();
-        assert_eq!(ids.len(), 12);
+        assert_eq!(ids.len(), 14);
     }
 }
