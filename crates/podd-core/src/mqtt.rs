@@ -240,8 +240,7 @@ impl MqttManager {
     }
 
     fn calc_backoff(&self) -> Duration {
-        let secs = (2u64.pow(self.reconnect_attempts.saturating_sub(1))).min(60);
-        Duration::from_secs(secs)
+        reconnect_backoff(self.reconnect_attempts)
     }
 
     /// this must be in its own task because publishing
@@ -403,5 +402,50 @@ where
 {
     if let Err(e) = client.try_publish(topic.clone(), QoS::AtMostOnce, true, payload) {
         log::error!("Error publishing to {topic}: {e}",);
+    }
+}
+
+/// Exponential reconnect backoff: 1, 2, 4, … s, capped at 60 s, for
+/// `attempts` consecutive failures (the first failure waits 1 s).
+///
+/// The exponent is clamped *before* the power is taken. The previous form,
+/// `2u64.pow(attempts - 1).min(60)`, overflowed once the broker had been
+/// unreachable for ~64 attempts (about an hour at the 60 s cap); the release
+/// profile has no overflow checks, so the power wrapped to 0 and the loop
+/// went hot — ~800 "Reconnecting in 0ns" lines per second, 36 MB of journal
+/// in five minutes, WiFi never recovering under the load (Jeremy's Pod,
+/// 2026-09-23; he had to power-cycle it).
+pub(crate) fn reconnect_backoff(attempts: u32) -> Duration {
+    const MAX_SECS: u64 = 60;
+    let exp = attempts.saturating_sub(1).min(6); // 2^6 = 64 > MAX_SECS
+    Duration::from_secs((1u64 << exp).min(MAX_SECS))
+}
+
+#[cfg(test)]
+mod backoff_tests {
+    use super::reconnect_backoff;
+    use std::time::Duration;
+
+    #[test]
+    fn grows_then_caps_at_a_minute() {
+        let s = |n| reconnect_backoff(n).as_secs();
+        assert_eq!(s(0), 1);
+        assert_eq!(s(1), 1);
+        assert_eq!(s(2), 2);
+        assert_eq!(s(3), 4);
+        assert_eq!(s(6), 32);
+        assert_eq!(s(7), 60);
+        assert_eq!(s(20), 60);
+    }
+
+    #[test]
+    fn never_returns_zero_however_long_the_outage() {
+        // the 2026-09-23 failure: attempts past 64 used to wrap to 0 ns
+        for n in [63, 64, 65, 100, 1_000, u32::MAX] {
+            assert_eq!(reconnect_backoff(n), Duration::from_secs(60), "attempts={n}");
+        }
+        for n in 0..10_000 {
+            assert!(reconnect_backoff(n) >= Duration::from_secs(1), "attempts={n}");
+        }
     }
 }
