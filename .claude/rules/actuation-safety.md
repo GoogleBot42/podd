@@ -22,6 +22,11 @@ paths:
 - All MCU control writes must respect the `PODD_DRY_RUN` gate
   (`crates/podd/src/main.rs`); it defaults to dry-run (log, don't send).
 - Alarms must never arm before NTP sync; there is no RTC battery.
+- Cooling setpoints go through the freeze guard
+  (`crates/podd-core/src/frozen/freeze.rs`: ramp, freeze detection, thaw) on
+  every path that builds a `SetTargetTemperature` — the scheduler tick and
+  live commands alike. A deep raw cooling target can ice the heat exchanger
+  (issue #186). Compare the MCU echo against the guard's *returned* target.
 - Config migrations and generated configs must never inject a default alarm
   block — that exact bug fired a real alarm on a real bed (2026-07-20); see
   `.claude/rules/example-configs.md`.

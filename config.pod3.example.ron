@@ -126,4 +126,21 @@
         pcal6416a_addr: 0x20, // MCU reset expander
         led_addr: 0x53,       // IS31FL3194 LED controller
     ),
+
+    // ---- Water-loop freeze protection (optional) ----
+    //
+    // Always on; nothing to configure. If a cooling target drives the heat
+    // exchanger below freezing the water stops flowing and the loop warms up
+    // while the MCU keeps "cooling" — podd ramps cooling setpoints down no
+    // faster than the water follows, watches for water rising while cooling
+    // is demanded, and if it does switches the side off to thaw before
+    // resuming. Only uncomment to tune or (`enabled: false`) to switch off.
+    //
+    // freeze_protection: (
+    //     enabled: true,
+    //     max_cooling_error_c: 1.5,  // target never more than this below the water
+    //     detect_window_s: 1800,     // look back this far for the water's low
+    //     detect_rise_c: 1.0,        // sustained rise above that low = frozen
+    //     thaw_s: 900,               // forced-off time before resuming
+    // ),
 )

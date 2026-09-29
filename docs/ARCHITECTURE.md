@@ -96,6 +96,33 @@ temperature schedule) apply on top. The daemon also reads `settings.json` (boot
 + `Command::SetSettings`) for those overrides and the daily-reboot flag (reboot
 at prime − 1 h, NTP-gated).
 
+## Freeze protection (water loop)
+
+The Frozen MCU's PID drives the TEC as hard as the setpoint error asks and
+exposes no power-level command, so a cooling target far below the water can
+ice the heat exchanger: flow stops, the loop warms from the bed while the MCU
+keeps "cooling", and only switching the side off thaws it (live incident
+2026-09-03, issue #186; it also happens hours into a steady hold). The guard
+in `podd-core::frozen::freeze` sits between the resolved wanted target
+(schedule + manual override) and every `SetTargetTemperature` frame, on both
+the scheduler tick and live UI commands, and runs continuously:
+
+- **Prevention** — cooling setpoints are ramped: the effective target is never
+  more than `max_cooling_error_c` (1.5 °C) below the current water and steps
+  down only as the water follows. It never steps *up* with a rising water.
+- **Detection** — while cooling is demanded (target ≥ 0.5 °C below water), a
+  sustained rise of `detect_rise_c` (1.0 °C) above the water's low over the
+  last `detect_window_s` (30 min) means the exchanger is frozen.
+- **Recovery** — the side is forced off for `thaw_s` (15 min), logged at
+  error level, then the ramp brings it back toward the wanted target. The
+  compare-and-resend loop retries the off frame until the MCU echoes it.
+
+Status: `SideSnapshot.is_thawing` / `freeze_count` → `deviceStatus.<side>.isThawing`
+(UI notice on the Control page), retained MQTT `opensleep/state/frozen/{left,right}_freeze`
+(`ok`/`thawing`) with a Home Assistant `problem` binary sensor. On by default
+with no config; the optional `freeze_protection` block in `config.ron` tunes
+or disables it.
+
 ## Compat API (free-sleep-compatible)
 
 All JSON under `/api`. Implemented control endpoints: `GET/POST /deviceStatus`,

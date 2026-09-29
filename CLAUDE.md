@@ -18,6 +18,11 @@ anything on the actuation path as safety-critical.
   through delimiter-safe nudging, not escaping — new variable-payload commands
   need the same (see `.claude/rules/actuation-safety.md`).
 - Alarms must not arm before NTP sync — there is no RTC battery.
+- The heat exchanger can **freeze** under a deep cooling setpoint (water stops
+  flowing, loop warms while the MCU "cools"; real incident 2026-09-03). Every
+  Frozen setpoint must go through the freeze guard
+  (`crates/podd-core/src/frozen/freeze.rs`) — never add a bypass that sends a
+  raw cooling target to the MCU.
 - Config migrations and generated configs must never inject default alarm
   blocks. That exact bug fired a real alarm on a real bed (2026-07-20).
 - eMMC (`mmcblk2`) is **never** a write target; everything boots from SD so the
