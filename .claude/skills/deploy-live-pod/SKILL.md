@@ -220,6 +220,18 @@ repo, not only in on-device comments.
   scp/install steps above and generating text on-device (fstab lines,
   config snippets), a literal `\t`/`\n` from `printf '%s'` has previously
   taken out a mount. Use `printf '%b'`, `echo`, or literal characters.
+- **A podd restart kills a running prime — check the prime window first.**
+  podd hard-resets both MCUs at startup, so restarting it mid-prime aborts
+  the cycle with no "done" and nothing re-runs it until the next day. The
+  daily prime is NOT quick: on Jeremy's unit it starts at the configured
+  prime time (14:00 Denver = 20:00 UTC) and takes ~105 min (Sep 27/28:
+  19:59 → 21:44 UTC). On 2026-09-29 a 21:32 UTC deploy restart landed 13
+  min before `done`; the loop went into the night un-purged until a manual
+  re-prime. Before any restart: `curl …/api/deviceStatus | jq .isPriming`
+  (or `journalctl -u podd --since -2h | grep "Priming Message" | tail -1` —
+  `done` means finished). If a prime is running, wait it out or deploy later;
+  if you already killed one, re-run it (`POST /api/deviceStatus`
+  `{"isPriming":true}`, UI "Prime Now") and say so in the deploy report.
 - **`/data` is only ~230 MB and fills up with deploy leftovers.** Each
   binary is ~8 MB, each UI bundle ~10 MB (+3 MB tarball). On 2026-09-29
   staging one binary + one UI took `/data` to 100 % / 0 bytes free because
