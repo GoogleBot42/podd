@@ -136,6 +136,30 @@ on `podd.service`. That would make podd's own liveness a reboot trigger, and a
 spurious restart costs a 60 s actuation-deaf window — a separate decision from
 "the kernel must not be allowed to hang".
 
+## Journal sizing and rate limit
+
+The journal is persistent (`/var/log/journal` exists in the rootfs) and, until
+the 2026-09-23 outage, ran on journald's defaults. That night podd's MQTT
+reconnect backoff overflowed to 0 ns (fixed in podd PR #191) and the daemon
+wrote ~800 identical error lines per second: 36 MB in five minutes, which
+rotated every older log out of the default 48 MB cap and erased the evidence
+of what had taken the Pod offline in the first place.
+
+The overlay drop-in
+`os/board/eightsleep/imx8mm-varsom/rootfs-overlay/etc/systemd/journald.conf.d/10-podd-journal.conf`
+(that file owns the exact values and the reasoning for each) pins the cap,
+keeps 64 MB of root free, rotates in 4 MB files, and caps any one service at
+1000 messages per 30 s — journald then drops the excess and logs a single
+"Suppressed N messages" line, so a runaway logger costs itself its own
+messages instead of everyone's history. Like the watchdog drop-in it ships in
+the rootfs, so fresh images and OS OTA installs get it with no migration step.
+
+Applying it to a running unit is a config file plus
+`systemctl restart systemd-journald`; on systemd ≥ 233 running services keep
+their stdout/stderr streams across that restart through the fd store
+(verified on the live Pod, systemd 258, 2026-09-29), so podd does not need a
+restart of its own.
+
 ## Slot & partition layout
 
 Two rootfs slots plus a persistent data partition. Kernel + DTB live inside
