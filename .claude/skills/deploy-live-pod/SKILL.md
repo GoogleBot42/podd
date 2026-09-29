@@ -220,6 +220,16 @@ repo, not only in on-device comments.
   scp/install steps above and generating text on-device (fstab lines,
   config snippets), a literal `\t`/`\n` from `printf '%s'` has previously
   taken out a mount. Use `printf '%b'`, `echo`, or literal characters.
+- **`/data` is only ~230 MB and fills up with deploy leftovers.** Each
+  binary is ~8 MB, each UI bundle ~10 MB (+3 MB tarball). On 2026-09-29
+  staging one binary + one UI took `/data` to 100 % / 0 bytes free because
+  a dozen August `podd.pre-*` backups and three old `ui-*.tgz` were still
+  there — podd persists settings/vitals/schedules under `/data/podd`, so a
+  full partition is a live hazard, not cosmetic. `df -h /data` **before**
+  scp-ing anything; delete the tarball right after extracting; keep only
+  the newest one or two `*.pre-*` backups per artifact (older ones are
+  reproducible Nix builds of commits in git — rebuild, don't hoard). The
+  OTA release dirs (`updates/releases/*`) are the real rollback targets.
 - **Concurrent sessions deploy too.** More than one agent session can be
   working this repo at once, and deploys have landed minutes apart
   (2026-08-16: two deploys 03:24:57 and 03:26:52 UTC). After your swap,
