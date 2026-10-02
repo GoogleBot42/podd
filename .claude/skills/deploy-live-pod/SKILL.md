@@ -232,6 +232,15 @@ repo, not only in on-device comments.
   `done` means finished). If a prime is running, wait it out or deploy later;
   if you already killed one, re-run it (`POST /api/deviceStatus`
   `{"isPriming":true}`, UI "Prime Now") and say so in the deploy report.
+- **A podd restart drops manual overrides — prefer an empty bed.** Manual
+  setpoints (UI dial, `SetPower`) live only in memory; after a restart each
+  side falls back to its schedule target. On 2026-10-02 a 12:35 UTC deploy
+  (06:35 Denver, both sides occupied) reverted Jeremy's right-side override
+  and he had to set it again within 30 s. A fix for something actively
+  hurting the sleeper is worth that; anything else (telemetry, docs-adjacent
+  changes) waits for the schedule window to end — check
+  `/api/deviceStatus` for `isOn` on both sides — and say in the deploy
+  report if an override was live when you restarted.
 - **`/data` is only ~230 MB and fills up with deploy leftovers.** Each
   binary is ~8 MB, each UI bundle ~10 MB (+3 MB tarball). On 2026-09-29
   staging one binary + one UI took `/data` to 100 % / 0 bytes free because
