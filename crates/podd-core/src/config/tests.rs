@@ -227,6 +227,7 @@ fn freeze_protection_partial_block_fills_defaults() {
     assert_eq!(fp.max_cooling_error_c, 1.5);
     assert_eq!(fp.detect_window_s, 1800);
     assert_eq!(fp.detect_rise_c, 1.0);
+    assert_eq!(fp.detect_hold_s, 600);
     let off = parse_freeze("(enabled: false)");
     assert!(!off.enabled);
 }
@@ -238,6 +239,7 @@ fn freeze_protection_round_trips_through_save_format() {
         max_cooling_error_c: 2.0,
         detect_window_s: 900,
         detect_rise_c: 0.8,
+        detect_hold_s: 300,
         thaw_s: 1200,
     };
     let s = ron::ser::to_string(&cfg).unwrap();

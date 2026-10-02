@@ -1,7 +1,7 @@
 use rumqttc::AsyncClient;
 
 use crate::mqtt::{publish_guaranteed_wait, publish_high_freq, publish_state_retained};
-use pod_proto::frozen::packet::{FrozenPacket, FrozenTarget, TemperatureUpdate};
+use pod_proto::frozen::packet::{FrozenPacket, FrozenTarget, GetTemperature, TemperatureUpdate};
 use pod_proto::packet::{BedSide, HardwareInfo};
 use pod_proto::serial::DeviceMode;
 
@@ -9,6 +9,10 @@ use pod_proto::serial::DeviceMode;
 pub struct FrozenState {
     pub device_mode: DeviceMode,
     pub temp: Option<TemperatureUpdate>,
+    /// Latest `0xC1` four-probe frame. The firmware sends these unprompted
+    /// (seen live 2026-07-18); it is the only source of the hub's fourth
+    /// probe, which [`TemperatureUpdate`] omits.
+    pub probes: Option<GetTemperature>,
     pub left_target: Option<FrozenTarget>,
     pub right_target: Option<FrozenTarget>,
     pub hardware_info: Option<HardwareInfo>,
@@ -23,6 +27,14 @@ const TOPIC_HWINFO: &str = "opensleep/state/frozen/hwinfo";
 pub(crate) const TOPIC_LEFT_TEMP: &str = "opensleep/state/frozen/left_temp";
 pub(crate) const TOPIC_RIGHT_TEMP: &str = "opensleep/state/frozen/right_temp";
 pub(crate) const TOPIC_HEATSINK_TEMP: &str = "opensleep/state/frozen/heatsink_temp";
+/// The hub's fourth temperature probe (index 3 of the `0xC1` frame).
+/// INFERRED to be the hub's ambient/intake air: it reads a few °C
+/// under the idle heatsink, and the firmware's `pid[heatsink]` input equals
+/// heatsink minus this probe in the one capture that has both.
+pub(crate) const TOPIC_HUB_AMBIENT_TEMP: &str = "opensleep/state/frozen/ambient_temp";
+/// The Frozen firmware's own debug lines (`pid[left] …`, `pump[left] slow @
+/// 6.03V 0.17A`, …), verbatim — the only view of TEC drive and pump current.
+const TOPIC_FW_LOG: &str = "opensleep/state/frozen/fw_log";
 pub(crate) const TOPIC_LEFT_TARGET_TEMP: &str = "opensleep/state/frozen/left_target_temp";
 pub(crate) const TOPIC_RIGHT_TARGET_TEMP: &str = "opensleep/state/frozen/right_target_temp";
 /// Freeze guard (#186): retained `"ok"` / `"thawing"` per side.
@@ -73,6 +85,19 @@ impl FrozenState {
                 publish_high_freq(client, TOPIC_HEATSINK_TEMP, u.heatsink_temp.to_string());
 
                 self.temp = Some(u);
+            }
+            FrozenPacket::GetTemperature(g) => {
+                if self.probes.is_none() {
+                    log::info!(
+                        "Hub temperature probes: left {}, right {}, ambient(?) {}, heatsink {} (centi-°C)",
+                        g.left_temp,
+                        g.right_temp,
+                        g.unknown_temp,
+                        g.heatsink_temp
+                    );
+                }
+                publish_high_freq(client, TOPIC_HUB_AMBIENT_TEMP, g.unknown_temp.to_string());
+                self.probes = Some(g);
             }
             FrozenPacket::TargetUpdate((side, u)) => {
                 log::debug!(
@@ -139,6 +164,7 @@ impl FrozenState {
                 } else {
                     log::debug!("Message: {msg}")
                 }
+                publish_high_freq(client, TOPIC_FW_LOG, msg);
             }
             FrozenPacket::PrimingStarted => {
                 // The firmware's direct ack to a Prime command. Counts as

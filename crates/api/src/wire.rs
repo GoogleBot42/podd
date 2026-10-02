@@ -58,8 +58,9 @@ pub struct SideStatus {
     pub seconds_remaining: i64,
     pub is_on: bool,
     pub is_alarm_vibrating: bool,
-    /// podd extension: the freeze guard has this side off to thaw an iced heat
-    /// exchanger (#186). `isOn` reads false meanwhile; cooling resumes alone.
+    /// podd extension: the freeze guard has paused cooling on this side to
+    /// thaw an iced heat exchanger (#186). The side stays on with its target
+    /// held just above the water meanwhile; cooling resumes alone.
     #[serde(default)]
     pub is_thawing: bool,
     #[serde(skip_serializing_if = "Option::is_none")]

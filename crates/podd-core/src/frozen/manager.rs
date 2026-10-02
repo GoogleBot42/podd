@@ -1,6 +1,6 @@
 use crate::bus::{Command, DeviceSnapshot, SideSnapshot, StatusTx};
 use crate::config::{AwayMode, Config, SidesConfig};
-use crate::frozen::freeze::{FreezeGuard, FreezeParams, FreezeStatus};
+use crate::frozen::freeze::{FreezeGuard, FreezeParams, FreezeStatus, Readings};
 use crate::frozen::state::{FrozenState, TOPIC_LEFT_FREEZE, TOPIC_RIGHT_FREEZE};
 use crate::health::{self, Health, HealthRegistry};
 use crate::led::{IS31FL3194Config, IS31FL3194Controller, LedPattern};
@@ -118,15 +118,17 @@ pub async fn run(
     let mut freeze_params = FreezeParams::from(&cfg.freeze_protection);
     drop(cfg);
     // Water-loop freeze guard (#186): ramps cooling setpoints, detects an
-    // iced heat exchanger and forces a thaw. Runs on every setpoint tick.
+    // iced heat exchanger and pauses cooling to thaw it. Runs on every
+    // setpoint tick.
     let mut freeze = FreezeGuard::default();
     let mut freeze_shown = [FreezeStatus::default(); 2];
     if freeze_params.enabled {
         log::info!(
-            "Freeze guard on: cooling ramp {:.2}°C, detect +{:.2}°C over {} min, thaw {} min",
+            "Freeze guard on: cooling ramp {:.2}°C, detect +{:.2}°C over {} min held {} min, thaw {} min",
             freeze_params.max_cooling_error as f64 / 100.0,
             freeze_params.detect_rise as f64 / 100.0,
             freeze_params.detect_window.as_secs() / 60,
+            freeze_params.detect_hold.as_secs() / 60,
             freeze_params.thaw.as_secs() / 60,
         );
     } else {
@@ -440,7 +442,8 @@ fn f_to_centi_c(f: i32) -> u16 {
 /// SetTargetTemperature it actually sent (never in dry-run), so the caller can
 /// register a [`ManualOverride`]. The returned target is what the user
 /// *wants*; the frame carries what the freeze guard allows right now (ramped,
-/// or off during a thaw) — the override must hold the wanted value so the
+/// or held above the water during a thaw) — the override must hold the wanted
+/// value so the
 /// ramp keeps converging on it from the scheduler tick.
 async fn handle_command(
     writer: &mut Writer,
@@ -514,12 +517,16 @@ async fn handle_command(
     }
 }
 
-/// Latest water temperature (centi-°C) for `side`, if telemetry has arrived.
-fn water_temp(state: &FrozenState, side: BedSide) -> Option<u16> {
-    state.temp.as_ref().map(|t| match side {
-        BedSide::Left => t.left_temp,
-        BedSide::Right => t.right_temp,
-    })
+/// Latest temperatures (centi-°C) the freeze guard reads for `side`, if
+/// telemetry has arrived.
+fn readings(state: &FrozenState, side: BedSide) -> Readings {
+    Readings {
+        water: state.temp.as_ref().map(|t| match side {
+            BedSide::Left => t.left_temp,
+            BedSide::Right => t.right_temp,
+        }),
+        heatsink: state.temp.as_ref().map(|t| t.heatsink_temp),
+    }
 }
 
 /// Run a wanted target through the freeze guard, logging when the guard
@@ -534,14 +541,14 @@ fn guarded(
     let effective = freeze.effective(
         side,
         wanted.clone(),
-        water_temp(state, side),
+        readings(state, side),
         Instant::now(),
         params,
     );
-    if wanted.enabled && !effective.enabled {
+    if freeze.status(side).thawing && effective != wanted {
         log::warn!(
             "Manual target on {side:?} accepted, but the side is thawing a frozen heat exchanger — \
-             it stays off until the thaw ends, then ramps to {}",
+             cooling stays paused until the thaw ends, then ramps to {}",
             wanted.temp
         );
     }
@@ -716,7 +723,7 @@ fn get_next_command(
     // Per side: the schedule's target, unless a live manual override holds —
     // then through the freeze guard, which may ramp it or force a thaw. The
     // guard's answer is what gets compared against the MCU's echo below, so
-    // a thaw's off frame is re-sent until the firmware confirms it.
+    // a thaw's hold frame is re-sent until the firmware confirms it.
     let mut wanted_for = |side: BedSide| -> FrozenTarget {
         let wanted = scheduled_target(
             side,
@@ -728,7 +735,7 @@ fn get_next_command(
             &now_zoned,
         );
         let wanted = resolve_target(overrides.side_mut(&side), wanted, side, now);
-        freeze.effective(side, wanted, water_temp(state, side), now, freeze_params)
+        freeze.effective(side, wanted, readings(state, side), now, freeze_params)
     };
 
     if now.duration_since(timers.last_left_temp) > TEMP_INT {

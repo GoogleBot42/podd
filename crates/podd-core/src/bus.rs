@@ -49,8 +49,9 @@ pub struct SideSnapshot {
     /// Seconds remaining on the current session (0 = unknown/none; not yet
     /// tracked by the Frozen firmware, reserved for the scheduler).
     pub seconds_remaining: i64,
-    /// The freeze guard (#186) has forced this side off to thaw an iced heat
-    /// exchanger; cooling resumes by itself when the thaw ends.
+    /// The freeze guard (#186) has paused cooling on this side (still on,
+    /// setpoint held above the water) to thaw an iced heat exchanger; cooling
+    /// resumes by itself when the thaw ends.
     pub is_thawing: bool,
     /// Freezes the guard has detected on this side since podd started.
     pub freeze_count: u32,

@@ -110,12 +110,18 @@ the scheduler tick and live UI commands, and runs continuously:
 - **Prevention** — cooling setpoints are ramped: the effective target is never
   more than `max_cooling_error_c` (1.5 °C) below the current water and steps
   down only as the water follows. It never steps *up* with a rising water.
-- **Detection** — while cooling is demanded (target ≥ 0.5 °C below water), a
-  sustained rise of `detect_rise_c` (1.0 °C) above the water's low over the
-  last `detect_window_s` (30 min) means the exchanger is frozen.
-- **Recovery** — the side is forced off for `thaw_s` (15 min), logged at
-  error level, then the ramp brings it back toward the wanted target. The
-  compare-and-resend loop retries the off frame until the MCU echoes it.
+- **Detection** — while cooling is demanded (target ≥ 0.5 °C below water), the
+  water sitting `detect_rise_c` (1.0 °C) above its low of the last
+  `detect_window_s` (30 min) for a full `detect_hold_s` (10 min) without
+  starting back down means the exchanger is frozen. A rise alone does not:
+  someone getting into bed lifts the loop 1–3 °C within minutes and a working
+  TEC pulls it back over the next ~20.
+- **Recovery** — cooling is paused for `thaw_s` (3 min), logged at error
+  level: the side stays on, so the pump keeps circulating, with the setpoint
+  held ~0.5 °C above the water. Then the ramp brings it back toward the wanted
+  target. The compare-and-resend loop retries the hold frame until the MCU
+  echoes it. (Switching the side off instead stops the pump, and the water
+  parked under the sleeper comes back as a warm slug that reads as a freeze.)
 
 Status: `SideSnapshot.is_thawing` / `freeze_count` → `deviceStatus.<side>.isThawing`
 (UI notice on the Control page), retained MQTT `opensleep/state/frozen/{left,right}_freeze`
