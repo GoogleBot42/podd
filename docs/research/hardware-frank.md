@@ -168,6 +168,34 @@ Frozen MCU drives the hydraulic + thermal loop. Command/target strings:
 - Generic command channel: `[frozen] -> %s` (692),
   `[frozen] wrong state %d dropped cmd 0x%x` (674).
 
+### Live Frozen debug lines (Pod 3 hub, podd, 2026-10-02)
+
+The Frozen firmware emits these `0x07` ASCII lines unprompted; podd republishes
+them verbatim on MQTT `opensleep/state/frozen/fw_log` (PR #194).
+
+| Line | Cadence | Reading |
+|---|---|---|
+| `pump[left] slow @ 1.64V 0.18A` (and `right`) | 10 s | OBSERVED: always `slow`, ~1.4–1.6 V, 0.14–0.19 A with a side on. |
+| `[top-fan] 0.19 @ 354 rpm`, `[bottom-fan] 0.39 @ 684 rpm` | 10 s | duty, tach. Top fan stops (0 rpm) at duty ≤ 0.14. |
+| `[solenoid]` / `[float_valve] solenoid_current @ A` | 20 s | |
+| `pid[left] 30.875 0.378 0.0675 0.310 0.000` (and `right`) | 5 min | INFERRED `input out P I D`: input = that side's water °C; P = 0.3 × (target − water) held on six samples; out = P + I + D. **Positive = heat, negative = cool.** |
+| `pid[heatsink] 9.75 -0.094 0.025 -0.113 -0.006` | 5 min | input UNKNOWN (not the heatsink °C, which read 25.3). |
+| `[temps] 0 reads failed out of 1200`, `[stats] avg:1ms …` | 5 min / 1 min | |
+| `command set_side right enabled (2556)` | per setpoint | echo of podd's `SetTargetTemperature`. |
+
+Consequences seen in the same capture:
+- The integral term carries most of the drive (right side: 0.38 °C above
+  target, P −0.11, I −0.30). After a heat-up it is still wound positive, so
+  the firmware keeps *heating* while the water is already ~1 °C over target
+  (`pid[left] 32.06 → out +0.087` against a 31.10 target). That overshoot,
+  not ice, is what the first freeze guard tripped on.
+- The heatsink probe stays within 24.7–25.4 °C through off / heating /
+  cooling at these loads, so "heatsink flat" (issue #186) says nothing.
+- The four-probe `0xC1` frame is not sent unprompted; it answers
+  `GetTemperatures` (`0x41`), which podd polls every 30 s. Probe 4 is
+  published as `opensleep/state/frozen/probe4_temp`; what it measures is
+  UNKNOWN.
+
 ---
 
 ## 4. Sensors (`Sensor.cpp`, `sensor_timing.cpp`, `raw_*`)

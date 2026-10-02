@@ -185,6 +185,15 @@ mod tests {
     }
 
     #[test]
+    fn test_get_temperatures_frame_is_delimiter_free() {
+        // Fixed frame, polled every 30 s: a 0x7E in its CRC would get every
+        // poll silently dropped.
+        let frame = FrozenCommand::GetTemperatures.to_bytes();
+        assert_eq!(frame[..3], hex!("7E 01 41"));
+        assert!(!frame[1..].contains(&0x7E));
+    }
+
+    #[test]
     fn test_prime() {
         assert_eq!(
             FrozenCommand::Prime.to_bytes(),

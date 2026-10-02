@@ -9,8 +9,8 @@ use pod_proto::serial::DeviceMode;
 pub struct FrozenState {
     pub device_mode: DeviceMode,
     pub temp: Option<TemperatureUpdate>,
-    /// Latest `0xC1` four-probe frame. The firmware sends these unprompted
-    /// (seen live 2026-07-18); it is the only source of the hub's fourth
+    /// Latest `0xC1` four-probe frame, the reply to the manager's
+    /// `GetTemperatures` poll. It is the only source of the hub's fourth
     /// probe, which [`TemperatureUpdate`] omits.
     pub probes: Option<GetTemperature>,
     pub left_target: Option<FrozenTarget>,
@@ -27,11 +27,11 @@ const TOPIC_HWINFO: &str = "opensleep/state/frozen/hwinfo";
 pub(crate) const TOPIC_LEFT_TEMP: &str = "opensleep/state/frozen/left_temp";
 pub(crate) const TOPIC_RIGHT_TEMP: &str = "opensleep/state/frozen/right_temp";
 pub(crate) const TOPIC_HEATSINK_TEMP: &str = "opensleep/state/frozen/heatsink_temp";
-/// The hub's fourth temperature probe (index 3 of the `0xC1` frame).
-/// INFERRED to be the hub's ambient/intake air: it reads a few °C
-/// under the idle heatsink, and the firmware's `pid[heatsink]` input equals
-/// heatsink minus this probe in the one capture that has both.
-pub(crate) const TOPIC_HUB_AMBIENT_TEMP: &str = "opensleep/state/frozen/ambient_temp";
+/// The hub's fourth temperature probe (index 3 of the `0xC1` frame). What it
+/// measures is UNKNOWN: it read 2–5 °C under the water and heatsink in the
+/// two idle captures we have. Published so its behaviour under cooling can
+/// say whether it is ambient air or something on the cold side.
+pub(crate) const TOPIC_PROBE4_TEMP: &str = "opensleep/state/frozen/probe4_temp";
 /// The Frozen firmware's own debug lines (`pid[left] …`, `pump[left] slow @
 /// 6.03V 0.17A`, …), verbatim — the only view of TEC drive and pump current.
 const TOPIC_FW_LOG: &str = "opensleep/state/frozen/fw_log";
@@ -89,14 +89,14 @@ impl FrozenState {
             FrozenPacket::GetTemperature(g) => {
                 if self.probes.is_none() {
                     log::info!(
-                        "Hub temperature probes: left {}, right {}, ambient(?) {}, heatsink {} (centi-°C)",
+                        "Hub temperature probes: left {}, right {}, probe 4 {}, heatsink {} (centi-°C)",
                         g.left_temp,
                         g.right_temp,
                         g.unknown_temp,
                         g.heatsink_temp
                     );
                 }
-                publish_high_freq(client, TOPIC_HUB_AMBIENT_TEMP, g.unknown_temp.to_string());
+                publish_high_freq(client, TOPIC_PROBE4_TEMP, g.unknown_temp.to_string());
                 self.probes = Some(g);
             }
             FrozenPacket::TargetUpdate((side, u)) => {
