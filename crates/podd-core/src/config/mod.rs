@@ -213,8 +213,10 @@ pub struct FreezeProtectionConfig {
     /// the water starting back down is a frozen exchanger.
     pub detect_rise_c: f64,
     /// Detection: how long (seconds) the rise must last. Body heat from
-    /// someone getting into bed also lifts the water for a few minutes; a
-    /// working TEC has it falling again well inside this.
+    /// someone getting into bed also lifts the water, and the firmware's
+    /// integral-heavy PID needs about ten minutes to wind up enough cooling
+    /// to turn it (2026-10-02: +3 °C, a 9-minute plateau, then −0.36 °C/min),
+    /// so the hold has to be comfortably longer than that.
     pub detect_hold_s: u64,
     /// Recovery: how long (seconds) cooling is paused to thaw — side on,
     /// pump running, setpoint held just above the water — before cooling
@@ -227,9 +229,9 @@ impl Default for FreezeProtectionConfig {
         Self {
             enabled: true,
             max_cooling_error_c: 1.5,
-            detect_window_s: 1800,
+            detect_window_s: 3600,
             detect_rise_c: 1.0,
-            detect_hold_s: 600,
+            detect_hold_s: 1200,
             thaw_s: 180,
         }
     }

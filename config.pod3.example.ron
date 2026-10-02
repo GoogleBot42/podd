@@ -140,9 +140,9 @@
     // freeze_protection: (
     //     enabled: true,
     //     max_cooling_error_c: 1.5,  // target never more than this below the water
-    //     detect_window_s: 1800,     // look back this far for the water's low
+    //     detect_window_s: 3600,     // look back this far for the water's low
     //     detect_rise_c: 1.0,        // rise above that low...
-    //     detect_hold_s: 600,        // ...lasting this long, not recovering = frozen
+    //     detect_hold_s: 1200,       // ...lasting this long, not recovering = frozen
     //     thaw_s: 180,               // cooling paused (pump on) before resuming
     // ),
 )

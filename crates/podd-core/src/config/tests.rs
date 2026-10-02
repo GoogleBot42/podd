@@ -225,9 +225,9 @@ fn freeze_protection_partial_block_fills_defaults() {
     assert!(fp.enabled);
     assert_eq!(fp.thaw_s, 600);
     assert_eq!(fp.max_cooling_error_c, 1.5);
-    assert_eq!(fp.detect_window_s, 1800);
+    assert_eq!(fp.detect_window_s, 3600);
     assert_eq!(fp.detect_rise_c, 1.0);
-    assert_eq!(fp.detect_hold_s, 600);
+    assert_eq!(fp.detect_hold_s, 1200);
     let off = parse_freeze("(enabled: false)");
     assert!(!off.enabled);
 }
