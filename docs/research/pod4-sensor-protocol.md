@@ -267,7 +267,7 @@ re-sending every 800 ms forever:
 |---|---|---|
 | `EnableVibration` (0x??→ack 0xAE) | 3-byte ack | usually **no ack**; a 2-byte `AE xx` was seen once (parser now accepts both). podd assumes enabled after the attempt cap so alarms can still arm. |
 | `GetHardwareInfo` | CBOR ack | **no reply observed** |
-| `ProbeTemperature` (0x2F→0xAF) | 0xAF temp reply | **no reply observed** (bed temps come via the stream) |
+| `ProbeTemperature` (0x2F→0xAF) | 0xAF temp reply | **works** once the MCU is out of its post-reset deaf minute (2026-10-02: 9 replies to 10 probes — six bed zones 25.8–36.2 °C, ambient 25.9 °C). Earlier "no reply" runs only ever probed inside that minute. podd polls it every 4 s, uncapped. |
 | `SetPiezoFreq` | ack + applied | moot — G0 samples at fixed 500 Hz, reported in the 0x34 header; podd treats 500 as healthy |
 | `SetPiezoGain` (0x2B→0xAB) | ack `AB 00 hi lo hi lo` | **works** (ack parses, gain 400→405 within tolerance) |
 | `Ping` (0x01→0x81) | Pong | **works** (firmware mode byte2 = 0x46) |

@@ -581,9 +581,14 @@ impl CommandScheduler {
                 },
                 RegisteredCommand {
                     name: "probe_temperature",
-                    // EXPERIMENT(pod4-wedge): ProbeTemperature is a Pod 3 command;
-                    // capped to test whether it wedges the Pod 4 G0 firmware.
-                    max_attempts: Some(10),
+                    // A telemetry poll, so uncapped: the Pod 4 G0 firmware
+                    // answers it (bed thermistors + ambient + humidity) once
+                    // it is out of its post-reset deaf minute. It was capped
+                    // at 10 to test whether it wedges the G0; the cap spent
+                    // itself inside that minute and left bed temperatures
+                    // dark for the rest of every run. If polling does provoke
+                    // a wedge, `supervise` recovers it.
+                    max_attempts: None,
                     attempts: 0,
                     interval: Duration::from_secs(4),
                     // stagger
