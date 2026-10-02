@@ -24,6 +24,10 @@ use tokio_util::codec::Framed;
 
 const HWINFO_INT: Duration = Duration::from_secs(1);
 const TEMP_INT: Duration = Duration::from_secs(10);
+/// How often to ask for the four-probe `0xC1` frame. The temperature stream
+/// leaves the hub's fourth probe out and this firmware does not send the
+/// frame unprompted (2026-10-02); the stock stack polls it the same way.
+const PROBE_INT: Duration = Duration::from_secs(30);
 const MAX_WAKE_ATTEMPTS: u32 = 5;
 /// How long a sent Prime may go unconfirmed (no `PrimingStarted` ack, no
 /// `[priming] start` message) before it is resent. Generous: the ack is
@@ -41,6 +45,7 @@ struct CommandTimers {
     last_hwinfo: Instant,
     last_left_temp: Instant,
     last_right_temp: Instant,
+    last_probe: Instant,
     last_prime: Instant,
 }
 
@@ -761,6 +766,13 @@ fn get_next_command(
         }
     }
 
+    // Read-only, and after the setpoints: a probe never delays an actuation
+    // frame.
+    if now.duration_since(timers.last_probe) > PROBE_INT {
+        timers.last_probe = now;
+        return Some(FrozenCommand::GetTemperatures);
+    }
+
     let now_local = now_zoned.time();
 
     if should_prime(
@@ -960,6 +972,7 @@ impl Default for CommandTimers {
             last_hwinfo: now,
             last_left_temp: ago,
             last_right_temp: ago,
+            last_probe: ago,
             last_prime: ago,
         }
     }
