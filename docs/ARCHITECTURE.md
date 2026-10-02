@@ -112,10 +112,11 @@ the scheduler tick and live UI commands, and runs continuously:
   down only as the water follows. It never steps *up* with a rising water.
 - **Detection** — while cooling is demanded (target ≥ 0.5 °C below water), the
   water sitting `detect_rise_c` (1.0 °C) above its low of the last
-  `detect_window_s` (30 min) for a full `detect_hold_s` (10 min) without
+  `detect_window_s` (60 min) for a full `detect_hold_s` (20 min) without
   starting back down means the exchanger is frozen. A rise alone does not:
-  someone getting into bed lifts the loop 1–3 °C within minutes and a working
-  TEC pulls it back over the next ~20.
+  someone getting into bed lifts the loop 1–3 °C within minutes, the
+  firmware's integral-heavy PID takes ~10 min to wind up enough cooling to
+  turn it, and the water is back at target ~20 min after it started.
 - **Recovery** — cooling is paused for `thaw_s` (3 min), logged at error
   level: the side stays on, so the pump keeps circulating, with the setpoint
   held ~0.5 °C above the water. Then the ramp brings it back toward the wanted

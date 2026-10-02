@@ -21,9 +21,11 @@
 //!   sits [`FreezeParams::detect_rise`] above the minimum seen in the last
 //!   [`FreezeParams::detect_window`] for a whole [`FreezeParams::detect_hold`]
 //!   without starting back down. A rise alone is not a freeze — someone
-//!   getting into bed puts 1–3 °C into the loop within minutes and a working
-//!   TEC then pulls it back out; the first version of this guard (60 s
-//!   confirmation) took every one of those for ice, 55 times in three nights.
+//!   getting into bed puts 1–3 °C into the loop within minutes, and the
+//!   firmware's integral-heavy PID takes about ten more to wind up enough
+//!   cooling to pull it back out (docs/research/hardware-frank.md §3); the
+//!   first version of this guard (60 s confirmation) took every one of those
+//!   for ice, 55 times in three nights.
 //!   Runs on every tick, so a freeze that develops hours into a steady hold
 //!   is caught too.
 //! * **Recovery** — for [`FreezeParams::thaw`] the side stays *on* with its
@@ -439,7 +441,7 @@ mod tests {
     /// Drive `side` into a thaw (cooling toward 25.56 with the water climbing
     /// from 31.00); returns the time of the tick that detected the freeze.
     fn freeze(g: &mut FreezeGuard, side: BedSide, t0: Instant, p: &FreezeParams) -> Instant {
-        for (i, w) in rising(3100, 100).into_iter().enumerate() {
+        for (i, w) in rising(3100, 160).into_iter().enumerate() {
             let now = t0 + S * 10 * i as u32;
             g.effective(side, on(2556), water(w), now, p);
             if g.status(side).thawing {
@@ -454,8 +456,8 @@ mod tests {
         let p = FreezeParams::from(&FreezeProtectionConfig::default());
         assert_eq!(p.max_cooling_error, 150);
         assert_eq!(p.detect_rise, 100);
-        assert_eq!(p.detect_window, Duration::from_secs(1800));
-        assert_eq!(p.detect_hold, Duration::from_secs(600));
+        assert_eq!(p.detect_window, Duration::from_secs(3600));
+        assert_eq!(p.detect_hold, Duration::from_secs(1200));
         assert_eq!(p.thaw, Duration::from_secs(180));
         // a nonsense config can't disable detection through the numbers
         let silly = FreezeProtectionConfig {
@@ -477,7 +479,7 @@ mod tests {
             detect_window_s: 300,
             ..Default::default()
         };
-        assert_eq!(FreezeParams::from(&short_window).detect_window, Duration::from_secs(1200));
+        assert_eq!(FreezeParams::from(&short_window).detect_window, Duration::from_secs(2400));
     }
 
     #[test]
@@ -582,12 +584,12 @@ mod tests {
         assert!(held.iter().all(|e| *e == wanted));
         // then the freeze
         let t1 = t0 + S * 300;
-        let temps = rising(2556, 100);
+        let temps = rising(2556, 160);
         let out = drive(&mut g, BedSide::Right, &wanted, t1, S * 10, &temps, &p);
         let first = out.iter().position(|e| *e != wanted).expect("freeze must be detected");
         // demand starts at +0.5 C (sample 10); a rise of 1.0 above that low is
-        // sample 30; it has lasted the 10-minute hold by sample ~90
-        assert!((85..=95).contains(&first), "detected at sample {first}");
+        // sample 30; it has lasted the 20-minute hold by sample ~150
+        assert!((145..=155).contains(&first), "detected at sample {first}");
         let st = g.status(BedSide::Right);
         assert!(st.thawing);
         assert_eq!(st.freeze_count, 1);
@@ -616,11 +618,11 @@ mod tests {
         let mut g = FreezeGuard::default();
         let p = params();
         let t0 = Instant::now();
-        let out = drive(&mut g, BedSide::Right, &on(2556), t0, S * 10, &rising(3100, 100), &p);
+        let out = drive(&mut g, BedSide::Right, &on(2556), t0, S * 10, &rising(3100, 160), &p);
         let first = out.iter().position(|e| e.temp > 3100).expect("freeze must be detected");
         // ramp floor sits 1.5 below the water from sample 0, so demand is
-        // immediate; 1.0 rise = sample 20, held ten minutes by sample ~80
-        assert!((75..=85).contains(&first), "detected at sample {first}");
+        // immediate; 1.0 rise = sample 20, held twenty minutes by sample ~140
+        assert!((135..=145).contains(&first), "detected at sample {first}");
     }
 
     #[test]
@@ -630,7 +632,7 @@ mod tests {
         let mut g = FreezeGuard::default();
         let p = params();
         let mut temps = rising(2606, 30);
-        temps.extend(std::iter::repeat_n(2756, 90));
+        temps.extend(std::iter::repeat_n(2756, 150));
         drive(&mut g, BedSide::Left, &on(2556), Instant::now(), S * 10, &temps, &p);
         assert_eq!(g.status(BedSide::Left).freeze_count, 1);
     }
@@ -645,6 +647,26 @@ mod tests {
         let wanted = on(3110);
         let mut temps: Vec<u16> = (0..36).map(|i| 3110 + i * 6).collect(); // +2.1 C in 6 min
         temps.extend((0..120).map(|i| 3320 - i * 2).take_while(|t| *t >= 3110)); // -0.12 C/min
+        temps.extend(std::iter::repeat_n(3110, 60));
+        let out = drive(&mut g, BedSide::Left, &wanted, Instant::now(), S * 10, &temps, &p);
+        assert!(out.iter().all(|e| *e == wanted), "cooling must not be interrupted");
+        assert_eq!(g.status(BedSide::Left), FreezeStatus::default());
+    }
+
+    #[test]
+    fn a_sustained_load_the_firmware_takes_ten_minutes_to_turn_is_not_a_freeze() {
+        // 2026-10-02 06:46 Denver, left side at 88 F: +1.6 C in two minutes,
+        // creeping to +3.0 C and sitting there until the firmware's PID had
+        // wound up (9 min after the rise began), then -0.36 C/min. It
+        // cleared a 10-minute hold by 25 s; this is the same shape with the
+        // stall stretched to 15 minutes.
+        let mut g = FreezeGuard::default();
+        let p = params();
+        let wanted = on(3110);
+        let mut temps: Vec<u16> = (0..12).map(|i| 3075 + i * 15).collect(); // to 32.55
+        temps.extend((0..36).map(|i| 3255 + i * 2)); // creep to 33.37 over 6 min
+        temps.extend(std::iter::repeat_n(3337, 40)); // plateau
+        temps.extend((0..40).map(|i| 3337 - i * 6).take_while(|t| *t >= 3110));
         temps.extend(std::iter::repeat_n(3110, 60));
         let out = drive(&mut g, BedSide::Left, &wanted, Instant::now(), S * 10, &temps, &p);
         assert!(out.iter().all(|e| *e == wanted), "cooling must not be interrupted");
