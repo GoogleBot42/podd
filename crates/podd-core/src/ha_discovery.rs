@@ -62,7 +62,7 @@ fn presence_sensor(node: &str, device: &Value, object: &str, name: &str, state_t
     )
 }
 
-/// Freeze-guard problem sensor: on while the side is forced off to thaw an
+/// Freeze-guard problem sensor: on while the side has cooling paused to thaw an
 /// iced heat exchanger (payloads `"thawing"` / `"ok"`, retained by the
 /// Frozen manager).
 fn freeze_sensor(node: &str, device: &Value, object: &str, name: &str, state_topic: &str) -> DiscoveryMsg {

@@ -192,8 +192,8 @@ pub enum SidesConfig {
 /// The Frozen MCU's PID runs the TEC unbounded: with a target well below the
 /// water temperature the cold plate drops under 0 °C and the heat exchanger
 /// ices over. Water then stops flowing past the plate, the loop warms up while
-/// the MCU keeps "cooling", and the side never recovers until the TEC is
-/// switched off long enough to thaw. It has happened at steady state in the
+/// the MCU keeps "cooling", and the side never recovers until the TEC stops
+/// cooling long enough to thaw. It has happened at steady state in the
 /// middle of the night, so the guard runs continuously, not just on setpoint
 /// changes. Every field has a default; an absent section enables the guard
 /// with those defaults. `enabled: false` turns the whole guard off.
@@ -208,11 +208,17 @@ pub struct FreezeProtectionConfig {
     /// Detection: how far back (seconds) to look for the water's minimum
     /// while cooling is demanded.
     pub detect_window_s: u64,
-    /// Detection: a sustained rise (°C) of the water above that minimum,
-    /// while the target is still below the water, is a frozen exchanger.
+    /// Detection: a rise (°C) of the water above that minimum, while the
+    /// target is still below the water, that lasts `detect_hold_s` without
+    /// the water starting back down is a frozen exchanger.
     pub detect_rise_c: f64,
-    /// Recovery: how long (seconds) the side is forced off to thaw before
-    /// cooling resumes through the ramp.
+    /// Detection: how long (seconds) the rise must last. Body heat from
+    /// someone getting into bed also lifts the water for a few minutes; a
+    /// working TEC has it falling again well inside this.
+    pub detect_hold_s: u64,
+    /// Recovery: how long (seconds) cooling is paused to thaw — side on,
+    /// pump running, setpoint held just above the water — before cooling
+    /// resumes through the ramp.
     pub thaw_s: u64,
 }
 
@@ -223,7 +229,8 @@ impl Default for FreezeProtectionConfig {
             max_cooling_error_c: 1.5,
             detect_window_s: 1800,
             detect_rise_c: 1.0,
-            thaw_s: 900,
+            detect_hold_s: 600,
+            thaw_s: 180,
         }
     }
 }

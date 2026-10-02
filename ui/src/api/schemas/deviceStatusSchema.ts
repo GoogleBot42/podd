@@ -11,7 +11,7 @@ const SideStatusSchema = z.object({
   secondsRemaining: z.number(),
   isOn: z.boolean(),
   isAlarmVibrating: z.boolean(),
-  // podd extension: the freeze guard has this side off to thaw an iced heat
+  // podd extension: the freeze guard has paused cooling on this side to thaw an iced heat
   // exchanger; it resumes on its own. Optional so older backends still parse.
   isThawing: z.boolean().optional(),
   taps: z.object({
