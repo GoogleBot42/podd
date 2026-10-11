@@ -251,6 +251,16 @@ repo, not only in on-device comments.
   the newest one or two `*.pre-*` backups per artifact (older ones are
   reproducible Nix builds of commits in git — rebuild, don't hoard). The
   OTA release dirs (`updates/releases/*`) are the real rollback targets.
+- **On a flaky WiFi link, run the swap detached and never blind-retry it.**
+  On 2026-10-11 (bad AP, SSH dropping every few seconds) a dropped session
+  can leave podd stopped mid-swap. Run the install + restart on-device under
+  `nohup sh -c "install … && systemctl restart podd" &`. A retry wrapper
+  re-ran the swap after a drop and failed on the missing `podd.new`, because
+  the first attempt had already succeeded. After any drop, check `sha256sum`
+  and `ActiveEnterTimestamp` instead of re-running. scp still lands intact
+  (verify the sha); long on-device greps over the 48 MB journal do not
+  survive, so write them to `/tmp` on-device and read the result back in a
+  separate short call.
 - **Concurrent sessions deploy too.** More than one agent session can be
   working this repo at once, and deploys have landed minutes apart
   (2026-08-16: two deploys 03:24:57 and 03:26:52 UTC). After your swap,
