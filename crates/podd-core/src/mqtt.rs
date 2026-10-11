@@ -10,7 +10,11 @@ use crate::{
 use rumqttc::{
     AsyncClient, ConnectionError, Event, EventLoop, LastWill, MqttOptions, Packet, Publish, QoS,
 };
-use std::{fmt::Display, sync::Arc, time::Duration};
+use std::{
+    fmt::Display,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 use tokio::{
     sync::{mpsc, watch},
     time::{sleep, timeout},
@@ -161,6 +165,9 @@ impl MqttManager {
                 self.health
                     .report(health::MQTT, Health::Healthy, "connected to broker");
                 self.reconnect_attempts = 0;
+                if let Some(line) = DROPPED.on_connected() {
+                    log::warn!("{line}");
+                }
                 self.spawn_new_conn_task().await;
                 return Ok(true);
             }
@@ -388,7 +395,7 @@ where
     V: Into<Vec<u8>>,
 {
     if let Err(e) = client.try_publish(topic.clone(), QoS::AtMostOnce, false, payload) {
-        log::error!("Error publishing to {topic}: {e}",);
+        DROPPED.record(&topic, &e, Instant::now());
     }
 }
 
@@ -401,7 +408,69 @@ where
     V: Into<Vec<u8>>,
 {
     if let Err(e) = client.try_publish(topic.clone(), QoS::AtMostOnce, true, payload) {
-        log::error!("Error publishing to {topic}: {e}",);
+        DROPPED.record(&topic, &e, Instant::now());
+    }
+}
+
+/// Drop reporting for the fire-and-forget publishers above. While the broker
+/// is unreachable the request channel fills and *every* telemetry publish
+/// fails — a dozen topics, several times a second. Logging each one ran at
+/// journald's per-service rate limit and rotated the whole 48 MB journal in
+/// about an hour of WiFi trouble, erasing the night before it (Jeremy's Pod,
+/// 2026-10-11: the logs of a 10-05 bed incident were gone). Log the first
+/// drop of an outage, then one summary per [`DROP_LOG_INTERVAL`].
+struct DropLog(Mutex<DropState>);
+
+#[derive(Default)]
+struct DropState {
+    /// Start of the current summary interval; `None` until the first drop.
+    since: Option<Instant>,
+    /// Drops not yet reported.
+    dropped: u64,
+}
+
+const DROP_LOG_INTERVAL: Duration = Duration::from_secs(600);
+
+static DROPPED: DropLog = DropLog(Mutex::new(DropState {
+    since: None,
+    dropped: 0,
+}));
+
+impl DropLog {
+    fn record(&self, topic: &dyn Display, e: &dyn Display, now: Instant) {
+        if let Some(line) = self.on_drop(topic, e, now) {
+            log::error!("{line}");
+        }
+    }
+
+    /// The line to log for this drop, if any.
+    fn on_drop(&self, topic: &dyn Display, e: &dyn Display, now: Instant) -> Option<String> {
+        let mut st = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(since) = st.since else {
+            st.since = Some(now);
+            return Some(format!(
+                "Error publishing to {topic}: {e} (further drops summarised every {} min)",
+                DROP_LOG_INTERVAL.as_secs() / 60
+            ));
+        };
+        st.dropped += 1;
+        if now.duration_since(since) < DROP_LOG_INTERVAL {
+            return None;
+        }
+        let n = std::mem::take(&mut st.dropped);
+        st.since = Some(now);
+        Some(format!(
+            "Dropped {n} more MQTT publishes in {} min (latest {topic}: {e})",
+            DROP_LOG_INTERVAL.as_secs() / 60
+        ))
+    }
+
+    /// Broker reconnected: report what is pending and start fresh, so the
+    /// next outage's first drop is logged in full.
+    fn on_connected(&self) -> Option<String> {
+        let mut st = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let n = std::mem::take(&mut *st).dropped;
+        (n > 0).then(|| format!("Dropped {n} MQTT publishes while the broker was unreachable"))
     }
 }
 
@@ -447,5 +516,47 @@ mod backoff_tests {
         for n in 0..10_000 {
             assert!(reconnect_backoff(n) >= Duration::from_secs(1), "attempts={n}");
         }
+    }
+}
+
+#[cfg(test)]
+mod drop_log_tests {
+    use super::{DROP_LOG_INTERVAL, DropLog, DropState};
+    use std::{
+        sync::Mutex,
+        time::{Duration, Instant},
+    };
+
+    fn fresh() -> DropLog {
+        DropLog(Mutex::new(DropState::default()))
+    }
+
+    #[test]
+    fn an_outage_logs_its_first_drop_then_one_summary_per_interval() {
+        let log = fresh();
+        let t0 = Instant::now();
+        let at = |s| t0 + Duration::from_secs(s);
+        let lines: Vec<_> = (0..3600u64)
+            .filter_map(|s| log.on_drop(&"opensleep/state/x", &"full", at(s)))
+            .collect();
+        // one hour at one drop per second: the first, then one per 10 min
+        assert_eq!(lines.len(), 1 + 3600 / DROP_LOG_INTERVAL.as_secs() as usize - 1);
+        assert!(lines[0].starts_with("Error publishing to opensleep/state/x: full"));
+        assert!(lines[1].starts_with("Dropped 600 more"), "{}", lines[1]);
+    }
+
+    #[test]
+    fn reconnecting_reports_pending_drops_and_rearms_the_first_line() {
+        let log = fresh();
+        let t0 = Instant::now();
+        assert!(log.on_drop(&"a", &"e", t0).is_some());
+        assert!(log.on_drop(&"a", &"e", t0).is_none());
+        assert!(log.on_drop(&"a", &"e", t0).is_none());
+        assert_eq!(
+            log.on_connected().as_deref(),
+            Some("Dropped 2 MQTT publishes while the broker was unreachable")
+        );
+        assert!(log.on_connected().is_none());
+        assert!(log.on_drop(&"a", &"e", t0).unwrap().starts_with("Error publishing"));
     }
 }
