@@ -85,6 +85,10 @@ pub enum FrozenError {
     Serial(#[from] SerialError),
     #[error("Failed to wake up Frozen")]
     FailedToWake,
+    #[error("Frozen MCU silent for {0}s")]
+    Silent(u64),
+    #[error("Frozen MCU ignored the {0:?} setpoint for {1}s")]
+    SetpointIgnored(BedSide, u64),
 }
 
 type Writer = SplitSink<Framed<SerialStream, PacketCodec<FrozenPacket>>, FrozenCommand>;
@@ -170,11 +174,13 @@ pub async fn run(
     let mut overrides = ManualOverrides::default();
     // In-flight Prime awaiting firmware confirmation (#9).
     let mut prime_verify: Option<PrimeVerify> = None;
+    let mut watch = FrozenWatch::new(Instant::now());
 
     loop {
         tokio::select! {
             Some(result) = reader.next() => match result {
                 Ok(packet) => {
+                    watch.on_packet(Instant::now());
                     state.handle_packet(&mut client, packet).await;
                     publish_frozen(&status, &state);
 
@@ -205,6 +211,16 @@ pub async fn run(
             // sends commands separated by 20ms
             // before sending any commands, wakes the device by sending ping + jump fw
             _ = interval.tick() => {
+                if let Some(e) = watch.verdict(Instant::now(), state.is_awake()) {
+                    log::error!("{e}; restarting podd to reset the cover MCU");
+                    health.report(
+                        health::COVER_CONTROL,
+                        Health::Failed,
+                        format!("{e}; restarting podd to reset it"),
+                    );
+                    break Err(e);
+                }
+
                 // A sent Prime must be confirmed by the firmware before we
                 // trust it — LSP frames drop silently (actuation-safety rule),
                 // and a missed daily prime would go unnoticed for a day.
@@ -247,6 +263,7 @@ pub async fn run(
                 &mut overrides,
                 &mut freeze,
                 &freeze_params,
+                &mut watch,
             ) {
                 let now = Instant::now();
 
@@ -713,8 +730,15 @@ fn get_next_command(
     overrides: &mut ManualOverrides,
     freeze: &mut FreezeGuard,
     freeze_params: &FreezeParams,
+    watch: &mut FrozenWatch,
 ) -> Option<FrozenCommand> {
     let now = Instant::now();
+    // Setpoints only go out to an awake MCU, and with the tank out the
+    // firmware may hold a side off on its own: neither is "ignoring" podd.
+    let track_setpoints = state.is_awake() && state.water_full;
+    if !track_setpoints {
+        watch.pause_setpoints();
+    }
 
     if state.hardware_info.is_none() && now.duration_since(timers.last_hwinfo) > HWINFO_INT {
         timers.last_hwinfo = now;
@@ -746,7 +770,11 @@ fn get_next_command(
     if now.duration_since(timers.last_left_temp) > TEMP_INT {
         let wanted_left = wanted_for(BedSide::Left);
         timers.last_left_temp = now;
-        if state.left_target.as_ref() != Some(&wanted_left) {
+        let confirmed = state.left_target.as_ref() == Some(&wanted_left);
+        if track_setpoints {
+            watch.setpoint(BedSide::Left, confirmed, now);
+        }
+        if !confirmed {
             return Some(FrozenCommand::SetTargetTemperature {
                 side: BedSide::Left,
                 tar: wanted_left,
@@ -757,8 +785,11 @@ fn get_next_command(
     if now.duration_since(timers.last_right_temp) > TEMP_INT {
         let wanted_right = wanted_for(BedSide::Right);
         timers.last_right_temp = now;
-
-        if state.right_target.as_ref() != Some(&wanted_right) {
+        let confirmed = state.right_target.as_ref() == Some(&wanted_right);
+        if track_setpoints {
+            watch.setpoint(BedSide::Right, confirmed, now);
+        }
+        if !confirmed {
             return Some(FrozenCommand::SetTargetTemperature {
                 side: BedSide::Right,
                 tar: wanted_right,
@@ -789,6 +820,72 @@ fn get_next_command(
     None
 }
 
+
+/// No frame at all from an awake Frozen MCU for this long means it has hung
+/// (or its UART has). It normally talks several times every 10 s: the
+/// temperature stream, the pump/fan debug lines, and the reply to the 30 s
+/// `GetTemperatures` poll.
+const SILENT_LIMIT: Duration = Duration::from_secs(120);
+/// A setpoint the firmware has not echoed back after this long — 30 resends
+/// at [`TEMP_INT`] — is being ignored, not dropped.
+const UNCONFIRMED_LIMIT: Duration = Duration::from_secs(300);
+
+/// Liveness watch on the Frozen MCU (2026-10-05 incident: the bed went far
+/// colder than set while the UI showed the old readings and ignored new
+/// targets, until a power cycle). Without it podd trusts an MCU that answered
+/// once for ever: the snapshot keeps the last temperatures, setpoints are
+/// resent into the void every 10 s, and the freeze guard reasons over stale
+/// water readings. The only known remedy for a hung MCU is the PCAL6416A
+/// reset pulse, which podd sends on startup — so a trip ends the Frozen task
+/// and systemd restarts podd. A reset MCU comes up with both sides off and
+/// takes its setpoints from the restarted scheduler.
+struct FrozenWatch {
+    last_rx: Instant,
+    /// Since when each side's echo has disagreed with the setpoint podd
+    /// wants (`[left, right]`).
+    unconfirmed: [Option<Instant>; 2],
+}
+
+impl FrozenWatch {
+    fn new(now: Instant) -> Self {
+        FrozenWatch {
+            last_rx: now,
+            unconfirmed: [None; 2],
+        }
+    }
+
+    fn on_packet(&mut self, now: Instant) {
+        self.last_rx = now;
+    }
+
+    /// Record whether `side`'s echoed target matches the one podd wants.
+    fn setpoint(&mut self, side: BedSide, confirmed: bool, now: Instant) {
+        let slot = &mut self.unconfirmed[side as usize];
+        *slot = match (confirmed, *slot) {
+            (true, _) => None,
+            (false, Some(since)) => Some(since),
+            (false, None) => Some(now),
+        };
+    }
+
+    /// Forget setpoint tracking while nothing is being sent (MCU asleep,
+    /// water tank out — the firmware may legitimately hold a side off).
+    fn pause_setpoints(&mut self) {
+        self.unconfirmed = [None; 2];
+    }
+
+    /// Why the MCU must be reset, if it must.
+    fn verdict(&self, now: Instant, awake: bool) -> Option<FrozenError> {
+        if awake && now.duration_since(self.last_rx) > SILENT_LIMIT {
+            return Some(FrozenError::Silent(now.duration_since(self.last_rx).as_secs()));
+        }
+        [BedSide::Left, BedSide::Right].into_iter().find_map(|side| {
+            let since = self.unconfirmed[side as usize]?;
+            (now.duration_since(since) > UNCONFIRMED_LIMIT)
+                .then(|| FrozenError::SetpointIgnored(side, now.duration_since(since).as_secs()))
+        })
+    }
+}
 /// A Prime that was actually written to the UART and is awaiting the
 /// firmware's confirmation ([`FrozenState::is_priming`]).
 struct PrimeVerify {
@@ -1565,5 +1662,79 @@ mod prime_verify_tests {
         let (v, now) = pending(MAX_PRIME_SENDS);
         let after = now + PRIME_CONFIRM_TIMEOUT + Duration::from_secs(1);
         assert_eq!(prime_verdict(&v, false, after), PrimeVerdict::GiveUp);
+    }
+}
+
+#[cfg(test)]
+mod watch_tests {
+    use super::*;
+
+    const S: Duration = Duration::from_secs(1);
+
+    #[test]
+    fn a_talking_mcu_is_never_reset() {
+        let t0 = Instant::now();
+        let mut w = FrozenWatch::new(t0);
+        for i in 0..3600 {
+            let now = t0 + S * i;
+            if i % 10 == 0 {
+                w.on_packet(now);
+            }
+            w.setpoint(BedSide::Left, true, now);
+            assert!(w.verdict(now, true).is_none(), "tripped at {i}s");
+        }
+    }
+
+    #[test]
+    fn an_awake_mcu_that_goes_silent_is_reset() {
+        let t0 = Instant::now();
+        let w = FrozenWatch::new(t0);
+        assert!(w.verdict(t0 + SILENT_LIMIT, true).is_none());
+        assert!(matches!(
+            w.verdict(t0 + SILENT_LIMIT + S, true),
+            Some(FrozenError::Silent(121))
+        ));
+        // asleep: the wake loop owns it (and escalates on its own)
+        assert!(w.verdict(t0 + SILENT_LIMIT * 10, false).is_none());
+    }
+
+    #[test]
+    fn a_setpoint_ignored_for_five_minutes_is_reset() {
+        let t0 = Instant::now();
+        let mut w = FrozenWatch::new(t0);
+        for i in (0..=UNCONFIRMED_LIMIT.as_secs() + 10).step_by(10) {
+            let now = t0 + S * i as u32;
+            w.on_packet(now);
+            w.setpoint(BedSide::Left, true, now);
+            w.setpoint(BedSide::Right, false, now);
+        }
+        let now = t0 + UNCONFIRMED_LIMIT + S * 10;
+        assert!(matches!(
+            w.verdict(now, true),
+            Some(FrozenError::SetpointIgnored(BedSide::Right, 310))
+        ));
+    }
+
+    #[test]
+    fn a_confirmation_restarts_the_clock() {
+        let t0 = Instant::now();
+        let mut w = FrozenWatch::new(t0);
+        w.setpoint(BedSide::Left, false, t0);
+        w.setpoint(BedSide::Left, true, t0 + UNCONFIRMED_LIMIT - S);
+        w.setpoint(BedSide::Left, false, t0 + UNCONFIRMED_LIMIT);
+        let now = t0 + UNCONFIRMED_LIMIT + S * 30;
+        w.on_packet(now);
+        assert!(w.verdict(now, true).is_none());
+    }
+
+    #[test]
+    fn pausing_forgets_pending_setpoints() {
+        let t0 = Instant::now();
+        let mut w = FrozenWatch::new(t0);
+        w.setpoint(BedSide::Left, false, t0);
+        w.pause_setpoints();
+        let now = t0 + UNCONFIRMED_LIMIT * 2;
+        w.on_packet(now);
+        assert!(w.verdict(now, true).is_none());
     }
 }
