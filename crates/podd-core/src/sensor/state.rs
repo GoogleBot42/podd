@@ -28,6 +28,8 @@ pub struct SensorState {
     /// (left, right). Stops the scheduler's out-of-window cancel from killing
     /// it seconds after it starts.
     pub manual_alarm_until: [Option<std::time::Instant>; 2],
+    /// Latest six bed-zone temperatures (centi-°C), ordered left to right.
+    pub bed_temp: Option<[u16; 6]>,
 }
 
 pub const PIEZO_GAIN: u16 = 400;
@@ -227,6 +229,7 @@ impl SensorState {
                 publish_high_freq(client, TOPIC_AMBIENT_TEMP, u.ambient.to_string());
                 publish_high_freq(client, TOPIC_HUMIDITY, u.humidity.to_string());
                 publish_high_freq(client, TOPIC_MCU_TEMP, u.microcontroller.to_string());
+                self.bed_temp = Some([u.bed[0], u.bed[1], u.bed[2], u.bed[3], u.bed[4], u.bed[5]]);
             }
             SensorPacket::Piezo(u) => {
                 let (enabled_changed, gain_changed, freq_changed);

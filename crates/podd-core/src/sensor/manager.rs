@@ -558,6 +558,13 @@ fn publish_sensor(status: &StatusTx, state: &SensorState, presence: &crate::sens
         }
         s.left.is_alarm_vibrating = state.alarm_left_running;
         s.right.is_alarm_vibrating = state.alarm_right_running;
+        if let Some(b) = state.bed_temp {
+            // Zones are ordered left to right; three per side (the split is
+            // an assumption — the cover check's periodic log line shows it).
+            let c = |v: u16| v as f64 / 100.0;
+            s.left.cover_temps_c = Some([c(b[0]), c(b[1]), c(b[2])]);
+            s.right.cover_temps_c = Some([c(b[3]), c(b[4]), c(b[5])]);
+        }
     });
 }
 
