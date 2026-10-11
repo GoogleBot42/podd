@@ -14,6 +14,7 @@ pub mod alarm;
 pub mod biometrics;
 pub mod bus;
 pub mod config;
+pub mod cover_check;
 pub mod frozen;
 pub mod ha_discovery;
 pub mod health;
@@ -768,6 +769,10 @@ async fn run_inner(
         mqtt_client.clone(),
         dry_run,
     ));
+
+    // Observe-only cross-check of the Frozen water probe against the cover's
+    // own bed-zone thermistors (see cover_check).
+    tokio::spawn(cover_check::run(status_tx.subscribe()));
 
     tokio::spawn(run_reboot_scheduler(
         config_rx.clone(),
