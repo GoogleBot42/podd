@@ -471,6 +471,10 @@ mod tests {
         // Dry-run: both succeed but must NOT record their versions — nothing
         // was flashed, so the update stays pending for check()/status (#39).
         let dry = make(true, true);
+        assert!(
+            dry.status().os_dry_run,
+            "status must report the OS dry-run gate"
+        );
         dry.apply(ComponentKind::Os).await.unwrap();
         dry.apply(ComponentKind::McuFrozen).await.unwrap();
         let layout = ReleaseLayout::new(paths.clone());
@@ -486,6 +490,10 @@ mod tests {
         // DryOsSlotWriter (no A/B hardware wired in tests); MCU because its
         // live flash path is still unimplemented.
         let live = make(false, false);
+        assert!(
+            !live.status().os_dry_run,
+            "status must report an armed OS apply"
+        );
         let os_err = live.apply(ComponentKind::Os).await.unwrap_err();
         assert!(
             os_err.to_string().contains("no A/B slot hardware"),

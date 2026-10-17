@@ -56,6 +56,10 @@ pub struct UpdateStatus {
     pub last_error: Option<String>,
     /// Human-readable summary of the last successful apply/rollback.
     pub last_applied: Option<String>,
+    /// Whether an OS-tier apply is a dry run (`PODD_UPDATER_OS_DRY_RUN`, on by
+    /// default): it verifies the artifact and logs the slot plan but writes
+    /// nothing. The UI shows this in the OS apply confirmation.
+    pub os_dry_run: bool,
 }
 
 impl UpdateStatus {
@@ -70,6 +74,7 @@ impl UpdateStatus {
             available: Vec::new(),
             last_error: None,
             last_applied: None,
+            os_dry_run: true,
         }
     }
 }

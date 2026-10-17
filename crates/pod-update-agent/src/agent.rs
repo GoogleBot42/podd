@@ -126,6 +126,7 @@ impl Updater {
     pub fn with_dry_run(mut self, os: bool, mcu: bool) -> Self {
         self.os_dry_run = os;
         self.mcu_dry_run = mcu;
+        self.set_status(|s| s.os_dry_run = os);
         self
     }
     /// Switch the agent off (as `PODD_UPDATER_ENABLED=false` does): no polling,
@@ -620,6 +621,7 @@ impl Updater {
             config.mode.as_str().into(),
         );
         status.current_versions = installed_versions(&layout);
+        status.os_dry_run = config.os_dry_run;
         let (status_tx, _) = watch::channel(status);
 
         let boot_env: Arc<dyn BootEnv> = Arc::new(FwEnv);

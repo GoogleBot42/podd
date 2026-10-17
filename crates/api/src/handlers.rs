@@ -673,16 +673,19 @@ pub async fn post_updates_check(State(app): State<AppState>) -> Response {
 
 /// `POST /api/updates/apply` — install the offered release for a tier.
 ///
-/// Only the Tier-2 app path is implemented: it verifies + stages the release,
-/// flips `current`, and restarts podd into it as a canary that must pass its
-/// health check or be rolled back automatically. Like rollback, the restart
-/// usually kills the connection before the response lands — the UI treats a
-/// dropped request as "restarting", and `GET /api/updates` is the truth
-/// afterwards.
+/// - **app** (the default): verifies + stages the release, flips `current`,
+///   and restarts podd into it as a canary that must pass its health check or
+///   be rolled back automatically. Like rollback, the restart usually kills
+///   the connection before the response lands — the UI treats a dropped
+///   request as "restarting", and `GET /api/updates` is the truth afterwards.
+/// - **os**: needs `"confirm": true` (an explicit opt-in until the OS-OTA
+///   hardware pass is done, #184). The agent verifies the image, writes the
+///   inactive A/B slot, reads it back and arms U-Boot's rollback — or only
+///   logs the plan under `PODD_UPDATER_OS_DRY_RUN` (the default). It never
+///   reboots; the new slot is tried on the next boot.
 ///
-/// Tier-1 (OS) and Tier-3 (MCU) live applies are still gated behind their
-/// dry-run defaults (issue #43), so naming them here answers `501` rather than
-/// half-doing something destructive.
+/// The MCU tiers and the bootloader answer `501` rather than half-doing
+/// something destructive.
 pub async fn post_updates_apply(
     State(app): State<AppState>,
     ApiJson(req): ApiJson<ApplyRequest>,
@@ -690,20 +693,39 @@ pub async fn post_updates_apply(
     let Some(updates) = app.updates.clone() else {
         return no_updater();
     };
-    if req.kind != UpdateTier::App {
-        return (
-            StatusCode::NOT_IMPLEMENTED,
-            format!(
-                "applying the {:?} tier from the API is not supported yet (issue #43); \
-                 only the app tier can be applied here",
-                req.kind
-            ),
-        )
-            .into_response();
-    }
-    log::warn!("applying the app update on API request; podd will restart into it");
-    match updates.apply_app().await {
-        // The agent restarts podd on success, so this body is best-effort.
+    let result = match req.kind {
+        UpdateTier::App => {
+            log::warn!("applying the app update on API request; podd will restart into it");
+            updates.apply_app().await
+        }
+        UpdateTier::Os => {
+            if !req.confirm {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "applying the OS tier writes the inactive boot slot; \
+                     resend with \"confirm\": true to proceed",
+                )
+                    .into_response();
+            }
+            log::warn!(
+                "applying the OS update on API request (os dry-run: {})",
+                updates.status().os_dry_run
+            );
+            updates.apply_os().await
+        }
+        other => {
+            return (
+                StatusCode::NOT_IMPLEMENTED,
+                format!(
+                    "applying the {other:?} tier from the API is not supported; \
+                     only the app and OS tiers can be applied here"
+                ),
+            )
+                .into_response();
+        }
+    };
+    match result {
+        // An app apply restarts podd on success, so this body is best-effort.
         Ok(()) => Json(updates.status()).into_response(),
         Err(e) => (StatusCode::CONFLICT, format!("update failed: {e}")).into_response(),
     }
