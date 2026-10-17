@@ -1,4 +1,5 @@
 pub mod freeze;
+pub mod fwlog;
 pub mod manager;
 pub mod state;
 
