@@ -186,7 +186,11 @@ repo, not only in on-device comments.
   alarm/setpoint write in the first minute actually landed. Don't call a
   test "passed" from journal output alone inside that window — wait it out,
   or look for the write being retried/confirmed rather than fire-and-forget
-  evidence.
+  evidence. On the Pod 4 cover, every restart is followed by "Sensor task
+  failed: Sensor not responding" ~60 s after "Connected", then ~1 min of
+  failed reconnects, then "Connected" again (~2 min total, seen identically
+  on 8991fab, 7c2662c and 51c8dec, 2026-10-17). That's expected, not a
+  regression from your build; only worry if it hasn't reconnected by ~5 min.
 - **`PODD_DRY_RUN` semantics can silently flip.** A fresh binary or a fresh
   config does not change the drop-in that overrides dry-run — but a fresh
   *systemd unit file* (if you ever deploy `install/podd.service` itself)
