@@ -171,7 +171,7 @@ mod tests {
         assert_eq!(v["right"]["guard"]["n"], 1);
         assert_eq!(v["heatsink"], 24.93);
         assert_eq!(v["fw"]["pump"]["right"]["mode"], "fast");
-        assert_eq!(v["fw"]["pump"]["right"]["a"], 0.4f32 as f64);
+        assert_eq!(v["fw"]["pump"]["right"]["a"], 0.4);
         assert!(state.fw.pump.is_empty(), "firmware lines are taken, not repeated");
         assert_eq!(period(&state, &guard, &p, now), BUSY_EVERY);
     }

@@ -15,6 +15,8 @@
 //! FW: [solenoid] solenoid_current @ 0.012435A
 //! FW: [stats] avg:1ms max:12ms min:0ms
 //! FW: temps 25.81 25.81 22.37 23.62
+//! FW: [temps] 0 reads failed out of 1200
+//! FW: tec[left] locked (pump)
 //! ```
 //!
 //! What the five `pid[...]` numbers mean is not documented; the second is
@@ -28,13 +30,17 @@ use serde::Serialize;
 /// One parsed firmware line.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FwLine {
-    Pid { name: String, terms: Vec<f32> },
+    Pid { name: String, terms: Vec<f64> },
     Pump(String, Pump),
     Fan(String, Fan),
     /// `[solenoid] solenoid_current @ …A`, `[float_valve] …` — amps.
-    Current(String, f32),
+    Current(String, f64),
     Stats(Stats),
-    Temps(Vec<f32>),
+    Temps(Vec<f64>),
+    /// `[temps] N reads failed out of M` — probe read failures.
+    TempReads { failed: u32, total: u32 },
+    /// `tec[left] locked (pump)` — the firmware's TEC interlock state.
+    Tec(String, String),
     /// Anything this parser does not know (including `[priming]` and the
     /// water-tank lines, which `FrozenState` handles itself).
     Other,
@@ -43,13 +49,13 @@ pub enum FwLine {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Pump {
     pub mode: String,
-    pub v: f32,
-    pub a: f32,
+    pub v: f64,
+    pub a: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Fan {
-    pub duty: f32,
+    pub duty: f64,
     pub rpm: u32,
 }
 
@@ -67,17 +73,24 @@ pub struct Stats {
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct FwTelemetry {
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub pid: BTreeMap<String, Vec<f32>>,
+    pub pid: BTreeMap<String, Vec<f64>>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub pump: BTreeMap<String, Pump>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub fan: BTreeMap<String, Fan>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub amps: BTreeMap<String, f32>,
+    pub amps: BTreeMap<String, f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stats: Option<Stats>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub temps: Option<Vec<f32>>,
+    pub temps: Option<Vec<f64>>,
+    /// `[failed, total]` probe reads.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temp_reads: Option<[u32; 2]>,
+    /// Per-side TEC interlock state (`locked (pump)`, …). Printed on change,
+    /// so it is sticky: [`take`](FwTelemetry::take) keeps it.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub tec: BTreeMap<String, String>,
     /// Lines folded in since the last take.
     pub lines: u32,
 }
@@ -101,6 +114,10 @@ impl FwTelemetry {
             }
             FwLine::Stats(s) => self.stats = Some(s),
             FwLine::Temps(t) => self.temps = Some(t),
+            FwLine::TempReads { failed, total } => self.temp_reads = Some([failed, total]),
+            FwLine::Tec(side, s) => {
+                self.tec.insert(side, s);
+            }
             FwLine::Other => return false,
         }
         true
@@ -109,7 +126,10 @@ impl FwTelemetry {
     /// Hand over what was collected and start empty, so a sample never
     /// repeats a value the firmware has stopped sending.
     pub fn take(&mut self) -> FwTelemetry {
-        std::mem::take(self)
+        let tec = self.tec.clone();
+        let out = std::mem::take(self);
+        self.tec = tec;
+        out
     }
 }
 
@@ -139,8 +159,18 @@ fn parse_body(body: &str) -> Option<FwLine> {
     if let Some(rest) = body.strip_prefix("temps ") {
         return Some(FwLine::Temps(floats(rest)?));
     }
+    if let Some(rest) = body.strip_prefix("tec[") {
+        let (side, state) = rest.split_once("] ")?;
+        return Some(FwLine::Tec(side.to_string(), state.trim().to_string()));
+    }
     let rest = body.strip_prefix('[')?;
     let (name, rest) = rest.split_once("] ")?;
+    if name == "temps" {
+        // 0 reads failed out of 1200
+        let (failed, total) = rest.split_once(" reads failed out of ")?;
+        let (failed, total) = (failed.trim().parse().ok()?, total.trim().parse().ok()?);
+        return Some(FwLine::TempReads { failed, total });
+    }
     if name == "stats" {
         // avg:1ms max:12ms min:0ms
         let mut ms = [0u32; 3];
@@ -161,8 +191,8 @@ fn parse_body(body: &str) -> Option<FwLine> {
     Some(FwLine::Current(name.to_string(), amps))
 }
 
-fn floats(s: &str) -> Option<Vec<f32>> {
-    let v: Option<Vec<f32>> = s.split_whitespace().map(|t| t.parse().ok()).collect();
+fn floats(s: &str) -> Option<Vec<f64>> {
+    let v: Option<Vec<f64>> = s.split_whitespace().map(|t| t.parse().ok()).collect();
     v.filter(|v| !v.is_empty())
 }
 
@@ -222,6 +252,26 @@ mod tests {
             parse("FW: temps 25.81 25.81 22.37 23.62"),
             FwLine::Temps(vec![25.81, 25.81, 22.37, 23.62])
         );
+    }
+
+    #[test]
+    fn tec_interlock_and_probe_reads() {
+        assert_eq!(
+            parse("FW: tec[right] locked (pump)"),
+            FwLine::Tec("right".into(), "locked (pump)".into())
+        );
+        assert_eq!(
+            parse("FW: [temps] 3 reads failed out of 1200"),
+            FwLine::TempReads { failed: 3, total: 1200 }
+        );
+        // the interlock state outlives a take; everything else is drained
+        let mut t = FwTelemetry::default();
+        t.record("FW: tec[left] locked (pump)");
+        t.record("FW: [temps] 0 reads failed out of 1200");
+        let got = t.take();
+        assert_eq!(got.temp_reads, Some([0, 1200]));
+        assert_eq!(t.tec["left"], "locked (pump)");
+        assert_eq!(t.temp_reads, None);
     }
 
     #[test]
