@@ -396,6 +396,7 @@ const createUpdates = (): UpdatesReport => ({
     available: [],
     lastError: null,
     lastApplied: `app -> ${UI_VERSION} (committed)`,
+    osDryRun: true,
   },
 });
 

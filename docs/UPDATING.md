@@ -188,9 +188,12 @@ The web UI has an **Updates** panel under **Settings**: installed version per
 tier, agent enabled/mode, when it last checked and whether that check succeeded,
 anything the channel is offering, the last error, and the last release applied.
 Its controls: **Check now** (poll out of band), **Update to \<version\>**
-(install the offered app release; shown only when one is offered), **Roll back**
+(install the offered app release; shown only when one is offered), **OS update
+to \<version\>** (write the offered OS image; shown only when one is offered,
+behind a confirmation that says whether OS dry-run is on), **Roll back**
 (return to the previous app release), and the **Release channel** selector.
-Installing and rolling back both restart podd.
+Installing an app release and rolling back both restart podd; an OS update
+does not.
 
 The same data is available over HTTP:
 
@@ -198,6 +201,8 @@ The same data is available over HTTP:
 curl -s http://<pod-ip>:3000/api/updates          # status
 curl -s -X POST http://<pod-ip>:3000/api/updates/check
 curl -s -X POST -H 'content-type: application/json' -d '{"kind":"app"}' \
+    http://<pod-ip>:3000/api/updates/apply
+curl -s -X POST -H 'content-type: application/json' -d '{"kind":"os","confirm":true}' \
     http://<pod-ip>:3000/api/updates/apply
 curl -s -X POST -H 'content-type: application/json' -d '{"channel":"beta"}' \
     http://<pod-ip>:3000/api/updates/channel
@@ -208,14 +213,23 @@ curl -s -X POST http://<pod-ip>:3000/api/updates/rollback
 `journalctl -u podd` for a trust-policy error). This is not the same as being up
 to date.
 
-**Applying** is the app tier only: podd verifies and stages the release, flips
+**Applying the app tier**: podd verifies and stages the release, flips
 `current`, and restarts into it as a canary that commits itself or is rolled
 back automatically (see [How rollback works](#how-rollback-works)). That restart
 usually kills the HTTP request before it can answer; a dropped connection means
 podd is restarting, and `GET /api/updates` is authoritative once it is back.
-Applying the OS or MCU tiers answers `501`: those live paths are behind their
-dry-run gates, so apply them with the installer instead. With the agent switched
-off (`PODD_UPDATER_ENABLED=false`) an apply is refused rather than silently
+
+**Applying the OS tier** needs `"confirm": true` in the request (without it the
+answer is `400` and nothing happens). podd then verifies the image and, with
+`PODD_UPDATER_OS_DRY_RUN=false`, writes it to the inactive slot and arms the
+bootloader rollback described under [OS / slot updates](#how-rollback-works);
+in dry-run (the default, reported as `osDryRun` in the status) it only logs the
+plan. The request answers once the write finishes, which takes minutes. podd
+does not restart or reboot: reboot the Pod yourself to try the new slot. An
+armed apply on a system without the A/B slot layout is refused.
+
+The MCU tiers and the bootloader answer `501`. With the agent switched off
+(`PODD_UPDATER_ENABLED=false`) any apply is refused rather than silently
 ignored.
 
 **Switching channels** takes effect immediately — no restart — and is
@@ -230,8 +244,8 @@ channel's offers — press **Check now** afterwards.
 ## Updating manually
 
 If the agent can't reach the channel, is switched off, or you want a specific
-version, re-run the installer. It does the same verify-then-activate flow and is
-also how the OS and MCU tiers are applied:
+version, re-run the installer. It does the same verify-then-activate flow for
+the app tier:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/GoogleBot42/podd/main/install/install.sh \

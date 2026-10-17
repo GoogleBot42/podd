@@ -180,9 +180,10 @@ leave Home Assistant in the same state.
 `GET /api/updates` exposes the running build stamp plus the agent's
 `UpdateStatus`; `POST /api/updates/{check,apply,channel,rollback}` drives its
 controls, and the UI renders both in Settings → Updates. `updater: null` means
-no agent is wired, which is distinct from "no updates available". `apply` is
-Tier-2 only and answers `501` for the OS/MCU tiers whose live paths are still
-dry-run stubs (issue #43). Operational detail: [UPDATING.md](UPDATING.md).
+no agent is wired, which is distinct from "no updates available". `apply`
+takes the app tier, or the OS tier with an explicit `confirm` (the agent's
+OS dry-run and slot-writer gates still apply); the MCU tiers and the
+bootloader answer `501`. Operational detail: [UPDATING.md](UPDATING.md).
 
 `GET/POST /mqtt` is podd-only (free-sleep has no MQTT): the broker link's
 settings — `enabled`, `server`, `port`, `user`, `passwordSet` — behind the UI's

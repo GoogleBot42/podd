@@ -24,10 +24,19 @@ export const postUpdatesCheck = async () => {
 
 // Installs the offered Tier-2 (app) release and restarts podd into it as a
 // canary that commits itself or is rolled back automatically. Like rollback,
-// the restart means the response may never arrive — see ApplyButton. Only the
-// app tier is appliable here; the OS/MCU tiers answer 501 (issue #43).
+// the restart means the response may never arrive — see ApplyButton. The MCU
+// tiers answer 501.
 export const postUpdatesApply = async () => {
   const response = await axios.post<UpdateStatus>('/updates/apply', { kind: 'app' });
+  return response.data;
+};
+
+// Writes the offered Tier-1 (OS) image to the inactive A/B slot and arms
+// U-Boot's rollback — or only verifies and logs it while osDryRun is set. podd
+// does not restart or reboot; the new slot is tried on the next boot. Only call
+// this after the user confirmed: `confirm: true` is the daemon's opt-in (#184).
+export const postUpdatesApplyOs = async () => {
+  const response = await axios.post<UpdateStatus>('/updates/apply', { kind: 'os', confirm: true });
   return response.data;
 };
 

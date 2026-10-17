@@ -11,13 +11,16 @@
 //! - **check now** — poll the configured channel out of band,
 //! - **apply** — install the offered Tier-2 (app) release and restart into it
 //!   as a canary that must pass its health check or be rolled back
-//!   automatically (`pod_update_agent::trial`),
+//!   automatically (`pod_update_agent::trial`); or write the offered Tier-1
+//!   (OS) image to the inactive A/B slot and arm U-Boot's rollback (only with
+//!   an explicit `confirm`, and still subject to every agent-side gate:
+//!   signature/digest verification, `PODD_UPDATER_OS_DRY_RUN`, the writer's
+//!   eMMC refusal; issue #184),
 //! - **set the channel** — switch channels at runtime, persisted by the agent,
 //! - **roll back** — flip the Tier-2 app symlink to the previous release.
 //!
-//! Deliberately *not* here: applying Tier-1 (OS) or Tier-3 (MCU) — those live
-//! paths are still behind their dry-run gates and are tracked by issue #43, so
-//! [`UpdateTier`] exists only to let the route name them and answer `501 Not
+//! Deliberately *not* here: applying Tier-3 (MCU) or the bootloader — the
+//! route names them through [`UpdateTier`] only to answer `501 Not
 //! Implemented` honestly instead of pretending. Nothing on this path touches
 //! actuation or alarms.
 
@@ -27,15 +30,15 @@ use serde::{Deserialize, Serialize};
 pub use pod_update_agent::UpdateStatus;
 
 /// An update tier as named on the wire (`{"kind": "app"}`). Mirrors
-/// `pod_update::ComponentKind`'s serde names; only [`UpdateTier::App`] is
-/// appliable through the API today (see the module docs).
+/// `pod_update::ComponentKind`'s serde names; [`UpdateTier::App`] and
+/// [`UpdateTier::Os`] are appliable through the API (see the module docs).
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum UpdateTier {
-    /// Tier 2: podd + UI. The one the apply route implements.
+    /// Tier 2: podd + UI.
     #[default]
     App,
-    /// Tier 1: OS image (A/B slots). Apply from the installer; issue #43.
+    /// Tier 1: OS image (A/B slots). Appliable with `confirm: true` (#184).
     Os,
     /// Tier 3: "Frozen" MCU firmware. Not appliable from the API; issue #43.
     McuFrozen,
@@ -50,6 +53,9 @@ pub enum UpdateTier {
 #[serde(rename_all = "camelCase", default)]
 pub struct ApplyRequest {
     pub kind: UpdateTier,
+    /// Required (`true`) for the OS tier: writing a slot is an explicit
+    /// opt-in until the OS-OTA hardware pass is done (#184). Ignored for app.
+    pub confirm: bool,
 }
 
 /// Body of `POST /api/updates/channel`.
@@ -80,6 +86,14 @@ pub trait UpdateOps: Send + Sync {
     /// is reachable, or verification fails.
     async fn apply_app(&self) -> anyhow::Result<()>;
 
+    /// Write the channel's Tier-1 (OS) image to the inactive A/B slot, read it
+    /// back, and arm U-Boot's bootcount rollback — or, under
+    /// `PODD_UPDATER_OS_DRY_RUN` (the default), verify the artifact and log the
+    /// plan without writing. Never reboots: the new slot is tried on the next
+    /// boot. Errs on the same conditions as [`UpdateOps::apply_app`], and when
+    /// an armed apply has no A/B slot writer.
+    async fn apply_os(&self) -> anyhow::Result<()>;
+
     /// Switch the followed release channel and persist the choice so it
     /// survives a restart. Applies nothing on its own: the next check is what
     /// consults the new channel.
@@ -107,6 +121,11 @@ impl UpdateOps for pod_update_agent::Updater {
 
     async fn apply_app(&self) -> anyhow::Result<()> {
         pod_update_agent::Updater::apply(self, pod_update_agent::ComponentKind::App).await?;
+        Ok(())
+    }
+
+    async fn apply_os(&self) -> anyhow::Result<()> {
+        pod_update_agent::Updater::apply(self, pod_update_agent::ComponentKind::Os).await?;
         Ok(())
     }
 
@@ -217,6 +236,23 @@ impl UpdateOps for MockUpdates {
                 let mut status = self.status.lock().unwrap();
                 status.last_applied = Some("app -> 0.0.2 (trial; canary after restart)".into());
                 status.available.clear();
+                Ok(())
+            }
+        }
+    }
+
+    async fn apply_os(&self) -> anyhow::Result<()> {
+        self.calls.lock().unwrap().push("apply_os");
+        match &self.fail_with {
+            Some(msg) => anyhow::bail!("{msg}"),
+            None => {
+                let mut status = self.status.lock().unwrap();
+                let how = if status.os_dry_run {
+                    "dry-run"
+                } else {
+                    "written to inactive slot + armed; reboot to activate"
+                };
+                status.last_applied = Some(format!("os -> 0.0.2 ({how})"));
                 Ok(())
             }
         }

@@ -1475,15 +1475,61 @@ async fn apply_drives_the_app_tier() {
     assert_eq!(updates.calls(), vec!["apply", "apply"]);
 }
 
-/// Tier-1 (OS) and Tier-3 (MCU) live applies are still stubs behind their
-/// dry-run gates (issue #43): the route must say "not supported yet" instead
-/// of half-applying something destructive.
+/// The OS tier reaches the agent only with an explicit `confirm` (#184); the
+/// agent's own gates (verification, OS dry-run, eMMC refusal) still apply
+/// behind it, and its refusal surfaces as a 409.
 #[tokio::test]
-async fn apply_refuses_the_os_and_mcu_tiers() {
+async fn apply_os_requires_confirm() {
     let updates = Arc::new(api::MockUpdates::default());
     let app = build_with_updates(updates.clone());
 
-    for kind in ["os", "mcu_frozen", "mcu_sensor", "bootloader"] {
+    let resp = app
+        .clone()
+        .oneshot(post_json("/api/updates/apply", &json!({ "kind": "os" })))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert!(body_text(resp).await.contains("confirm"));
+    assert!(
+        updates.calls().is_empty(),
+        "unconfirmed OS apply reached the agent"
+    );
+
+    let resp = app
+        .oneshot(post_json(
+            "/api/updates/apply",
+            &json!({ "kind": "os", "confirm": true }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["osDryRun"], json!(true));
+    assert!(
+        body["lastApplied"].as_str().unwrap().contains("dry-run"),
+        "body={body}"
+    );
+    assert_eq!(updates.calls(), vec!["apply_os"]);
+
+    let failing = Arc::new(api::MockUpdates::default().failing("no A/B slot writer"));
+    let resp = build_with_updates(failing)
+        .oneshot(post_json(
+            "/api/updates/apply",
+            &json!({ "kind": "os", "confirm": true }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+}
+
+/// Tier-3 (MCU) and the bootloader are not appliable from the API: the route
+/// must say so instead of half-applying something destructive.
+#[tokio::test]
+async fn apply_refuses_the_mcu_and_bootloader_tiers() {
+    let updates = Arc::new(api::MockUpdates::default());
+    let app = build_with_updates(updates.clone());
+
+    for kind in ["mcu_frozen", "mcu_sensor", "bootloader"] {
         let resp = app
             .clone()
             .oneshot(post_json("/api/updates/apply", &json!({ "kind": kind })))
