@@ -389,6 +389,108 @@ pub async fn publish_guaranteed_wait<S, V>(
     }
 }
 
+/// [`publish_guaranteed_wait`] for the hardware loops: queues the publish and
+/// returns at once (#203). The sensor and Frozen managers used to await it
+/// inline, and with the broker unreachable every device-mode change stalled
+/// the loop for the full 10 s timeout (seen live 2026-10-11: sensor bring-up
+/// took 30 s, Frozen setpoint ticks and packet reads stalled alongside).
+///
+/// One worker task drains the queue in order, so a topic's last value still
+/// lands last. A full queue drops its OLDEST entry: after an outage the
+/// newest state is the one worth delivering.
+pub fn publish_guaranteed<S, V>(client: &AsyncClient, topic: S, retain: bool, payload: V)
+where
+    S: Into<String>,
+    V: Into<Vec<u8>>,
+{
+    let job = GuaranteedJob {
+        client: client.clone(),
+        topic: topic.into(),
+        retain,
+        payload: payload.into(),
+    };
+    match guaranteed_queue() {
+        Some(q) => q.push(job),
+        // No runtime to run a worker on: degrade to a plain non-blocking try.
+        None => {
+            if let Err(e) =
+                job.client
+                    .try_publish(job.topic.clone(), QoS::ExactlyOnce, job.retain, job.payload)
+            {
+                DROPPED.record(&job.topic, &e, Instant::now());
+            }
+        }
+    }
+}
+
+/// Queued publishes beyond this drop the oldest. The queue only carries
+/// rare state changes (device mode, hardware info, piezo/vibration flags),
+/// so it fills only in a long outage with the managers re-initialising.
+const GUARANTEED_QUEUE_CAP: usize = 32;
+
+struct GuaranteedJob {
+    client: AsyncClient,
+    topic: String,
+    retain: bool,
+    payload: Vec<u8>,
+}
+
+#[derive(Default)]
+struct GuaranteedQueue {
+    jobs: Mutex<std::collections::VecDeque<GuaranteedJob>>,
+    ready: tokio::sync::Notify,
+}
+
+impl GuaranteedQueue {
+    fn push(&self, job: GuaranteedJob) {
+        {
+            let mut jobs = self.jobs.lock().unwrap_or_else(|p| p.into_inner());
+            if jobs.len() >= GUARANTEED_QUEUE_CAP {
+                if let Some(old) = jobs.pop_front() {
+                    DROPPED.record(&old.topic, &"guaranteed-publish queue full", Instant::now());
+                }
+            }
+            jobs.push_back(job);
+        }
+        self.ready.notify_one();
+    }
+
+    fn pop(&self) -> Option<GuaranteedJob> {
+        self.jobs.lock().unwrap_or_else(|p| p.into_inner()).pop_front()
+    }
+
+    /// Publish queued jobs in order, forever. Runs as its own task, so the
+    /// 10 s broker wait in [`publish_guaranteed_wait`] stalls only this.
+    async fn run(self: Arc<Self>) {
+        loop {
+            match self.pop() {
+                Some(mut job) => {
+                    publish_guaranteed_wait(&mut job.client, job.topic, job.retain, job.payload)
+                        .await;
+                }
+                None => self.ready.notified().await,
+            }
+        }
+    }
+}
+
+/// The process's queue. The worker task owns the only strong reference, so
+/// if its runtime goes away (each `#[tokio::test]` has its own) the `Weak`
+/// dies with it and the next publish starts a fresh worker.
+static GUARANTEED: Mutex<std::sync::Weak<GuaranteedQueue>> = Mutex::new(std::sync::Weak::new());
+
+fn guaranteed_queue() -> Option<Arc<GuaranteedQueue>> {
+    let mut slot = GUARANTEED.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(q) = slot.upgrade() {
+        return Some(q);
+    }
+    let rt = tokio::runtime::Handle::try_current().ok()?;
+    let q = Arc::new(GuaranteedQueue::default());
+    *slot = Arc::downgrade(&q);
+    rt.spawn(q.clone().run());
+    Some(q)
+}
+
 pub fn publish_high_freq<S, V>(client: &mut AsyncClient, topic: S, payload: V)
 where
     S: Into<String> + Display + Clone,
@@ -558,5 +660,76 @@ mod drop_log_tests {
         );
         assert!(log.on_connected().is_none());
         assert!(log.on_drop(&"a", &"e", t0).unwrap().starts_with("Error publishing"));
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod guaranteed_tests {
+    use super::{GUARANTEED_QUEUE_CAP, GuaranteedJob, GuaranteedQueue, publish_guaranteed};
+    use rumqttc::{AsyncClient, Request};
+    use std::{sync::Arc, time::Duration};
+
+    /// A client whose broker never drains its request channel: what an
+    /// unreachable broker looks like to the publishing side (#203).
+    pub(crate) fn down_broker() -> (AsyncClient, flume::Receiver<Request>) {
+        let (tx, rx) = flume::bounded(1);
+        (AsyncClient::from_senders(tx), rx)
+    }
+
+    fn job(client: &AsyncClient, topic: impl Into<String>) -> GuaranteedJob {
+        GuaranteedJob {
+            client: client.clone(),
+            topic: topic.into(),
+            retain: false,
+            payload: b"x".to_vec(),
+        }
+    }
+
+    #[tokio::test]
+    async fn publishing_to_a_down_broker_returns_at_once() {
+        let (client, _rx) = down_broker();
+        // The awaited form blocks 10 s per publish once the channel is full.
+        tokio::time::timeout(Duration::from_secs(1), async {
+            for i in 0..10 {
+                publish_guaranteed(&client, format!("t/{i}"), false, "x");
+            }
+        })
+        .await
+        .expect("publish_guaranteed blocked on the broker");
+    }
+
+    #[tokio::test]
+    async fn the_worker_delivers_in_order_once_the_broker_drains() {
+        let (client, rx) = down_broker();
+        let q = Arc::new(GuaranteedQueue::default());
+        let worker = tokio::spawn(q.clone().run());
+        for t in ["a", "b", "c"] {
+            q.push(job(&client, t));
+        }
+        let mut got = Vec::new();
+        while got.len() < 3 {
+            let req = tokio::time::timeout(Duration::from_secs(5), rx.recv_async())
+                .await
+                .expect("worker never published")
+                .unwrap();
+            if let Request::Publish(p) = req {
+                got.push(p.topic);
+            }
+        }
+        assert_eq!(got, ["a", "b", "c"]);
+        worker.abort();
+    }
+
+    #[test]
+    fn a_full_queue_drops_the_oldest() {
+        let (client, _rx) = down_broker();
+        let q = GuaranteedQueue::default();
+        for i in 0..=GUARANTEED_QUEUE_CAP {
+            q.push(job(&client, i.to_string()));
+        }
+        let topics: Vec<_> = std::iter::from_fn(|| q.pop()).map(|j| j.topic).collect();
+        assert_eq!(topics.len(), GUARANTEED_QUEUE_CAP);
+        assert_eq!(topics[0], "1");
+        assert_eq!(topics.last().unwrap(), &GUARANTEED_QUEUE_CAP.to_string());
     }
 }

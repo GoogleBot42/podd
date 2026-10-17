@@ -4,7 +4,7 @@ use rumqttc::AsyncClient;
 use tokio::time::{Duration, Instant};
 
 use super::fwlog::{self, FwTelemetry};
-use crate::mqtt::{publish_guaranteed_wait, publish_high_freq, publish_state_retained};
+use crate::mqtt::{publish_guaranteed, publish_high_freq, publish_state_retained};
 use pod_proto::frozen::packet::{FrozenPacket, FrozenTarget, GetTemperature, TemperatureUpdate};
 use pod_proto::packet::{BedSide, HardwareInfo};
 use pod_proto::serial::DeviceMode;
@@ -68,7 +68,7 @@ impl FrozenState {
 
         if prev != mode {
             log::info!("Device mode: {prev:?} -> {mode:?}");
-            publish_guaranteed_wait(client, TOPIC_MODE, false, mode.to_string()).await;
+            publish_guaranteed(client, TOPIC_MODE, false, mode.to_string());
         }
     }
 
@@ -78,7 +78,7 @@ impl FrozenState {
     }
 
     pub async fn publish_reset(&self, client: &mut AsyncClient) {
-        publish_guaranteed_wait(client, TOPIC_MODE, false, DeviceMode::Unknown.to_string()).await;
+        publish_guaranteed(client, TOPIC_MODE, false, DeviceMode::Unknown.to_string());
     }
 
     /// Log a firmware line the parser does not know, at most once an hour per
@@ -161,7 +161,7 @@ impl FrozenState {
             }
             FrozenPacket::HardwareInfo(info) => {
                 log::info!("Hardware info: {info}");
-                publish_guaranteed_wait(client, TOPIC_HWINFO, true, info.to_string()).await;
+                publish_guaranteed(client, TOPIC_HWINFO, true, info.to_string());
                 self.hardware_info = Some(info);
             }
             FrozenPacket::JumpingToFirmware(code) => {
@@ -212,5 +212,28 @@ impl FrozenState {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #203: with the broker down, each mode change used to stall the Frozen
+    /// loop (setpoint ticks, packet reads) for 10 s.
+    #[tokio::test]
+    async fn a_down_broker_does_not_stall_the_loop() {
+        let (mut client, _rx) = crate::mqtt::guaranteed_tests::down_broker();
+        let mut state = FrozenState::default();
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            state.publish_reset(&mut client).await;
+            state.handle_packet(&mut client, FrozenPacket::Pong(false)).await;
+            state
+                .handle_packet(&mut client, FrozenPacket::JumpingToFirmware(0))
+                .await;
+        })
+        .await
+        .expect("frozen state publishing waited on the broker");
+        assert!(state.is_awake());
     }
 }
