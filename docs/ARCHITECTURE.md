@@ -152,8 +152,8 @@ dropped past 24 MB in total (a day's raw file is capped at 16 MB).
 The writer runs on its own thread and producers only `try_send`; a slow SD
 card loses telemetry, never stalls the control loop. Unrecognised firmware
 lines are logged to the journal once an hour per line shape. Read it over
-SSH (`cat` today's `.jsonl`, `zcat` older `.jsonl.gz`) and pipe into `jq`
-on the workstation.
+SSH — `scripts/pod-telemetry.sh root@<pod> <day>` prints a day's lines (raw or
+gzipped) for `jq`.
 
 ## Compat API (free-sleep-compatible)
 
