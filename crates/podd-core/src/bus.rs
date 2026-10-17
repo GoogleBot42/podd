@@ -81,6 +81,10 @@ pub struct DeviceSnapshot {
     /// Hub status-LED brightness (0–100 %), mirroring `config.ron`'s
     /// `led.brightness`. Published by the Frozen manager, which owns the LED.
     pub led_brightness: u8,
+    /// The cover's latest temperature frame, raw: all eight bed channels
+    /// (the snapshot sides only carry the first six), ambient, humidity and
+    /// the sensor MCU's own temperature. For the telemetry recorder.
+    pub cover_env: Option<pod_proto::sensor::packet::TemperatureData>,
 }
 
 impl Default for DeviceSnapshot {
@@ -96,6 +100,7 @@ impl Default for DeviceSnapshot {
             cover_version: "unknown".to_string(),
             gains: (0, 0),
             led_brightness: 100,
+            cover_env: None,
         }
     }
 }

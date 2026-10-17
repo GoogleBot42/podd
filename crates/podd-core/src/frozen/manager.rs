@@ -1,7 +1,9 @@
 use crate::bus::{Command, DeviceSnapshot, SideSnapshot, StatusTx};
 use crate::config::{AwayMode, Config, SidesConfig};
 use crate::frozen::freeze::{FreezeGuard, FreezeParams, FreezeStatus, Readings};
+use crate::frozen::sample;
 use crate::frozen::state::{FrozenState, TOPIC_LEFT_FREEZE, TOPIC_RIGHT_FREEZE};
+use crate::recorder::Recorder;
 use crate::health::{self, Health, HealthRegistry};
 use crate::led::{IS31FL3194Config, IS31FL3194Controller, LedPattern};
 use crate::mqtt::publish_state_retained;
@@ -106,6 +108,7 @@ pub async fn run(
     mut cmd_rx: mpsc::Receiver<Command>,
     health: HealthRegistry,
     dry_run: bool,
+    recorder: Recorder,
 ) -> Result<(), FrozenError> {
     log::info!("Initializing Frozen Subsystem...");
     health.report(
@@ -175,6 +178,11 @@ pub async fn run(
     // In-flight Prime awaiting firmware confirmation (#9).
     let mut prime_verify: Option<PrimeVerify> = None;
     let mut watch = FrozenWatch::new(Instant::now());
+    // Telemetry recorder: one sample per period, plus setpoint frames sent
+    // per side since the last one.
+    let started = Instant::now();
+    let mut next_sample = started;
+    let mut sends = [0u32; 2];
 
     loop {
         tokio::select! {
@@ -276,6 +284,9 @@ pub async fn run(
                         "cover MCU awake; driving the TEC/pump",
                     );
                     let is_prime = matches!(cmd, FrozenCommand::Prime);
+                    if let FrozenCommand::SetTargetTemperature { side, .. } = &cmd {
+                        sends[*side as usize] += 1;
+                    }
                     send_command(&mut writer, cmd).await;
                     if is_prime {
                         prime_verify = Some(PrimeVerify { sent_at: Instant::now(), attempts: 1 });
@@ -318,6 +329,23 @@ pub async fn run(
                 }
             }
             publish_freeze(&status, &mut client, &freeze, &mut freeze_shown);
+
+            let now = Instant::now();
+            if now >= next_sample {
+                let snapshot = status.borrow().clone();
+                let extra = sample::Extra {
+                    freeze: &freeze,
+                    params: &freeze_params,
+                    snapshot: &snapshot,
+                    sends,
+                    overrides: [overrides.left.is_some(), overrides.right.is_some()],
+                    uptime: now.duration_since(started),
+                    clock_synced: crate::sensor::manager::clock_is_synced(),
+                };
+                recorder.record("sample", sample::build(&mut state, &extra, now));
+                sends = [0; 2];
+                next_sample = now + sample::period(&state, &freeze, &freeze_params, now);
+            }
             },
 
             Ok(_) = config_rx.changed() => {

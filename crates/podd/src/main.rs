@@ -34,7 +34,11 @@ mod hostinfo;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::init();
+    // env_logger as before, teed into the telemetry recorder once it starts.
+    let logger = env_logger::Builder::from_default_env().build();
+    let max_level = logger.filter();
+    log::set_boxed_logger(Box::new(podd_core::recorder::TeeLogger::new(logger)))?;
+    log::set_max_level(max_level);
 
     // App-update trial guard, before ANYTHING else (even config parsing): if a
     // freshly activated release keeps crashing during startup, this counts the

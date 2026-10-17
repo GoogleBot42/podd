@@ -20,6 +20,7 @@ pub mod ha_discovery;
 pub mod health;
 pub mod led;
 pub mod mqtt;
+pub mod recorder;
 pub mod reset;
 pub mod schedule;
 pub mod sensor;
@@ -72,6 +73,13 @@ pub fn start(
     // like settings/schedules.
     let biometrics = biometrics::Stores::open(&data_dir(&config_path));
 
+    // Thermal flight recorder (samples + podd's log lines), same data dir.
+    let recorder = recorder::Recorder::start(data_dir(&config_path).join(recorder::DIR));
+    recorder.record(
+        "start",
+        serde_json::json!({"version": VERSION, "rev": GIT_REV, "dry_run": dry_run}),
+    );
+
     let shared = Shared {
         status: status_rx,
         health: health_rx,
@@ -88,6 +96,7 @@ pub fn start(
         mqtt_state_tx,
         dry_run,
         biometrics,
+        recorder,
     );
     (shared, fut)
 }
@@ -618,6 +627,7 @@ async fn run_inner(
     mqtt_state_tx: watch::Sender<MqttSnapshot>,
     dry_run: bool,
     biometrics: biometrics::Stores,
+    recorder: recorder::Recorder,
 ) -> anyhow::Result<()> {
     let config_path = config_path.as_path();
     log::info!("Starting {NAME} v{VERSION}...");
@@ -813,6 +823,7 @@ async fn run_inner(
             frozen_cmd_rx,
             health.clone(),
             dry_run,
+            recorder,
         ) => {
             match res {
                 Ok(_) => anyhow::anyhow!("Frozen task unexpectedly exited"),

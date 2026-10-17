@@ -1,5 +1,9 @@
-use rumqttc::AsyncClient;
+use std::collections::HashMap;
 
+use rumqttc::AsyncClient;
+use tokio::time::{Duration, Instant};
+
+use super::fwlog::{self, FwTelemetry};
 use crate::mqtt::{publish_guaranteed_wait, publish_high_freq, publish_state_retained};
 use pod_proto::frozen::packet::{FrozenPacket, FrozenTarget, GetTemperature, TemperatureUpdate};
 use pod_proto::packet::{BedSide, HardwareInfo};
@@ -20,7 +24,19 @@ pub struct FrozenState {
     /// Water tank present/full. Defaults false via derive; the manager seeds it
     /// `true` at boot and the firmware "water empty/full" messages update it.
     pub water_full: bool,
+    /// Latest firmware debug values (PID, pumps, fans) since the telemetry
+    /// recorder last took them.
+    pub fw: FwTelemetry,
+    /// When each unrecognised firmware line shape was last logged.
+    pub(crate) fw_unknown: HashMap<String, Instant>,
+    /// Frames received since start.
+    pub rx_frames: u64,
 }
+
+/// An unrecognised firmware line shape is logged at most this often.
+const FW_UNKNOWN_EVERY: Duration = Duration::from_secs(3600);
+/// Distinct unrecognised shapes remembered; past this, new ones go unlogged.
+const FW_UNKNOWN_MAX: usize = 64;
 
 const TOPIC_MODE: &str = "opensleep/state/frozen/mode";
 const TOPIC_HWINFO: &str = "opensleep/state/frozen/hwinfo";
@@ -65,7 +81,28 @@ impl FrozenState {
         publish_guaranteed_wait(client, TOPIC_MODE, false, DeviceMode::Unknown.to_string()).await;
     }
 
+    /// Log a firmware line the parser does not know, at most once an hour per
+    /// line shape: a new periodic line shows up without flooding the journal.
+    fn note_unknown_fw(&mut self, msg: &str) {
+        let now = Instant::now();
+        let shape = fwlog::shape(msg);
+        let full = self.fw_unknown.len() >= FW_UNKNOWN_MAX;
+        match self.fw_unknown.get_mut(&shape) {
+            Some(at) if now.duration_since(*at) < FW_UNKNOWN_EVERY => {}
+            Some(at) => {
+                *at = now;
+                log::info!("Frozen firmware: {msg}");
+            }
+            None if !full => {
+                self.fw_unknown.insert(shape, now);
+                log::info!("Frozen firmware: {msg}");
+            }
+            None => log::debug!("Frozen firmware: {msg}"),
+        }
+    }
+
     pub async fn handle_packet(&mut self, client: &mut AsyncClient, packet: FrozenPacket) {
+        self.rx_frames += 1;
         match packet {
             FrozenPacket::Pong(in_firmware) => {
                 self.set_device_mode(client, DeviceMode::from_pong(in_firmware))
@@ -161,8 +198,8 @@ impl FrozenState {
                         "start" => self.is_priming = true,
                         _ => {}
                     }
-                } else {
-                    log::debug!("Message: {msg}")
+                } else if !self.fw.record(&msg) {
+                    self.note_unknown_fw(&msg);
                 }
                 publish_high_freq(client, TOPIC_FW_LOG, msg);
             }
