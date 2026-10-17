@@ -145,6 +145,29 @@ struct SideGuard {
     ramp: Option<(FrozenTarget, FrozenTarget)>,
     thaw: Option<Thaw>,
     freeze_count: u32,
+    /// `(wanted, returned)` of the latest call, whatever the guard's state —
+    /// for [`FreezeGuard::diag`] only.
+    last: Option<(FrozenTarget, FrozenTarget)>,
+}
+
+/// The guard's internals for one side, for the telemetry recorder: enough to
+/// see how close detection is to tripping and why it did or did not.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GuardDiag {
+    /// What the schedule / manual override asked for on the latest tick.
+    pub wanted: Option<FrozenTarget>,
+    /// What the guard handed back to be sent.
+    pub effective: Option<FrozenTarget>,
+    /// Seconds of thaw left, while thawing.
+    pub thaw_left_s: Option<u64>,
+    /// Water samples tracked while cooling is demanded (empty = not demanded).
+    pub samples: usize,
+    /// Lowest water (centi-°C) in the detect window.
+    pub window_min: Option<i32>,
+    /// How long the water has stayed `detect_rise` above that low, seconds —
+    /// detection fires when this reaches `detect_hold` without recovering.
+    pub risen_s: u64,
+    pub freeze_count: u32,
 }
 
 /// Both sides' guards. One instance lives in the Frozen manager.
@@ -193,7 +216,37 @@ impl FreezeGuard {
         now: Instant,
         p: &FreezeParams,
     ) -> FrozenTarget {
-        self.side_mut(side).effective(side, wanted, readings, now, p)
+        let g = self.side_mut(side);
+        let effective = g.effective(side, wanted.clone(), readings, now, p);
+        g.last = Some((wanted, effective.clone()));
+        effective
+    }
+
+    /// Read-only view of one side's guard state.
+    pub fn diag(&self, side: BedSide, now: Instant, p: &FreezeParams) -> GuardDiag {
+        let g = self.side(side);
+        let window_min = g.samples.iter().map(|(_, t)| *t).min();
+        let risen_s = window_min.map_or(0, |min| {
+            let oldest = g
+                .samples
+                .iter()
+                .rev()
+                .take_while(|(_, t)| t - min >= p.detect_rise)
+                .last();
+            oldest.map_or(0, |(at, _)| now.duration_since(*at).as_secs())
+        });
+        GuardDiag {
+            wanted: g.last.as_ref().map(|(w, _)| w.clone()),
+            effective: g.last.as_ref().map(|(_, e)| e.clone()),
+            thaw_left_s: g
+                .thaw
+                .as_ref()
+                .map(|t| t.until.saturating_duration_since(now).as_secs()),
+            samples: g.samples.len(),
+            window_min,
+            risen_s,
+            freeze_count: g.freeze_count,
+        }
     }
 }
 
@@ -609,6 +662,35 @@ mod tests {
         assert_eq!(e.temp, 2650);
         assert!(!g.status(BedSide::Right).thawing);
         assert_eq!(g.status(BedSide::Right).freeze_count, 1);
+    }
+
+    #[test]
+    fn diag_shows_detection_closing_in() {
+        let mut g = FreezeGuard::default();
+        let p = params();
+        let t0 = Instant::now();
+        let wanted = on(2556);
+        drive(&mut g, BedSide::Right, &wanted, t0, S * 10, &[2556; 30], &p);
+        let idle = g.diag(BedSide::Right, t0 + S * 300, &p);
+        assert_eq!(idle.wanted, Some(wanted.clone()));
+        assert_eq!(idle.effective, Some(wanted.clone()));
+        assert_eq!((idle.samples, idle.risen_s), (0, 0), "at target: no demand");
+        // 100 samples into a climb: demanded, risen for a while, not yet tripped
+        let t1 = t0 + S * 300;
+        drive(&mut g, BedSide::Right, &wanted, t1, S * 10, &rising(2556, 100), &p);
+        let now = t1 + S * 990;
+        let d = g.diag(BedSide::Right, now, &p);
+        assert_eq!(d.window_min, Some(2606));
+        assert!(d.samples > 80);
+        // risen once the water passed 2706 (sample 30): 69 samples ago
+        assert_eq!(d.risen_s, 690);
+        assert_eq!((d.thaw_left_s, d.freeze_count), (None, 0));
+        // left side never touched
+        assert_eq!(g.diag(BedSide::Left, now, &p), GuardDiag::default());
+        // once tripped: thawing, with the countdown
+        let at = freeze(&mut g, BedSide::Left, now, &p);
+        let d = g.diag(BedSide::Left, at + S * 60, &p);
+        assert_eq!((d.thaw_left_s, d.freeze_count), (Some(120), 1));
     }
 
     #[test]
