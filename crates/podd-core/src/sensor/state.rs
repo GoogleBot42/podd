@@ -1,6 +1,6 @@
 use rumqttc::AsyncClient;
 
-use crate::mqtt::{publish_guaranteed_wait, publish_high_freq};
+use crate::mqtt::{publish_guaranteed, publish_high_freq};
 use pod_proto::packet::{BedSide, HardwareInfo};
 use pod_proto::sensor::packet::{SensorPacket, TemperatureData};
 use pod_proto::serial::DeviceMode;
@@ -75,7 +75,7 @@ impl SensorState {
 
         if prev != mode {
             log::info!("Device mode: {prev:?} -> {mode:?}");
-            publish_guaranteed_wait(client, TOPIC_MODE, false, mode.to_string()).await;
+            publish_guaranteed(client, TOPIC_MODE, false, mode.to_string());
         }
     }
 
@@ -120,11 +120,11 @@ impl SensorState {
     }
 
     async fn publish_piezo_ok(&self, client: &mut AsyncClient) {
-        publish_guaranteed_wait(client, TOPIC_PIEZO_OK, false, self.piezo_ok().to_string()).await;
+        publish_guaranteed(client, TOPIC_PIEZO_OK, false, self.piezo_ok().to_string());
     }
 
     pub async fn publish_reset(&self, client: &mut AsyncClient) {
-        publish_guaranteed_wait(client, TOPIC_MODE, false, DeviceMode::Unknown.to_string()).await;
+        publish_guaranteed(client, TOPIC_MODE, false, DeviceMode::Unknown.to_string());
     }
 
     /// [%s] off
@@ -182,7 +182,7 @@ impl SensorState {
             }
             SensorPacket::HardwareInfo(info) => {
                 log::info!("Hardware info: {info}");
-                publish_guaranteed_wait(client, TOPIC_HWINFO, true, info.to_string()).await;
+                publish_guaranteed(client, TOPIC_HWINFO, true, info.to_string());
                 self.hardware_info = Some(info);
             }
             SensorPacket::JumpingToFirmware(code) => {
@@ -215,7 +215,7 @@ impl SensorState {
             }
             SensorPacket::VibrationEnabled(_, _) => {
                 log::info!("Vibration Enabled");
-                publish_guaranteed_wait(client, TOPIC_VIBRATION_ENABLED, false, "true").await;
+                publish_guaranteed(client, TOPIC_VIBRATION_ENABLED, false, "true");
                 self.vibration_enabled = true;
             }
             SensorPacket::Capacitance(_) => {}
@@ -345,6 +345,26 @@ mod tests {
         );
         assert_eq!(fw_tap_dismissal("FW: 55 [lisR] some other message"), None);
         assert_eq!(fw_tap_dismissal("[lisR] dismissing alarm (2 taps)"), None);
+    }
+
+    /// #203: with the broker down, each mode change used to stall the
+    /// sensor loop 10 s (30 s of bring-up seen live 2026-10-11).
+    #[tokio::test]
+    async fn a_down_broker_does_not_stall_bring_up() {
+        let (mut client, _rx) = crate::mqtt::guaranteed_tests::down_broker();
+        let mut state = SensorState::default();
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            state.publish_reset(&mut client).await;
+            state.set_device_mode(&mut client, DeviceMode::Bootloader).await;
+            state.set_device_mode(&mut client, DeviceMode::Firmware).await;
+            state
+                .handle_packet(&mut client, SensorPacket::VibrationEnabled(0, 0))
+                .await;
+        })
+        .await
+        .expect("sensor state publishing waited on the broker");
+        assert_eq!(state.device_mode, DeviceMode::Firmware);
+        assert!(state.vibration_enabled);
     }
 
     #[test]
