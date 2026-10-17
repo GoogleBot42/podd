@@ -130,6 +130,31 @@ Status: `SideSnapshot.is_thawing` / `freeze_count` → `deviceStatus.<side>.isTh
 with no config; the optional `freeze_protection` block in `config.ron` tunes
 or disables it.
 
+## Telemetry recorder (thermal flight recorder)
+
+`podd-core::recorder` keeps an on-device record detailed enough to diagnose
+a bad night after the fact: `/data/podd/telemetry/<UTC day>.jsonl`, one JSON
+object per line, gzipped to `.jsonl.gz` once the day is over, oldest days
+dropped past 24 MB in total (a day's raw file is capped at 16 MB).
+
+- `"kind":"sample"` — every 10 s while a side is on, priming or thawing,
+  every 60 s otherwise (`frozen::sample` documents the fields): water,
+  heatsink and 4-probe temps; per side the wanted / freeze-guard-effective /
+  MCU-echoed setpoint, setpoint frames sent, manual override, and the
+  guard's internals (`guard.risen_s` counts toward `detect_hold`); the
+  firmware's own debug lines parsed (`fw.pid`, `fw.pump` volts/amps,
+  `fw.fan` duty/rpm, solenoid currents — `frozen::fwlog`); the cover's
+  whole temperature frame (8 bed channels, ambient, humidity); presence.
+- `"kind":"log"` — podd's INFO+ log lines (WARN+ from every crate),
+  max 120/min, so decisions sit next to the samples that drove them.
+- `"kind":"start"` — build version and dry-run flag at each podd start.
+
+The writer runs on its own thread and producers only `try_send`; a slow SD
+card loses telemetry, never stalls the control loop. Unrecognised firmware
+lines are logged to the journal once an hour per line shape. Read it over
+SSH (`cat` today's `.jsonl`, `zcat` older `.jsonl.gz`) and pipe into `jq`
+on the workstation.
+
 ## Compat API (free-sleep-compatible)
 
 All JSON under `/api`. Implemented control endpoints: `GET/POST /deviceStatus`,
