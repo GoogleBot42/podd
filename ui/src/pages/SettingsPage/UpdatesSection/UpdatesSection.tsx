@@ -15,6 +15,7 @@ import InfoIcon from '@mui/icons-material/Info';
 
 import Section from '../Section.tsx';
 import ApplyButton from './ApplyButton.tsx';
+import OsApplyButton from './OsApplyButton.tsx';
 import RollbackButton from './RollbackButton.tsx';
 import { ComponentKind, postUpdatesChannel, postUpdatesCheck, useUpdates } from '@api/updates.ts';
 import { UI_VERSION } from '@lib/version.ts';
@@ -89,9 +90,9 @@ export default function UpdatesSection() {
   const hasAppVersion = versions.some(entry => entry.kind === 'app');
   const channel = updater?.channel ?? 'stable';
   const channels = KNOWN_CHANNELS.includes(channel) ? KNOWN_CHANNELS : [...KNOWN_CHANNELS, channel];
-  // Only the app tier can be applied from here; OS/MCU live applies are still
-  // gated stubs on the daemon side (issue #43).
+  // The app and OS tiers can be applied from here; MCU tiers cannot.
   const appUpdate = updater?.available.find(component => component.kind === 'app');
+  const osUpdate = updater?.available.find(component => component.kind === 'os');
 
   return (
     <Section title='Updates'>
@@ -189,10 +190,10 @@ export default function UpdatesSection() {
                       ))
                     }
                     {
-                      updater.available.some(component => component.kind !== 'app') && (
+                      updater.available.some(component => component.kind !== 'app' && component.kind !== 'os') && (
                         <Typography variant='body2' sx={ { mt: 1 } }>
-                          Only the app tier can be installed from here; apply an OS or MCU
-                          update from the Pod (docs/UPDATING.md).
+                          MCU firmware and bootloader updates can't be installed from here
+                          (docs/UPDATING.md).
                         </Typography>
                       )
                     }
@@ -236,6 +237,16 @@ export default function UpdatesSection() {
                       // An agent that was switched off must not install
                       // anything — the daemon refuses too, this just says so
                       // before the round-trip.
+                      disabled={ !updater.enabled }
+                      onDone={ () => void refetch() }
+                    />
+                  )
+                }
+                {
+                  osUpdate && (
+                    <OsApplyButton
+                      version={ osUpdate.version }
+                      dryRun={ updater.osDryRun }
                       disabled={ !updater.enabled }
                       onDone={ () => void refetch() }
                     />

@@ -41,6 +41,8 @@ export const UpdateStatusSchema = z.object({
   available: z.array(AvailableUpdateSchema),
   lastError: z.string().nullable(),
   lastApplied: z.string().nullable(),
+  // PODD_UPDATER_OS_DRY_RUN: an OS apply verifies and logs but writes nothing.
+  osDryRun: z.boolean(),
 });
 
 export type UpdateStatus = z.infer<typeof UpdateStatusSchema>;
