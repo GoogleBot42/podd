@@ -558,6 +558,9 @@ fn publish_sensor(status: &StatusTx, state: &SensorState, presence: &crate::sens
         }
         s.left.is_alarm_vibrating = state.alarm_left_running;
         s.right.is_alarm_vibrating = state.alarm_right_running;
+        if state.env.is_some() {
+            s.cover_env = state.env.clone();
+        }
         if let Some(b) = state.bed_temp {
             // Zones are ordered left to right; three per side (the split is
             // an assumption — the cover check's periodic log line shows it).
