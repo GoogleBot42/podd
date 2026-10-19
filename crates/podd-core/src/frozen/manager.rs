@@ -162,7 +162,7 @@ pub async fn run(
         ..FrozenState::default()
     };
     state.publish_reset(&mut client).await;
-    publish_frozen(&status, &state);
+    publish_frozen(&status, &state, &freeze);
 
     // grab hwinfo @ boot
     send_command(&mut writer, FrozenCommand::Ping).await;
@@ -190,7 +190,7 @@ pub async fn run(
                 Ok(packet) => {
                     watch.on_packet(Instant::now());
                     state.handle_packet(&mut client, packet).await;
-                    publish_frozen(&status, &state);
+                    publish_frozen(&status, &state, &freeze);
 
                     if state.is_active() != was_active {
                         if was_active {
@@ -436,6 +436,8 @@ pub async fn run(
                         ),
                     }
                     *overrides.side_mut(&side) = Some(ManualOverride { target, config_enabled, expires_at });
+                    // Show the new setpoint now, not on the next MCU frame.
+                    publish_frozen(&status, &state, &freeze);
                 }
             }
         }
@@ -444,17 +446,17 @@ pub async fn run(
 
 /// Publish the Frozen subsystem's live telemetry into the state watch.
 /// Read-only: derives the snapshot from already-parsed state (SAFE).
-fn publish_frozen(status: &StatusTx, state: &FrozenState) {
+fn publish_frozen(status: &StatusTx, state: &FrozenState, freeze: &FreezeGuard) {
     status.send_modify(|s: &mut DeviceSnapshot| {
         if let Some(t) = &state.temp {
             s.left.current_temp_c = Some(t.left_temp as f64 / 100.0);
             s.right.current_temp_c = Some(t.right_temp as f64 / 100.0);
         }
         if let Some(tar) = &state.left_target {
-            apply_target(&mut s.left, tar);
+            apply_target(&mut s.left, tar, freeze.wanted(BedSide::Left));
         }
         if let Some(tar) = &state.right_target {
-            apply_target(&mut s.right, tar);
+            apply_target(&mut s.right, tar, freeze.wanted(BedSide::Right));
         }
         s.is_priming = state.is_priming;
         s.water_level = state.water_full;
@@ -468,9 +470,15 @@ fn publish_frozen(status: &StatusTx, state: &FrozenState) {
 /// the 55–110 the wire contract allows, and garbled the temperature dial. An
 /// off side therefore keeps its last real setpoint (or stays unknown until it
 /// has one).
-fn apply_target(side: &mut SideSnapshot, tar: &FrozenTarget) {
+///
+/// The setpoint shown is the freeze guard's *wanted* target, not the echo:
+/// while the guard ramps cooling down the MCU holds a step near the water,
+/// and showing that step made every UI change snap back to it — a side
+/// cooling from a warm hold could not be set at all.
+fn apply_target(side: &mut SideSnapshot, tar: &FrozenTarget, wanted: Option<&FrozenTarget>) {
     if tar.enabled {
-        side.target_temp_c = Some(tar.temp as f64 / 100.0);
+        let shown = wanted.filter(|w| w.enabled).unwrap_or(tar);
+        side.target_temp_c = Some(shown.temp as f64 / 100.0);
     }
     side.is_on = tar.enabled;
 }
@@ -529,10 +537,13 @@ async fn handle_command(
             if on && duration_s > 0 {
                 expires_at = Some(Instant::now() + Duration::from_secs(duration_s as u64));
             }
-            let last = match side {
+            // Prefer the guard's wanted target: mid-ramp the echo is a step
+            // near the water, and re-latching it loses the user's setpoint.
+            let echoed = match side {
                 BedSide::Left => state.left_target.as_ref(),
                 BedSide::Right => state.right_target.as_ref(),
             };
+            let last = freeze.wanted(side).filter(|w| w.enabled).or(echoed);
             let wanted = FrozenTarget {
                 enabled: on,
                 temp: power_on_temp(last),
@@ -1281,18 +1292,37 @@ mod tests {
 
         // nothing known yet + an off side => still unknown (never 0 °C, which
         // the api layer would publish as targetTemperatureF: 32)
-        apply_target(&mut side, &target(false, 0));
+        apply_target(&mut side, &target(false, 0), None);
         assert_eq!(side.target_temp_c, None);
         assert!(!side.is_on);
 
         // a real setpoint is published
-        apply_target(&mut side, &target(true, 2722));
+        apply_target(&mut side, &target(true, 2722), None);
         assert_eq!(side.target_temp_c, Some(27.22));
         assert!(side.is_on);
 
         // turning the side off keeps the last real setpoint for the UI dial
-        apply_target(&mut side, &target(false, 0));
+        apply_target(&mut side, &target(false, 0), None);
         assert_eq!(side.target_temp_c, Some(27.22));
+        assert!(!side.is_on);
+    }
+
+    #[test]
+    fn apply_target_shows_the_wanted_setpoint_not_the_ramp_step() {
+        // Live 2026-10-19: left held 31.10 °C, user asked for 25.56; the
+        // freeze guard sent 29.18 and the UI snapped back to it on refetch.
+        let mut side = SideSnapshot::default();
+        apply_target(&mut side, &target(true, 2918), Some(&target(true, 2556)));
+        assert_eq!(side.target_temp_c, Some(25.56));
+        assert!(side.is_on);
+
+        // a wanted "off" (power-off in flight) shows the echo, not temp 0
+        apply_target(&mut side, &target(true, 2918), Some(&target(false, 0)));
+        assert_eq!(side.target_temp_c, Some(29.18));
+
+        // an off echo still keeps the last real setpoint, whatever is wanted
+        apply_target(&mut side, &target(false, 0), Some(&target(true, 2556)));
+        assert_eq!(side.target_temp_c, Some(29.18));
         assert!(!side.is_on);
     }
 
