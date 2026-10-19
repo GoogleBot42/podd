@@ -191,17 +191,11 @@ async fn power_on_mid_ramp_keeps_the_wanted_target() {
 /// (b2) Power off then on mid-ramp: the dial must keep the user's target
 /// while the side is off, and power-on must ramp back to it.
 ///
-/// FAILS on current main, two bugs (reported, not fixed here):
-/// * while off, the dial shows the ramp step (28.1 °C here): the off command
-///   makes the guard's wanted target "off", so `apply_target` falls back to
-///   the still-enabled echo, and the off echo then keeps that value;
-/// * power-on drives the bed to the 27.5 °C default, not the user's 25.56:
-///   by then the guard's wanted target is off and so is the echo, and
-///   `power_on_temp` ignores disabled targets — this happens on every
-///   off→on, ramp or no ramp, so #211's "carry the wanted target into
-///   SetPower" never applies after an off.
+/// Regression for two bugs the harness found in #211: while off, the dial
+/// showed the ramp step (28.1 °C here), and power-on drove the bed to the
+/// 27.5 °C default instead of the user's 25.56 — the guard forgot the
+/// setpoint once the wanted target went "off".
 #[tokio::test(start_paused = true)]
-#[ignore = "exposes the off->on setpoint-loss bug; see the doc comment"]
 async fn power_off_then_on_mid_ramp_restores_the_wanted_target() {
     local(async {
         let h = Harness::start(config([31.1, 31.1]), Schedules::default(), McuSpec::default());

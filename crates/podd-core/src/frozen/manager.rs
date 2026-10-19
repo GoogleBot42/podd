@@ -492,10 +492,10 @@ fn publish_frozen(status: &StatusTx, state: &FrozenState, freeze: &FreezeGuard) 
             s.right.current_temp_c = Some(t.right_temp as f64 / 100.0);
         }
         if let Some(tar) = &state.left_target {
-            apply_target(&mut s.left, tar, freeze.wanted(BedSide::Left));
+            apply_target(&mut s.left, tar, freeze.setpoint(BedSide::Left));
         }
         if let Some(tar) = &state.right_target {
-            apply_target(&mut s.right, tar, freeze.wanted(BedSide::Right));
+            apply_target(&mut s.right, tar, freeze.setpoint(BedSide::Right));
         }
         s.is_priming = state.is_priming;
         s.water_level = state.water_full;
@@ -510,14 +510,16 @@ fn publish_frozen(status: &StatusTx, state: &FrozenState, freeze: &FreezeGuard) 
 /// off side therefore keeps its last real setpoint (or stays unknown until it
 /// has one).
 ///
-/// The setpoint shown is the freeze guard's *wanted* target, not the echo:
-/// while the guard ramps cooling down the MCU holds a step near the water,
-/// and showing that step made every UI change snap back to it — a side
-/// cooling from a warm hold could not be set at all.
-fn apply_target(side: &mut SideSnapshot, tar: &FrozenTarget, wanted: Option<&FrozenTarget>) {
-    if tar.enabled {
-        let shown = wanted.filter(|w| w.enabled).unwrap_or(tar);
-        side.target_temp_c = Some(shown.temp as f64 / 100.0);
+/// The setpoint shown is the freeze guard's remembered setpoint
+/// ([`FreezeGuard::setpoint`]), not the echo: while the guard ramps cooling
+/// down the MCU holds a step near the water, and showing that step made every
+/// UI change snap back to it — a side cooling from a warm hold could not be
+/// set at all. The echo is only a fallback before the side has had one.
+fn apply_target(side: &mut SideSnapshot, tar: &FrozenTarget, setpoint: Option<&FrozenTarget>) {
+    if let Some(sp) = setpoint {
+        side.target_temp_c = Some(sp.temp as f64 / 100.0);
+    } else if tar.enabled {
+        side.target_temp_c = Some(tar.temp as f64 / 100.0);
     }
     side.is_on = tar.enabled;
 }
@@ -582,7 +584,7 @@ async fn handle_command<S: AsyncRead + AsyncWrite + Unpin>(
                 BedSide::Left => state.left_target.as_ref(),
                 BedSide::Right => state.right_target.as_ref(),
             };
-            let last = freeze.wanted(side).filter(|w| w.enabled).or(echoed);
+            let last = freeze.setpoint(side).or(echoed);
             let wanted = FrozenTarget {
                 enabled: on,
                 temp: power_on_temp(last),
@@ -1361,13 +1363,14 @@ mod tests {
         assert_eq!(side.target_temp_c, Some(25.56));
         assert!(side.is_on);
 
-        // a wanted "off" (power-off in flight) shows the echo, not temp 0
-        apply_target(&mut side, &target(true, 2918), Some(&target(false, 0)));
-        assert_eq!(side.target_temp_c, Some(29.18));
+        // power-off in flight (echo still on at the ramp step): the
+        // remembered setpoint, not the step
+        apply_target(&mut side, &target(true, 2918), Some(&target(true, 2556)));
+        assert_eq!(side.target_temp_c, Some(25.56));
 
-        // an off echo still keeps the last real setpoint, whatever is wanted
+        // an off side shows the setpoint it will come back on at
         apply_target(&mut side, &target(false, 0), Some(&target(true, 2556)));
-        assert_eq!(side.target_temp_c, Some(29.18));
+        assert_eq!(side.target_temp_c, Some(25.56));
         assert!(!side.is_on);
     }
 
