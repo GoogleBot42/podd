@@ -6,3 +6,8 @@ pub mod state;
 
 pub use manager::run;
 pub use pod_proto::frozen::{FrozenCommand, FrozenPacket};
+
+#[cfg(test)]
+mod loop_harness;
+#[cfg(test)]
+mod loop_tests;

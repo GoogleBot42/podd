@@ -148,6 +148,9 @@ struct SideGuard {
     /// `(wanted, returned)` of the latest call, whatever the guard's state —
     /// for [`FreezeGuard::diag`] only.
     last: Option<(FrozenTarget, FrozenTarget)>,
+    /// The last *enabled* wanted target — survives the side being switched
+    /// off, so power-on and an off side's dial keep the user's setpoint.
+    setpoint: Option<FrozenTarget>,
 }
 
 /// The guard's internals for one side, for the telemetry recorder: enough to
@@ -218,15 +221,19 @@ impl FreezeGuard {
     ) -> FrozenTarget {
         let g = self.side_mut(side);
         let effective = g.effective(side, wanted.clone(), readings, now, p);
+        if wanted.enabled {
+            g.setpoint = Some(wanted.clone());
+        }
         g.last = Some((wanted, effective.clone()));
         effective
     }
 
-    /// What the schedule / manual override last asked for on `side` — the
-    /// user's setpoint, as opposed to the ramped or thaw-held target the MCU
-    /// echoes. `None` until the guard has run for that side.
-    pub fn wanted(&self, side: BedSide) -> Option<&FrozenTarget> {
-        self.side(side).last.as_ref().map(|(w, _)| w)
+    /// The last setpoint the schedule / manual override asked for on `side`
+    /// while it was on — the user's setpoint, as opposed to the ramped or
+    /// thaw-held target the MCU echoes. Kept while the side is off. `None`
+    /// until the side has been on.
+    pub fn setpoint(&self, side: BedSide) -> Option<&FrozenTarget> {
+        self.side(side).setpoint.as_ref()
     }
 
     /// Read-only view of one side's guard state.

@@ -11,6 +11,7 @@ use crate::schedule::{self, Schedules};
 use crate::settings::{Settings, TemperatureScheduleOverride};
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use jiff::{Timestamp, Zoned, civil::Time, tz::TimeZone};
+use embedded_hal::i2c::I2c;
 use linux_embedded_hal::I2cdev;
 use pod_proto::codec::{CommandTrait, PacketCodec};
 use pod_proto::frozen::packet::FrozenTarget;
@@ -21,7 +22,7 @@ use rumqttc::AsyncClient;
 use thiserror::Error;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{Duration, Instant, interval, sleep};
-use tokio_serial::SerialStream;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::codec::Framed;
 
 const HWINFO_INT: Duration = Duration::from_secs(1);
@@ -93,23 +94,61 @@ pub enum FrozenError {
     SetpointIgnored(BedSide, u64),
 }
 
-type Writer = SplitSink<Framed<SerialStream, PacketCodec<FrozenPacket>>, FrozenCommand>;
+type Writer<S> = SplitSink<Framed<S, PacketCodec<FrozenPacket>>, FrozenCommand>;
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     port: &str,
     baud: u32,
+    config_rx: watch::Receiver<Config>,
+    schedules_rx: watch::Receiver<Schedules>,
+    settings_rx: watch::Receiver<Settings>,
+    led: IS31FL3194Controller<I2cdev>,
+    client: AsyncClient,
+    status: StatusTx,
+    cmd_rx: mpsc::Receiver<Command>,
+    health: HealthRegistry,
+    dry_run: bool,
+    recorder: Recorder,
+) -> Result<(), FrozenError> {
+    run_on(
+        || create_framed_port::<FrozenPacket>(port, baud),
+        config_rx,
+        schedules_rx,
+        settings_rx,
+        led,
+        client,
+        status,
+        cmd_rx,
+        health,
+        dry_run,
+        recorder,
+    )
+    .await
+}
+
+/// The Frozen control loop over any byte stream: [`run`] hands it the serial
+/// port, the loop harness (`frozen::loop_harness`) an in-memory pipe to a fake
+/// MCU. `open` is called where the serial port always was opened, so the
+/// startup order (LED idle, freeze-guard log, then the port) is unchanged.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_on<S, I>(
+    open: impl FnOnce() -> Result<Framed<S, PacketCodec<FrozenPacket>>, SerialError>,
     mut config_rx: watch::Receiver<Config>,
     mut schedules_rx: watch::Receiver<Schedules>,
     mut settings_rx: watch::Receiver<Settings>,
-    mut led: IS31FL3194Controller<I2cdev>,
+    mut led: IS31FL3194Controller<I>,
     mut client: AsyncClient,
     status: StatusTx,
     mut cmd_rx: mpsc::Receiver<Command>,
     health: HealthRegistry,
     dry_run: bool,
     recorder: Recorder,
-) -> Result<(), FrozenError> {
+) -> Result<(), FrozenError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    I: I2c<Error: std::fmt::Display>,
+{
     log::info!("Initializing Frozen Subsystem...");
     health.report(
         health::COVER_CONTROL,
@@ -154,7 +193,7 @@ pub async fn run(
     // `Command::SetSettings`.
     let mut temp_overrides = temp_overrides_from(&settings_rx.borrow_and_update());
 
-    let (mut writer, mut reader) = create_framed_port::<FrozenPacket>(port, baud)?.split();
+    let (mut writer, mut reader) = open()?.split();
 
     // assume water present until firmware says otherwise
     let mut state = FrozenState {
@@ -453,10 +492,10 @@ fn publish_frozen(status: &StatusTx, state: &FrozenState, freeze: &FreezeGuard) 
             s.right.current_temp_c = Some(t.right_temp as f64 / 100.0);
         }
         if let Some(tar) = &state.left_target {
-            apply_target(&mut s.left, tar, freeze.wanted(BedSide::Left));
+            apply_target(&mut s.left, tar, freeze.setpoint(BedSide::Left));
         }
         if let Some(tar) = &state.right_target {
-            apply_target(&mut s.right, tar, freeze.wanted(BedSide::Right));
+            apply_target(&mut s.right, tar, freeze.setpoint(BedSide::Right));
         }
         s.is_priming = state.is_priming;
         s.water_level = state.water_full;
@@ -471,14 +510,16 @@ fn publish_frozen(status: &StatusTx, state: &FrozenState, freeze: &FreezeGuard) 
 /// off side therefore keeps its last real setpoint (or stays unknown until it
 /// has one).
 ///
-/// The setpoint shown is the freeze guard's *wanted* target, not the echo:
-/// while the guard ramps cooling down the MCU holds a step near the water,
-/// and showing that step made every UI change snap back to it — a side
-/// cooling from a warm hold could not be set at all.
-fn apply_target(side: &mut SideSnapshot, tar: &FrozenTarget, wanted: Option<&FrozenTarget>) {
-    if tar.enabled {
-        let shown = wanted.filter(|w| w.enabled).unwrap_or(tar);
-        side.target_temp_c = Some(shown.temp as f64 / 100.0);
+/// The setpoint shown is the freeze guard's remembered setpoint
+/// ([`FreezeGuard::setpoint`]), not the echo: while the guard ramps cooling
+/// down the MCU holds a step near the water, and showing that step made every
+/// UI change snap back to it — a side cooling from a warm hold could not be
+/// set at all. The echo is only a fallback before the side has had one.
+fn apply_target(side: &mut SideSnapshot, tar: &FrozenTarget, setpoint: Option<&FrozenTarget>) {
+    if let Some(sp) = setpoint {
+        side.target_temp_c = Some(sp.temp as f64 / 100.0);
+    } else if tar.enabled {
+        side.target_temp_c = Some(tar.temp as f64 / 100.0);
     }
     side.is_on = tar.enabled;
 }
@@ -503,8 +544,8 @@ fn f_to_centi_c(f: i32) -> u16 {
 /// or held above the water during a thaw) — the override must hold the wanted
 /// value so the
 /// ramp keeps converging on it from the scheduler tick.
-async fn handle_command(
-    writer: &mut Writer,
+async fn handle_command<S: AsyncRead + AsyncWrite + Unpin>(
+    writer: &mut Writer<S>,
     state: &FrozenState,
     dry_run: bool,
     cmd: Command,
@@ -543,7 +584,7 @@ async fn handle_command(
                 BedSide::Left => state.left_target.as_ref(),
                 BedSide::Right => state.right_target.as_ref(),
             };
-            let last = freeze.wanted(side).filter(|w| w.enabled).or(echoed);
+            let last = freeze.setpoint(side).or(echoed);
             let wanted = FrozenTarget {
                 enabled: on,
                 temp: power_on_temp(last),
@@ -1010,7 +1051,10 @@ fn resolve_target(
         .unwrap_or(config_wanted)
 }
 
-async fn send_command(writer: &mut Writer, cmd: FrozenCommand) {
+async fn send_command<S: AsyncRead + AsyncWrite + Unpin>(
+    writer: &mut Writer<S>,
+    cmd: FrozenCommand,
+) {
     let name = cmd.to_string();
     log::debug!(" -> {name}");
     if let Err(e) = writer.send(cmd).await {
@@ -1093,7 +1137,10 @@ fn led_thermal_state(state: &FrozenState) -> LedThermalState {
     }
 }
 
-fn set_led(led: &mut IS31FL3194Controller<I2cdev>, cfg: &IS31FL3194Config) {
+fn set_led<I: I2c<Error: std::fmt::Display>>(
+    led: &mut IS31FL3194Controller<I>,
+    cfg: &IS31FL3194Config,
+) {
     if let Err(e) = led.set(cfg) {
         log::error!("Failed to set LED: {e}");
     }
@@ -1316,13 +1363,14 @@ mod tests {
         assert_eq!(side.target_temp_c, Some(25.56));
         assert!(side.is_on);
 
-        // a wanted "off" (power-off in flight) shows the echo, not temp 0
-        apply_target(&mut side, &target(true, 2918), Some(&target(false, 0)));
-        assert_eq!(side.target_temp_c, Some(29.18));
+        // power-off in flight (echo still on at the ramp step): the
+        // remembered setpoint, not the step
+        apply_target(&mut side, &target(true, 2918), Some(&target(true, 2556)));
+        assert_eq!(side.target_temp_c, Some(25.56));
 
-        // an off echo still keeps the last real setpoint, whatever is wanted
+        // an off side shows the setpoint it will come back on at
         apply_target(&mut side, &target(false, 0), Some(&target(true, 2556)));
-        assert_eq!(side.target_temp_c, Some(29.18));
+        assert_eq!(side.target_temp_c, Some(25.56));
         assert!(!side.is_on);
     }
 

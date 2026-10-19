@@ -28,3 +28,7 @@ thiserror.workspace = true
 tokio.workspace = true
 tokio-serial.workspace = true
 tokio-util.workspace = true
+
+[dev-dependencies]
+# paused/auto-advancing time for the Frozen loop harness
+tokio = { workspace = true, features = ["test-util"] }
