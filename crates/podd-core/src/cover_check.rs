@@ -5,7 +5,7 @@
 //! while podd and the UI show the target as reached. On 2026-10-05 Jeremy
 //! woke to a bed far colder than set while the UI said it was on temperature
 //! and ignored new targets; a power cycle fixed it (the logs were lost).
-//! The cover's six bed-zone thermistors are on a different MCU and are read
+//! The cover's bed-zone thermistors (four per side) are on a different MCU and are read
 //! independently, so they can catch that disagreement.
 //!
 //! The water runs through the cover, so with a side on its zones should sit
@@ -17,8 +17,8 @@
 //! every side's target / water / zones each [`REPORT_INT`] so thresholds can
 //! be tuned from real nights before it is allowed to act (the first freeze
 //! guard acted on an untuned threshold and false-tripped 55 times in three
-//! nights). The zone-to-side split is also unverified; the report line
-//! shows it against the two sides' targets.
+//! nights). The zone-to-side split was verified from telemetry 2026-10-19 (see
+//! [`crate::sensor::manager::LEFT_ZONES`]).
 
 use tokio::sync::watch;
 use tokio::time::{Duration, Instant};
@@ -40,7 +40,7 @@ struct SideCheck {
     cold_since: Option<Instant>,
     tripped: bool,
     water: Option<(f64, Instant)>,
-    cover: Option<([f64; 3], Instant)>,
+    cover: Option<([f64; 4], Instant)>,
 }
 
 /// Remember a reading and when it last changed.
@@ -97,7 +97,7 @@ impl SideCheck {
 fn describe(s: &SideSnapshot) -> String {
     let t = |v: Option<f64>| v.map_or("n/a".to_string(), |v| format!("{v:.2}"));
     let zones = s.cover_temps_c.map_or("n/a".to_string(), |z| {
-        format!("{:.2}/{:.2}/{:.2}", z[0], z[1], z[2])
+        z.map(|v| format!("{v:.2}")).join("/")
     });
     format!(
         "{} target {} water {} cover {}",
@@ -148,7 +148,7 @@ mod tests {
 
     const MIN: Duration = Duration::from_secs(60);
 
-    fn side(on: bool, target: f64, water: f64, cover: [f64; 3]) -> SideSnapshot {
+    fn side(on: bool, target: f64, water: f64, cover: [f64; 4]) -> SideSnapshot {
         SideSnapshot {
             is_on: on,
             target_temp_c: Some(target),
@@ -169,7 +169,7 @@ mod tests {
     #[test]
     fn a_cover_tracking_the_water_never_trips() {
         let mut c = SideCheck::default();
-        let lines = run(&mut c, Instant::now(), 600, |e| side(true, 27.2, 27.0 + e, [25.0, 27.5, 33.0]));
+        let lines = run(&mut c, Instant::now(), 600, |e| side(true, 27.2, 27.0 + e, [25.0, 27.5, 33.0, 26.0]));
         assert!(lines.is_empty(), "{lines:?}");
     }
 
@@ -177,9 +177,9 @@ mod tests {
     fn a_cover_far_colder_than_water_and_target_trips_after_the_hold() {
         let mut c = SideCheck::default();
         let t0 = Instant::now();
-        let lines = run(&mut c, t0, 29, |e| side(true, 27.2, 27.1 + e, [18.0 + e, 19.0, 20.0]));
+        let lines = run(&mut c, t0, 29, |e| side(true, 27.2, 27.1 + e, [18.0 + e, 19.0, 20.0, 19.5]));
         assert!(lines.is_empty());
-        let lines = run(&mut c, t0 + MIN * 29, 11, |e| side(true, 27.2, 27.1 + e, [18.0 + e, 19.0, 20.0]));
+        let lines = run(&mut c, t0 + MIN * 29, 11, |e| side(true, 27.2, 27.1 + e, [18.0 + e, 19.0, 20.0, 19.5]));
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(lines[0].contains("may be wrong"), "{}", lines[0]);
         assert!(c.tripped);
@@ -189,21 +189,21 @@ mod tests {
     fn recovery_is_reported_once() {
         let mut c = SideCheck::default();
         let t0 = Instant::now();
-        run(&mut c, t0, 40, |e| side(true, 27.2, 27.1 + e, [18.0 + e, 19.0, 20.0]));
+        run(&mut c, t0, 40, |e| side(true, 27.2, 27.1 + e, [18.0 + e, 19.0, 20.0, 19.5]));
         let later = t0 + MIN * 41;
-        let line = c.observe("Left", &side(true, 27.2, 27.0, [26.0, 27.0, 28.0]), later);
+        let line = c.observe("Left", &side(true, 27.2, 27.0, [26.0, 27.0, 28.0, 27.5]), later);
         assert!(line.unwrap().contains("agree again"));
-        assert!(c.observe("Left", &side(true, 27.2, 27.01, [26.0, 27.0, 28.0]), later + MIN).is_none());
+        assert!(c.observe("Left", &side(true, 27.2, 27.01, [26.0, 27.0, 28.0, 27.5]), later + MIN).is_none());
     }
 
     #[test]
     fn a_side_that_is_off_or_cooling_on_purpose_is_not_flagged() {
         let mut c = SideCheck::default();
         // off: the cover drifts to room temperature
-        assert!(run(&mut c, Instant::now(), 90, |e| side(false, 27.2, 27.0 + e, [18.0, 18.0, 18.0])).is_empty());
+        assert!(run(&mut c, Instant::now(), 90, |e| side(false, 27.2, 27.0 + e, [18.0, 18.0, 18.0, 18.0])).is_empty());
         // a deep cooling target the cover is following
         let mut c = SideCheck::default();
-        assert!(run(&mut c, Instant::now(), 90, |e| side(true, 16.0, 17.0 + e, [15.0, 15.5, 16.0])).is_empty());
+        assert!(run(&mut c, Instant::now(), 90, |e| side(true, 16.0, 17.0 + e, [15.0, 15.5, 16.0, 15.5])).is_empty());
     }
 
     #[test]
@@ -211,7 +211,7 @@ mod tests {
         let mut c = SideCheck::default();
         let t0 = Instant::now();
         // identical snapshot every minute: stale after 10 min, never 30 cold
-        let s = side(true, 27.2, 27.1, [18.0, 19.0, 20.0]);
+        let s = side(true, 27.2, 27.1, [18.0, 19.0, 20.0, 19.5]);
         let lines: Vec<_> = (0..120).filter_map(|m| c.observe("Left", &s, t0 + MIN * m)).collect();
         assert!(lines.is_empty(), "{lines:?}");
     }

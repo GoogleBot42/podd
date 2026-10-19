@@ -22,7 +22,7 @@ const SCALE_CENTI: &str = "{{ (value | float / 100) | round(2) }}";
 /// Target-temp topics publish a number or the literal string "disabled".
 const SCALE_CENTI_OR_DISABLED: &str =
     "{{ none if value == 'disabled' else (value | float / 100) | round(2) }}";
-/// bed_temp is a CSV of six zone readings (hundredths); average them.
+/// bed_temp is a CSV of all eight cover zone readings (hundredths); average them.
 const BED_TEMP_AVG: &str =
     "{{ ((value.split(',') | map('float') | sum) / (value.split(',') | length) / 100) | round(2) }}";
 

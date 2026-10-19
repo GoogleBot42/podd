@@ -28,8 +28,9 @@ pub struct SensorState {
     /// (left, right). Stops the scheduler's out-of-window cancel from killing
     /// it seconds after it starts.
     pub manual_alarm_until: [Option<std::time::Instant>; 2],
-    /// Latest six bed-zone temperatures (centi-°C), ordered left to right.
-    pub bed_temp: Option<[u16; 6]>,
+    /// Latest eight cover-zone temperatures (centi-°C), in wire order — the
+    /// sides are interleaved, see [`crate::sensor::manager::LEFT_ZONES`].
+    pub bed_temp: Option<[u16; 8]>,
     /// The whole latest temperature frame, for the telemetry recorder.
     pub env: Option<TemperatureData>,
 }
@@ -223,15 +224,12 @@ impl SensorState {
                 publish_high_freq(
                     client,
                     TOPIC_BED_TEMP,
-                    format!(
-                        "{},{},{},{},{},{}",
-                        u.bed[0], u.bed[1], u.bed[2], u.bed[3], u.bed[4], u.bed[5]
-                    ),
+                    u.bed.map(|v| v.to_string()).join(","),
                 );
                 publish_high_freq(client, TOPIC_AMBIENT_TEMP, u.ambient.to_string());
                 publish_high_freq(client, TOPIC_HUMIDITY, u.humidity.to_string());
                 publish_high_freq(client, TOPIC_MCU_TEMP, u.microcontroller.to_string());
-                self.bed_temp = Some([u.bed[0], u.bed[1], u.bed[2], u.bed[3], u.bed[4], u.bed[5]]);
+                self.bed_temp = Some(u.bed);
                 self.env = Some(u);
             }
             SensorPacket::Piezo(u) => {
