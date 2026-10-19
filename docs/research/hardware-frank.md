@@ -88,7 +88,7 @@ replacement can identify them by handshake (FW-version tag response).
   (it is compiled binary logic in `RawProtocol.cpp` / LSP). A replacement
   will need a logic-analyzer/UART capture to lock down exact framing bytes.
   What is certain: framed, stateful, opcode-based, with ack/response and
-  receive timeouts, plus a periodic heartbeat to Frozen (see §3).
+  receive timeouts. (No UART heartbeat to Frozen — see §3, corrected.)
 
 ---
 
@@ -113,7 +113,23 @@ Setpoint representation: a **discrete level** that maps to °C via lookup
 tables — RTTI names `17TemperatureLevels`, `16FrozenTempLevels`,
 `16SensorTempLevels` (offsets 411–414). Both forms are logged:
 `set target temp (%s: %d, %.2fC)` (461) — integer level **and** the resolved
-°C float. Thermostat push: `thermostat state pushed L %u %.2fC %u%% R %u
+°C float.
+
+**Recovered 2026-10-19.** It isn't a table. `16FrozenTempLevels` vtable slot 2
+(0x68b60 in the deployed frank) is piecewise linear, sending the °C as
+`int16(T×100)` (the same unit podd uses):
+
+| Level L | Water °C |
+|---|---|
+| L ≤ −100 | 10.0 (flat floor value) |
+| −100 < L < 0 | 15 + 0.12·(L+100) |
+| 0 ≤ L < 50 | 27 + 0.18·L |
+| 50 ≤ L ≤ 100 | 36 + 0.12·(L−50) |
+
+With free-sleep's `level = (F − 82.5)/27.5·100`, 78 °F gives about 25.1 °C,
+against podd's direct F→C of 25.56. Stock and podd agree within about 0.5 °C
+between 70 and 88 °F. The level→°C path has no bed-temperature term: stock
+controls on water temperature, like podd. Thermostat push: `thermostat state pushed L %u %.2fC %u%% R %u
 %.2fC %u%%` (577, `pushHeatingState`).
 
 Control entry points: `setHeatingState`, `setHeatingLevel`,
@@ -154,19 +170,51 @@ off. These are latched in the log via `Heat Fault`/`Thermostat Fault`.
 
 ## 3. Pump / water control (`frozen.cpp`)
 
-Frozen MCU drives the hydraulic + thermal loop. Command/target strings:
-- `pump[left]`, `pump[right]` (677/678) — per-side pump commands.
-- `solenoid` (676) — valve.
-- `priming` (697), `waterLevel` (698) — prime cycle + level sensing.
-- `keepAlive` (696) + `frozen.heartbeat` (700); missing beat →
-  `[frozen] failed to update heartbeat` (695). **Frank must send a periodic
-  heartbeat or Frozen faults/shuts down** — a from-scratch controller has to
-  reproduce this cadence.
-- Setpoint push to MCU: `[frozen] -> FW: temps %.2f %.2f %.2f %.2f` (693)
-  — four float temperatures (left/right × loop, or TEC hot/cold + water) —
-  and `[frozen] -> FW: water %s` (694).
-- Generic command channel: `[frozen] -> %s` (692),
-  `[frozen] wrong state %d dropped cmd 0x%x` (674).
+Frozen MCU drives the hydraulic + thermal loop. **Corrected 2026-10-19** from
+disassembly of the deployed frank and the Frozen app image
+(`opt/eight/lib/subsystem_updates/firmware-frozen.bbin`, Thumb, mapped at
+0x0800a000). An earlier reading of the strings below took them for host
+commands. They aren't:
+- `pump\[left\]`, `pump\[right\]`, `solenoid`, `priming`, `waterLevel`,
+  `needsPrime` are **regexes frank uses to parse the MCU's `FW:` log lines**
+  (escaped brackets), not commands. `[frozen] -> FW: temps …` / `water %s` are
+  frank's logs of those parsed lines.
+- `keepAlive` writes the host-side watchdog file
+  `/var/volatile/tmp/frozen.heartbeat`. **There is no UART heartbeat.**
+
+What the Frozen app dispatcher (`fcn.0800eef0`) actually accepts:
+
+| Opcode | Payload | Meaning |
+|---|---|---|
+| `0x01` | — | ping |
+| `0x40` | `side, enabled, temp×100 (u16)` | set_side (frank sends the same layout podd does) |
+| `0x41` | — | get temperatures |
+| `0x44` | u32 | set mode: low 3 bits PID mode, bit 3 "fast" (shorter timer periods, not pump speed) |
+| `0x50` | — | dump 1-wire sensor IDs |
+| `0x51` | … | writes calibration (cw_empty/cw_full, sensor IDs) — **never send** |
+| `0x52` | none / `01` | start prime / cancel prime — no other arguments |
+| `0x54` | `flags, u16 seconds` | purge: bit0 main solenoid, bit1 float valve; no pumps; never seen sent by frank |
+
+**Priming is entirely MCU-side.** frank sends a bare `0x52` (DAC command 13)
+and nothing before, during or after. The sequence (`fcn.08010858` /
+`fcn.080103ec`):
+- **Empty phases:** 600/450/300/150 s with both pumps fast, the solenoid
+  duty-cycled, and 30 s pumps-off pauses. It ends early with "done because
+  empty" if the tank reads empty.
+- **Purge phase:** 5 iterations of `purge.fast` 120 s, then `purge.side`
+  120 s per side (one pump at default, the other off), then a wait and a check
+  window, then `purge.empty` up to 300 s. The starting side alternates
+  L, R, L, R, L.
+- **"Failed purge":** a 1 s float-valve pulse that the float gate refuses. It
+  increments the consecutive and total counters. Its physical meaning is
+  uncertain.
+
+There is no host command for a per-side prime or for driving a single pump.
+
+**The link uses byte stuffing.** The MCU unescapes `0x7D` (next byte ^ 0x20)
+and sends `0x7E`/`0x7D` as `7D 5E`/`7D 5D`. The stock capture
+`backup/captures/cap_ttymxc2_38400.bin` @0xa9 shows it. podd doesn't handle
+this; see issue #214.
 
 ### Live Frozen debug lines (Pod 3 hub, podd, 2026-10-02)
 
@@ -335,9 +383,8 @@ bootloader lives in low flash and jumps to the app at the reset vector.
    gain (+ auto-range on railed/converged), receive time-stamped multi-channel
    samples (bedTemp, piezo-dual/sub, capSense, ambient, frzTemp), read heat
    current(mA)/thermistors, trigger vibration alarm (incl. high-current dual).
-3. **Frozen MCU protocol**: per-side pump commands, solenoid, prime, water
-   level, push 4 target temps + water command, and a **periodic heartbeat**
-   (`keepAlive`) or it faults.
+3. **Frozen MCU protocol**: set_side, get temps, set mode, prime/cancel —
+   see the opcode table in §3 (corrected 2026-10-19; no heartbeat).
 4. **Thermostat control loop**: level↔°C tables (17 levels), per-side
    setpoint/power%, expiration timers, `heat/state1.dat` persistence, schedule
    parser.
