@@ -547,6 +547,23 @@ pub(crate) fn clock_is_synced() -> bool {
     std::path::Path::new(CLOCK_SYNC_FILE).exists()
 }
 
+/// Which of the cover's eight bed thermistors sit under each side. The wire
+/// order interleaves the sides: stock firmware logs four per side
+/// (`[Bedtemp] L[%d] %d %d %d R[%d] %d %d %d`), and on the live Pod 4 cover
+/// (telemetry 2026-10-18/19) channels 0/2/3/4 track the left water loop and
+/// 1/5/6/7 the right. With the bed empty, left water at 31 °C and right at
+/// 25.5 °C, they read 30.2/28.8/30.4/30.3 and 23.5/23.8/23.5/22.6. When the
+/// right sleeper got in, only 1/5/6/7 rose. The earlier 0-2 / 3-5 split read
+/// the right side's "cover" mostly off the left side's heat.
+pub(crate) const LEFT_ZONES: [usize; 4] = [0, 2, 3, 4];
+pub(crate) const RIGHT_ZONES: [usize; 4] = [1, 5, 6, 7];
+
+/// Split a raw bed-temperature frame (centi-°C) into per-side zones, °C.
+fn cover_zones(bed: &[u16; 8]) -> ([f64; 4], [f64; 4]) {
+    let side = |zones: [usize; 4]| zones.map(|i| bed[i] as f64 / 100.0);
+    (side(LEFT_ZONES), side(RIGHT_ZONES))
+}
+
 /// Publish the Sensor subsystem's live telemetry into the state watch.
 /// Read-only: derives the snapshot from already-parsed state (SAFE).
 fn publish_sensor(status: &StatusTx, state: &SensorState, presence: &crate::sensor::presence::PresenceState) {
@@ -562,11 +579,9 @@ fn publish_sensor(status: &StatusTx, state: &SensorState, presence: &crate::sens
             s.cover_env = state.env.clone();
         }
         if let Some(b) = state.bed_temp {
-            // Zones are ordered left to right; three per side (the split is
-            // an assumption — the cover check's periodic log line shows it).
-            let c = |v: u16| v as f64 / 100.0;
-            s.left.cover_temps_c = Some([c(b[0]), c(b[1]), c(b[2])]);
-            s.right.cover_temps_c = Some([c(b[3]), c(b[4]), c(b[5])]);
+            let (left, right) = cover_zones(&b);
+            s.left.cover_temps_c = Some(left);
+            s.right.cover_temps_c = Some(right);
         }
     });
 }
@@ -1081,6 +1096,19 @@ mod tests {
     use crate::config::{AlarmConfig, SideConfig};
     use jiff::civil::{date, time};
     use jiff::tz::TimeZone;
+
+    #[test]
+    fn cover_zones_follow_the_live_side_split() {
+        // Recorded 2026-10-19T04:40Z, bed empty: left water 31.1 °C, right
+        // 25.5 °C, room 22.3 °C.
+        let bed = [3023, 2346, 2881, 3038, 3026, 2375, 2345, 2262];
+        let (left, right) = cover_zones(&bed);
+        assert_eq!(left, [30.23, 28.81, 30.38, 30.26]);
+        assert_eq!(right, [23.46, 23.75, 23.45, 22.62]);
+        // every left zone is warmer than every right one
+        let coolest_left = left.iter().copied().fold(f64::MAX, f64::min);
+        assert!(right.iter().all(|&r| r < coolest_left));
+    }
 
     /// wake / offset / duration -> a SideConfig whose only relevant fields are
     /// the alarm window ones.
