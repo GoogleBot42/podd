@@ -222,6 +222,13 @@ impl FreezeGuard {
         effective
     }
 
+    /// What the schedule / manual override last asked for on `side` — the
+    /// user's setpoint, as opposed to the ramped or thaw-held target the MCU
+    /// echoes. `None` until the guard has run for that side.
+    pub fn wanted(&self, side: BedSide) -> Option<&FrozenTarget> {
+        self.side(side).last.as_ref().map(|(w, _)| w)
+    }
+
     /// Read-only view of one side's guard state.
     pub fn diag(&self, side: BedSide, now: Instant, p: &FreezeParams) -> GuardDiag {
         let g = self.side(side);
