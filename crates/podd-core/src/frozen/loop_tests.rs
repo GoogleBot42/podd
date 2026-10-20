@@ -392,3 +392,80 @@ async fn first_setpoints_after_boot_are_ramped() {
     })
     .await
 }
+
+/// Surface control end to end (the dial is a mattress-surface target): a
+/// sleeper keeps the right side's cover 3 °C above its water, as on the live
+/// bed 2026-10-18/19. The loop must lower the water until the surface sits
+/// within the deadband of the dial — never more than the 5 °C bound below
+/// it, never faster than the freeze guard allows — while the API keeps
+/// showing the dial. When the cover goes stale, the water returns to the
+/// dial and the API falls back to reporting the water.
+#[tokio::test(start_paused = true)]
+async fn surface_loop_cools_the_water_until_the_surface_meets_the_dial() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    local(async {
+        let mut cfg = config([31.1, 25.56]);
+        // the max gain (time constant 15 min) keeps the simulated hours short
+        cfg.surface_control.gain_per_hour = 4.0;
+        let spec = McuSpec { water: [3110, 2556], ..McuSpec::default() };
+        let h = Harness::start(cfg, Schedules::default(), spec);
+        let dial = held(Right, 2556);
+        h.run_for(secs(30)).await;
+        assert_eq!(h.mcu().target[1].as_ref(), Some(&dial), "premise: on at the dial");
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let feeder = h.feed_cover(Right, 3.0, stop.clone());
+        let t0 = Instant::now();
+        h.assert_target_held(Right, shown(&dial), secs(3600), secs(60)).await;
+
+        let surface = h.surface_c(Right).expect("the API reports the surface");
+        assert!((surface - 25.56).abs() <= 0.8, "surface {surface} should be near the dial");
+        let water_target = h.mcu().target[1].clone().expect("right on");
+        assert!(
+            (2250..=2335).contains(&water_target.temp),
+            "water target {water_target:?}: dial − ~2.5 °C (3 °C bias less the deadband)"
+        );
+        // bounded both ways, and the left side is left alone
+        assert_ramp_bounded(&h.mcu(), Right, t0, &held(Right, 2556 - 500));
+        assert_eq!(h.mcu().target[0].as_ref(), Some(&held(Left, 3110)));
+
+        // the cover freezes: the offset decays and the water goes back to the dial
+        stop.store(true, Ordering::Relaxed);
+        feeder.await.unwrap();
+        h.run_for(secs(3600)).await;
+        assert_eq!(h.mcu().target[1].as_ref(), Some(&dial));
+        assert_eq!(h.surface_c(Right), None, "stale cover: the API reports the water again");
+        assert_eq!(h.target_c(Right), Some(shown(&dial)));
+    })
+    .await
+}
+
+/// Power off and on again with surface control holding an offset: the side
+/// comes back at the dial (the offset reset), and the API shows the dial.
+#[tokio::test(start_paused = true)]
+async fn surface_offset_resets_across_power_off_on() {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    local(async {
+        let mut cfg = config([31.1, 25.56]);
+        cfg.surface_control.gain_per_hour = 4.0;
+        let spec = McuSpec { water: [3110, 2556], ..McuSpec::default() };
+        let h = Harness::start(cfg, Schedules::default(), spec);
+        let dial = held(Right, 2556);
+        let _feeder = h.feed_cover(Right, 3.0, Arc::new(AtomicBool::new(false)));
+        h.run_for(secs(1800)).await;
+        assert!(h.mcu().target[1].as_ref().is_some_and(|t| t.temp < 2556 - 100), "premise: offset held");
+
+        h.send(Command::SetPower { side: Right, on: false, duration_s: 0 }).await;
+        h.run_for(secs(15)).await;
+        assert!(!h.is_on(Right));
+        assert_eq!(h.target_c(Right), Some(shown(&dial)));
+        h.send(Command::SetPower { side: Right, on: true, duration_s: 0 }).await;
+        h.run_for(secs(1)).await;
+        assert_eq!(h.target_c(Right), Some(shown(&dial)));
+        let first_on = h.mcu().setpoints.iter().rev().find(|r| r.side == Right && r.tar.enabled).cloned();
+        assert_eq!(first_on.map(|r| r.tar), Some(dial), "power-on starts from the dial, not the old offset");
+    })
+    .await
+}

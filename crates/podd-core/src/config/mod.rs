@@ -237,6 +237,38 @@ impl Default for FreezeProtectionConfig {
     }
 }
 
+/// Surface control: the dial sets the temperature of the mattress surface
+/// (the mean of the side's cover thermistors), not of the water. podd offsets
+/// the water setpoint from the dial by an amount it integrates from the
+/// surface error, bounded both ways. Every field has a default; an absent
+/// section enables it. `enabled: false` sends the dial straight to the water,
+/// as before.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SurfaceControlConfig {
+    pub enabled: bool,
+    /// The water may go at most this far (°C) below the dial.
+    pub max_cool_offset_c: f64,
+    /// ...and at most this far (°C) above it.
+    pub max_heat_offset_c: f64,
+    /// Offset change per hour (°C) for each °C the surface is off target.
+    pub gain_per_hour: f64,
+    /// Surface errors within this band (°C) leave the offset alone.
+    pub deadband_c: f64,
+}
+
+impl Default for SurfaceControlConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_cool_offset_c: 5.0,
+            max_heat_offset_c: 2.0,
+            gain_per_hour: 1.0,
+            deadband_c: 0.5,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     #[serde(deserialize_with = "timezone_de", serialize_with = "timezone_ser")]
@@ -265,6 +297,10 @@ pub struct Config {
     /// [`FreezeProtectionConfig`]).
     #[serde(default)]
     pub freeze_protection: FreezeProtectionConfig,
+    /// Closed loop on the cover thermistors. Absent section => enabled with
+    /// the defaults (see [`SurfaceControlConfig`]).
+    #[serde(default)]
+    pub surface_control: SurfaceControlConfig,
 }
 
 impl Config {

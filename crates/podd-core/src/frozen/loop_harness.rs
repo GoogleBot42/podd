@@ -39,7 +39,7 @@ use tokio::time::{Duration, Instant, interval, sleep};
 use tokio_util::codec::Framed;
 
 use super::manager::{FrozenError, run_on};
-use crate::bus::{Command, DeviceSnapshot};
+use crate::bus::{Command, DeviceSnapshot, StatusTx};
 use crate::config::{Config, SideConfig, SidesConfig};
 use crate::health::{HealthMap, HealthRegistry};
 use crate::led::IS31FL3194Controller;
@@ -339,6 +339,9 @@ pub async fn local<F: std::future::Future>(body: F) -> F::Output {
 /// [`local`].
 pub struct Harness {
     pub status: watch::Receiver<DeviceSnapshot>,
+    /// The loop's own snapshot sender, for scenarios that play the sensor
+    /// manager (cover zones).
+    pub status_tx: StatusTx,
     pub cmd: mpsc::Sender<Command>,
     /// Held so the loop's watch arms stay live, as in production; also there
     /// for scenarios that push a config / settings change.
@@ -364,6 +367,7 @@ impl Harness {
         let (schedules_tx, schedules_rx) = watch::channel(schedules);
         let (settings_tx, settings_rx) = watch::channel(Settings::default());
         let (status_tx, status_rx) = watch::channel(DeviceSnapshot::default());
+        let status_tx: StatusTx = Arc::new(status_tx);
         let (cmd_tx, cmd_rx) = mpsc::channel(16);
         let (health, health_rx) = HealthRegistry::new();
         let (client, eventloop) =
@@ -376,7 +380,7 @@ impl Harness {
             settings_rx,
             IS31FL3194Controller::new(NullI2c),
             client,
-            Arc::new(status_tx),
+            status_tx.clone(),
             cmd_rx,
             health,
             false,
@@ -385,6 +389,7 @@ impl Harness {
 
         Harness {
             status: status_rx,
+            status_tx,
             cmd: cmd_tx,
             config: config_tx,
             schedules: schedules_tx,
@@ -492,4 +497,44 @@ pub fn config(temps_c: [f32; 2]) -> Config {
         right: side(temps_c[1]),
     };
     cfg
+}
+
+impl Harness {
+    /// Play the sensor manager: every 4 s (its real poll period) write
+    /// `side`'s cover zones as that side's current water plus `bias` °C — a
+    /// surface warmed by a sleeper — with a hundredth of jitter so the
+    /// readings stay fresh. Runs until `stop` is set.
+    pub fn feed_cover(
+        &self,
+        side: BedSide,
+        bias: f64,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+    ) -> JoinHandle<()> {
+        let mcu = self.mcu.clone();
+        let status = self.status_tx.clone();
+        tokio::task::spawn_local(async move {
+            let mut tick = interval(Duration::from_secs(4));
+            let mut jitter = 0.0;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                tick.tick().await;
+                let water = mcu.lock().unwrap().water[side as usize] / 100.0;
+                jitter = 0.01 - jitter;
+                let zones = Some([water + bias + jitter; 4]);
+                status.send_modify(|s| match side {
+                    BedSide::Left => s.left.cover_temps_c = zones,
+                    BedSide::Right => s.right.cover_temps_c = zones,
+                });
+            }
+        })
+    }
+
+    /// What the API reports as `side`'s current temperature source, °C:
+    /// the surface while the surface loop has it, else the water.
+    pub fn surface_c(&self, side: BedSide) -> Option<f64> {
+        let s = self.status.borrow();
+        match side {
+            BedSide::Left => s.left.surface_temp_c,
+            BedSide::Right => s.right.surface_temp_c,
+        }
+    }
 }
