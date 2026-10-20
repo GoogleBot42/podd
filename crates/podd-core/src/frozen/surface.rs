@@ -42,6 +42,9 @@ const STEP: i32 = 25;
 /// Ticks further apart than this (MCU asleep, a stalled loop) integrate as
 /// if only this much time passed.
 const MAX_DT: Duration = Duration::from_secs(60);
+/// The offset integrates only while the water is within this many centi-°C
+/// of the target it is being driven to (dial + applied offset).
+const SETTLED: i32 = 100;
 /// Absolute water bounds (centi-°C) for an adjusted target, widened to
 /// include the dial itself: never colder than stock's minimum level
 /// (15 °C), never warmer than 40 °C, unless the dial is.
@@ -145,6 +148,7 @@ impl SurfaceLoop {
         side: BedSide,
         dial: FrozenTarget,
         cover: Option<[f64; 4]>,
+        water: Option<u16>,
         now: Instant,
         p: &SurfaceParams,
     ) -> FrozenTarget {
@@ -174,10 +178,17 @@ impl SurfaceLoop {
             return dial;
         }
 
+        // Anti-windup: only integrate once the water has reached the target
+        // it is being driven to. During a warm-up or a ramp the cover lags
+        // the water by most of an hour, and integrating that lag pinned both
+        // sides at the bound on the first night.
+        let settled = water.is_some_and(|w| {
+            (i32::from(w) - (i32::from(dial.temp) + s.applied)).abs() <= SETTLED
+        });
         match fresh {
             Some(surface) => {
                 let err = surface * 100.0 - f64::from(dial.temp);
-                if err.abs() > f64::from(p.deadband) {
+                if settled && err.abs() > f64::from(p.deadband) {
                     s.offset -= err * p.gain_per_s * dt.as_secs_f64();
                 }
             }
@@ -233,7 +244,8 @@ mod tests {
         let mut out = dial.clone();
         for i in 0..ticks {
             let j = (i % 2) as f64 * 0.01;
-            out = l.adjust(side, dial.clone(), Some([surface + j; 4]), t0 + TICK * i, p);
+            // the water has reached the last target sent: settled
+            out = l.adjust(side, dial.clone(), Some([surface + j; 4]), Some(out.temp), t0 + TICK * i, p);
         }
         out
     }
@@ -262,12 +274,39 @@ mod tests {
     }
 
     #[test]
-    fn a_cold_surface_warms_the_water_at_most_the_heat_bound() {
+    fn a_cold_surface_never_warms_the_water_by_default() {
+        // First night, 2026-10-20: the cold bedtime cover wound both sides up
+        // to a +2 °C warming offset before anyone got in.
         let p = SurfaceParams::default();
+        let mut l = SurfaceLoop::default();
+        let out = run(&mut l, Left, on(3110), 20.4, Instant::now(), 5000, &p);
+        assert_eq!(l.offset_c(Left), 0.0);
+        assert_eq!(out, on(3110));
+    }
+
+    #[test]
+    fn a_configured_heat_bound_caps_warming() {
+        let p = SurfaceParams { max_heat: 200, ..SurfaceParams::default() };
         let mut l = SurfaceLoop::default();
         let out = run(&mut l, Left, on(3110), 27.0, Instant::now(), 5000, &p);
         assert_eq!(l.offset_c(Left), 2.0);
         assert_eq!(out, on(3310).delimiter_safe(Left));
+    }
+
+    #[test]
+    fn no_integration_while_the_water_is_still_getting_there() {
+        // Bedtime warm-up: water far below the dial, cover at room
+        // temperature. Even a configured cooling error must not integrate.
+        let p = SurfaceParams::default();
+        let mut l = SurfaceLoop::default();
+        let t0 = Instant::now();
+        for i in 0..720 {
+            let j = (i % 2) as f64 * 0.01;
+            // surface "too warm" vs a cold dial, but the water is 4 °C off target
+            let out = l.adjust(Right, on(2000), Some([25.0 + j; 4]), Some(2400), t0 + TICK * i, &p);
+            assert_eq!(out, on(2000));
+        }
+        assert_eq!(l.offset_c(Right), 0.0);
     }
 
     #[test]
@@ -281,7 +320,7 @@ mod tests {
         let mut t = t0 + TICK * 2000;
         let mut out = on(0);
         for _ in 0..(6 * 60 * 3) {
-            out = l.adjust(Right, on(2556), Some([30.0; 4]), t, &p);
+            out = l.adjust(Right, on(2556), Some([30.0; 4]), Some(2556), t, &p);
             t += TICK;
         }
         assert_eq!(out, on(2556), "three hours without a fresh reading");
@@ -294,7 +333,7 @@ mod tests {
         let mut l = SurfaceLoop::default();
         let t0 = Instant::now();
         for i in 0..1000 {
-            assert_eq!(l.adjust(Right, on(2556), None, t0 + TICK * i, &p), on(2556));
+            assert_eq!(l.adjust(Right, on(2556), None, Some(2556), t0 + TICK * i, &p), on(2556));
         }
     }
 
@@ -305,11 +344,11 @@ mod tests {
         let t0 = Instant::now();
         run(&mut l, Right, on(2556), 30.0, t0, 2000, &p);
         let off = FrozenTarget::default();
-        assert_eq!(l.adjust(Right, off.clone(), Some([30.0; 4]), t0 + TICK * 2000, &p), off);
+        assert_eq!(l.adjust(Right, off.clone(), Some([30.0; 4]), Some(2056), t0 + TICK * 2000, &p), off);
         assert_eq!(l.offset_c(Right), 0.0);
         assert_eq!(l.setpoint(Right), Some(&on(2556)));
         // back on: starts from the dial, not the old bound
-        let out = l.adjust(Right, on(2556), Some([30.01; 4]), t0 + TICK * 2001, &p);
+        let out = l.adjust(Right, on(2556), Some([30.01; 4]), Some(2556), t0 + TICK * 2001, &p);
         assert_eq!(out, on(2556));
     }
 
@@ -328,8 +367,8 @@ mod tests {
         let p = SurfaceParams::default();
         let mut l = SurfaceLoop::default();
         let t0 = Instant::now();
-        l.adjust(Right, on(2556), Some([30.0; 4]), t0, &p);
-        l.adjust(Right, on(2556), Some([30.01; 4]), t0 + Duration::from_secs(3600), &p);
+        l.adjust(Right, on(2556), Some([30.0; 4]), Some(2556), t0, &p);
+        l.adjust(Right, on(2556), Some([30.01; 4]), Some(2556), t0 + Duration::from_secs(3600), &p);
         // 4.4 °C error for (capped) 60 s at 1 °C/h/°C = -0.07 °C -> rounds to 0
         assert_eq!(l.offset_c(Right), 0.0);
     }

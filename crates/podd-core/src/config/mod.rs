@@ -249,7 +249,10 @@ pub struct SurfaceControlConfig {
     pub enabled: bool,
     /// The water may go at most this far (°C) below the dial.
     pub max_cool_offset_c: f64,
-    /// ...and at most this far (°C) above it.
+    /// ...and at most this far (°C) above it. 0 by default: a warming offset
+    /// winds up at bedtime, when the cold cover lags the water by most of an
+    /// hour (first night, 2026-10-20: +2 °C on both sides before anyone got
+    /// in), and overheating a sleeper is worse than an unmet surface target.
     pub max_heat_offset_c: f64,
     /// Offset change per hour (°C) for each °C the surface is off target.
     pub gain_per_hour: f64,
@@ -262,7 +265,7 @@ impl Default for SurfaceControlConfig {
         Self {
             enabled: true,
             max_cool_offset_c: 5.0,
-            max_heat_offset_c: 2.0,
+            max_heat_offset_c: 0.0,
             gain_per_hour: 1.0,
             deadband_c: 0.5,
         }

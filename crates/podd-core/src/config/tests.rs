@@ -260,7 +260,7 @@ fn surface_control_partial_block_fills_defaults_and_round_trips() {
     let opts = ron::Options::default().with_default_extension(Extensions::IMPLICIT_SOME);
     let sc: SurfaceControlConfig = opts.from_str("(max_cool_offset_c: 3.0)").unwrap();
     assert_eq!(sc.max_cool_offset_c, 3.0);
-    assert_eq!(sc.max_heat_offset_c, 2.0);
+    assert_eq!(sc.max_heat_offset_c, 0.0);
     assert!(sc.enabled);
     let off: SurfaceControlConfig = opts.from_str("(enabled: false)").unwrap();
     assert!(!off.enabled);
