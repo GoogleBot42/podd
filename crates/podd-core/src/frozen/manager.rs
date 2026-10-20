@@ -51,6 +51,11 @@ struct CommandTimers {
     last_right_temp: Instant,
     last_probe: Instant,
     last_prime: Instant,
+    /// The setpoint last sent per side by the tick (`[left, right]`). An
+    /// echo of it counts as confirmed for [`FrozenWatch`] even when the
+    /// wanted target has moved on since (surface loop, ramp): the MCU is
+    /// answering, the target is just moving.
+    sent: [Option<FrozenTarget>; 2],
 }
 
 /// A manual (API/UI) setpoint that takes precedence over the config schedule
@@ -192,9 +197,10 @@ where
     }
     if surface_params.enabled {
         log::info!(
-            "Surface control on: dial = mattress surface; water offset -{:.2}..+{:.2}°C, {:.1}°C/h per °C, deadband {:.2}°C",
+            "Surface control on: dial = mattress surface; water offset -{:.2}..+{:.2}°C, {:.1}°C per °C now + {:.1}°C/h per °C, deadband {:.2}°C",
             surface_params.max_cool as f64 / 100.0,
             surface_params.max_heat as f64 / 100.0,
+            surface_params.kp,
             surface_params.gain_per_s * 3600.0,
             surface_params.deadband as f64 / 100.0,
         );
@@ -897,33 +903,24 @@ fn get_next_command(
         freeze.effective(side, water, readings(state, side), now, freeze_params)
     };
 
-    if now.duration_since(timers.last_left_temp) > TEMP_INT {
-        let wanted_left = wanted_for(BedSide::Left);
-        timers.last_left_temp = now;
-        let confirmed = state.left_target.as_ref() == Some(&wanted_left);
+    for side in [BedSide::Left, BedSide::Right] {
+        let (last, echo) = match side {
+            BedSide::Left => (&mut timers.last_left_temp, state.left_target.as_ref()),
+            BedSide::Right => (&mut timers.last_right_temp, state.right_target.as_ref()),
+        };
+        if now.duration_since(*last) <= TEMP_INT {
+            continue;
+        }
+        *last = now;
+        let wanted = wanted_for(side);
+        let current = echo == Some(&wanted);
+        let answering = current || (echo.is_some() && echo == timers.sent[side as usize].as_ref());
         if track_setpoints {
-            watch.setpoint(BedSide::Left, confirmed, now);
+            watch.setpoint(side, answering, now);
         }
-        if !confirmed {
-            return Some(FrozenCommand::SetTargetTemperature {
-                side: BedSide::Left,
-                tar: wanted_left,
-            });
-        }
-    }
-
-    if now.duration_since(timers.last_right_temp) > TEMP_INT {
-        let wanted_right = wanted_for(BedSide::Right);
-        timers.last_right_temp = now;
-        let confirmed = state.right_target.as_ref() == Some(&wanted_right);
-        if track_setpoints {
-            watch.setpoint(BedSide::Right, confirmed, now);
-        }
-        if !confirmed {
-            return Some(FrozenCommand::SetTargetTemperature {
-                side: BedSide::Right,
-                tar: wanted_right,
-            });
+        if !current {
+            timers.sent[side as usize] = Some(wanted.clone());
+            return Some(FrozenCommand::SetTargetTemperature { side, tar: wanted });
         }
     }
 
@@ -1207,6 +1204,7 @@ impl Default for CommandTimers {
             last_right_temp: ago,
             last_probe: ago,
             last_prime: ago,
+            sent: [None, None],
         }
     }
 }

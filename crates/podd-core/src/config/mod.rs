@@ -254,7 +254,11 @@ pub struct SurfaceControlConfig {
     /// hour (first night, 2026-10-20: +2 °C on both sides before anyone got
     /// in), and overheating a sleeper is worse than an unmet surface target.
     pub max_heat_offset_c: f64,
-    /// Offset change per hour (°C) for each °C the surface is off target.
+    /// Immediate water offset (°C) for each °C the surface is off target
+    /// (outside the deadband).
+    pub proportional: f64,
+    /// Further offset change per hour (°C) for each °C the surface is off
+    /// target — the slow trim that removes what the proportional part leaves.
     pub gain_per_hour: f64,
     /// Surface errors within this band (°C) leave the offset alone.
     pub deadband_c: f64,
@@ -266,6 +270,7 @@ impl Default for SurfaceControlConfig {
             enabled: true,
             max_cool_offset_c: 5.0,
             max_heat_offset_c: 0.0,
+            proportional: 1.0,
             gain_per_hour: 1.0,
             deadband_c: 0.5,
         }

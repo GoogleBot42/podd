@@ -143,8 +143,11 @@ live commands:
 - The dial (schedule or manual override) is a **surface** target. The
   surface is the mean of the side's four cover zones (channels 0/2/3/4 left,
   1/5/6/7 right; see `sensor::manager::LEFT_ZONES`).
-- An offset is integrated from the surface error, at `gain_per_hour` (1 °C/h
-  per °C), with a `deadband_c` (0.5 °C). It is applied in 0.25 °C steps and
+- The offset is proportional + integral on the surface error outside a soft
+  `deadband_c` (0.5 °C): `proportional` (1 °C per °C) acts at once, so a
+  sleeper's warm surface takes water off immediately, and `gain_per_hour`
+  (1 °C/h per °C) trims the rest. It is applied in 0.25 °C steps with
+  hysteresis, and
   bounded to −`max_cool_offset_c` (5 °C) … +`max_heat_offset_c` (0 °C by
   default: cooling only) around the dial, and never below 15 °C or above 40 °C
   unless the dial is. It integrates only while the water is within 1 °C of
