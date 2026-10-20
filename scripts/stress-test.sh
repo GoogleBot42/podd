@@ -4,6 +4,7 @@
 # (busybox sh + wget) against podd's local API, on an EMPTY bed.
 #
 #   nohup sh /data/podd/stress-test.sh > /dev/null 2>&1 &
+#   QUICK=1 STOP_AT=1950 nohup sh /data/podd/stress-test.sh > /dev/null 2>&1 &
 #
 # Steps each side alone through heat, cool and deep-cool targets, then cools
 # both at once (they share the TEC heatsink). Everything podd sees is in the
@@ -15,11 +16,16 @@
 # ramps, detects and thaws). The highest target is 95 °F (35 °C). If anyone
 # gets on the bed — or the presence endpoint stops answering — both sides go
 # off and the script exits. Make sure the daily prime is not due before it
-# finishes (about 5 h 10 min).
+# finishes (about 4 h 50 min; QUICK about 3 h 5 min).
 
 API=http://127.0.0.1:3000/api
 LOG=/data/podd/stress-$(date -u +%F).log
 POLL=30
+# QUICK=1: skip the heat and both-sides phases (cooling/freeze only, ~3 h 5 min).
+# STOP_AT=HHMM (UTC): end the run, both sides off, at that time - e.g. before
+# the daily prime.
+QUICK=${QUICK:-0}
+STOP_AT=${STOP_AT:-}
 
 say() {
     echo "$(date -u +%FT%TZ) $*" >> "$LOG"
@@ -45,6 +51,9 @@ abort() {
 hold() {
     end=$(( $(date +%s) + $1 * 60 ))
     while [ "$(date +%s)" -lt "$end" ]; do
+        if [ -n "$STOP_AT" ] && [ "$(date -u +%H%M)" -ge "$STOP_AT" ]; then
+            abort "STOP_AT $STOP_AT reached"
+        fi
         p=$(wget -q -O - "$API/metrics/presence" 2>/dev/null) || abort "presence endpoint not answering"
         case $p in
             *'"present":true'*) abort "someone is on the bed" ;;
@@ -67,14 +76,18 @@ both_off
 phase baseline 10 ''
 
 for side in right left; do
-    phase "$side-heat-95F" 30 "{\"$side\":{\"targetTemperatureF\":95}}"
-    phase "$side-cool-68F" 45 "{\"$side\":{\"targetTemperatureF\":68}}"
-    phase "$side-deep-60F" 45 "{\"$side\":{\"targetTemperatureF\":60}}"
+    if [ "$QUICK" != 1 ]; then
+        phase "$side-heat-95F" 30 "{\"$side\":{\"targetTemperatureF\":95}}"
+    fi
+    phase "$side-cool-68F" 40 "{\"$side\":{\"targetTemperatureF\":68}}"
+    phase "$side-deep-60F" 40 "{\"$side\":{\"targetTemperatureF\":60}}"
     # thaw: a warm target keeps the pump running while the TEC stops cooling
     phase "$side-thaw-86F" 10 "{\"$side\":{\"targetTemperatureF\":86}}"
     phase "$side-off" 0 "{\"$side\":{\"isOn\":false}}"
 done
 
-phase both-cool-68F 40 '{"left":{"targetTemperatureF":68},"right":{"targetTemperatureF":68}}'
+if [ "$QUICK" != 1 ]; then
+    phase both-cool-68F 40 '{"left":{"targetTemperatureF":68},"right":{"targetTemperatureF":68}}'
+fi
 both_off
 say "DONE stress test - both sides off"
