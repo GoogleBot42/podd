@@ -13,10 +13,12 @@ anything on the actuation path as safety-critical.
   Actuation-critical writes must retry until the firmware confirms — never
   fire-and-forget. (Deliberate duplication with
   `.claude/rules/actuation-safety.md` — keep both copies.)
-- LSP framing has **no byte-stuffing**: a `0x7E` byte anywhere in a payload gets
-  the whole frame silently dropped by the MCUs. Setpoints and alarm frames go
-  through delimiter-safe nudging, not escaping — new variable-payload commands
-  need the same (see `.claude/rules/actuation-safety.md`).
+- podd's LSP codec does **no byte-stuffing**, but the Frozen MCU does HDLC
+  stuffing (`0x7D` escape, found 2026-10-19, #214). Until #214 lands, a raw
+  `0x7E` *or* `0x7D` in a frame gets it silently dropped. Setpoints and alarm
+  frames go through delimiter-safe nudging (0x7E only so far), and new
+  variable-payload commands need the same (see
+  `.claude/rules/actuation-safety.md`).
 - Alarms must not arm before NTP sync — there is no RTC battery.
 - The heat exchanger can **freeze** under a deep cooling setpoint (water stops
   flowing, loop warms while the MCU "cools"; real incident 2026-09-03). Every
