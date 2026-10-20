@@ -798,6 +798,24 @@ async fn device_status_reflects_watch_snapshot() {
 }
 
 #[tokio::test]
+async fn device_status_current_is_the_surface_when_known() {
+    use podd_core::bus::DeviceSnapshot;
+
+    let mut snap = DeviceSnapshot::default();
+    snap.right.current_temp_c = Some(25.56); // water, 78 °F
+    snap.right.surface_temp_c = Some(30.0); // mattress surface, 86 °F
+    snap.left.current_temp_c = Some(25.56); // no surface reading: the water
+    let (_tx, rx) = tokio::sync::watch::channel(snap);
+    let store = StateStore::from_watch(rx, StoreConfig::default());
+    let control = Arc::new(MockControl::new());
+    let app = router(store, control as Arc<dyn PodControl>, None);
+
+    let v = body_json(app.oneshot(get("/api/deviceStatus")).await.unwrap()).await;
+    assert!((v["right"]["currentTemperatureF"].as_f64().unwrap() - 86.0).abs() < 0.5);
+    assert!((v["left"]["currentTemperatureF"].as_f64().unwrap() - 78.0).abs() < 0.5);
+}
+
+#[tokio::test]
 async fn off_side_target_stays_in_the_ui_range() {
     use podd_core::bus::DeviceSnapshot;
 
