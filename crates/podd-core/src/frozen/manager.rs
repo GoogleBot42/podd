@@ -1,6 +1,7 @@
 use crate::bus::{Command, DeviceSnapshot, SideSnapshot, StatusTx};
 use crate::config::{AwayMode, Config, SidesConfig};
 use crate::frozen::freeze::{FreezeGuard, FreezeParams, FreezeStatus, Readings};
+use crate::frozen::surface::{SurfaceLoop, SurfaceParams};
 use crate::frozen::sample;
 use crate::frozen::state::{FrozenState, TOPIC_LEFT_FREEZE, TOPIC_RIGHT_FREEZE};
 use crate::recorder::Recorder;
@@ -167,11 +168,15 @@ where
     let mut prime_enabled = cfg.prime_enabled;
     let mut side_config = cfg.profile.clone();
     let mut freeze_params = FreezeParams::from(&cfg.freeze_protection);
+    let mut surface_params = SurfaceParams::from(&cfg.surface_control);
     drop(cfg);
     // Water-loop freeze guard (#186): ramps cooling setpoints, detects an
     // iced heat exchanger and pauses cooling to thaw it. Runs on every
     // setpoint tick.
     let mut freeze = FreezeGuard::default();
+    // Closed loop on the cover thermistors: offsets the water target from the
+    // dial (see `frozen::surface`). Runs ahead of the freeze guard.
+    let mut surface = SurfaceLoop::default();
     let mut freeze_shown = [FreezeStatus::default(); 2];
     if freeze_params.enabled {
         log::info!(
@@ -184,6 +189,17 @@ where
         );
     } else {
         log::warn!("Freeze guard DISABLED by config — a frozen heat exchanger will not be detected");
+    }
+    if surface_params.enabled {
+        log::info!(
+            "Surface control on: dial = mattress surface; water offset -{:.2}..+{:.2}°C, {:.1}°C/h per °C, deadband {:.2}°C",
+            surface_params.max_cool as f64 / 100.0,
+            surface_params.max_heat as f64 / 100.0,
+            surface_params.gain_per_s * 3600.0,
+            surface_params.deadband as f64 / 100.0,
+        );
+    } else {
+        log::info!("Surface control off: the dial sets the water temperature");
     }
     // The per-weekday schedule, refreshed by `Command::SetSchedules`. It only
     // *replaces* the config profile for sides it owns (see [`wanted_target`]).
@@ -201,7 +217,7 @@ where
         ..FrozenState::default()
     };
     state.publish_reset(&mut client).await;
-    publish_frozen(&status, &state, &freeze);
+    publish_frozen(&status, &state, &surface);
 
     // grab hwinfo @ boot
     send_command(&mut writer, FrozenCommand::Ping).await;
@@ -229,7 +245,7 @@ where
                 Ok(packet) => {
                     watch.on_packet(Instant::now());
                     state.handle_packet(&mut client, packet).await;
-                    publish_frozen(&status, &state, &freeze);
+                    publish_frozen(&status, &state, &surface);
 
                     if state.is_active() != was_active {
                         if was_active {
@@ -310,6 +326,9 @@ where
                 &mut overrides,
                 &mut freeze,
                 &freeze_params,
+                &mut surface,
+                &surface_params,
+                covers(&status),
                 &mut watch,
             ) {
                 let now = Instant::now();
@@ -375,6 +394,7 @@ where
                 let extra = sample::Extra {
                     freeze: &freeze,
                     params: &freeze_params,
+                    surface: &surface,
                     snapshot: &snapshot,
                     sends,
                     overrides: [overrides.left.is_some(), overrides.right.is_some()],
@@ -406,6 +426,11 @@ where
                 if new_freeze != freeze_params {
                     log::info!("Freeze guard config changed: {new_freeze:?}");
                     freeze_params = new_freeze;
+                }
+                let new_surface = SurfaceParams::from(&cfg.surface_control);
+                if new_surface != surface_params {
+                    log::info!("Surface control config changed: {new_surface:?}");
+                    surface_params = new_surface;
                 }
                 let led_changed = cfg.led != led_cfg;
                 if led_changed {
@@ -449,7 +474,11 @@ where
                     prime_verify = Some(PrimeVerify { sent_at: Instant::now(), attempts: 1 });
                 }
                 if let Some((side, target, expires_at)) =
-                    handle_command(&mut writer, &state, dry_run, cmd, &mut freeze, &freeze_params).await
+                    handle_command(
+                        &mut writer, &state, dry_run, cmd, &mut freeze, &freeze_params,
+                        &mut surface, &surface_params, covers(&status),
+                    )
+                    .await
                 {
                     // Must be the *same* wanted target `get_next_command`
                     // computes, weekly path included: this flag is what the
@@ -476,7 +505,7 @@ where
                     }
                     *overrides.side_mut(&side) = Some(ManualOverride { target, config_enabled, expires_at });
                     // Show the new setpoint now, not on the next MCU frame.
-                    publish_frozen(&status, &state, &freeze);
+                    publish_frozen(&status, &state, &surface);
                 }
             }
         }
@@ -485,17 +514,19 @@ where
 
 /// Publish the Frozen subsystem's live telemetry into the state watch.
 /// Read-only: derives the snapshot from already-parsed state (SAFE).
-fn publish_frozen(status: &StatusTx, state: &FrozenState, freeze: &FreezeGuard) {
+fn publish_frozen(status: &StatusTx, state: &FrozenState, surface: &SurfaceLoop) {
     status.send_modify(|s: &mut DeviceSnapshot| {
         if let Some(t) = &state.temp {
             s.left.current_temp_c = Some(t.left_temp as f64 / 100.0);
             s.right.current_temp_c = Some(t.right_temp as f64 / 100.0);
         }
+        s.left.surface_temp_c = surface.surface_c(BedSide::Left);
+        s.right.surface_temp_c = surface.surface_c(BedSide::Right);
         if let Some(tar) = &state.left_target {
-            apply_target(&mut s.left, tar, freeze.setpoint(BedSide::Left));
+            apply_target(&mut s.left, tar, surface.setpoint(BedSide::Left));
         }
         if let Some(tar) = &state.right_target {
-            apply_target(&mut s.right, tar, freeze.setpoint(BedSide::Right));
+            apply_target(&mut s.right, tar, surface.setpoint(BedSide::Right));
         }
         s.is_priming = state.is_priming;
         s.water_level = state.water_full;
@@ -551,6 +582,9 @@ async fn handle_command<S: AsyncRead + AsyncWrite + Unpin>(
     cmd: Command,
     freeze: &mut FreezeGuard,
     freeze_params: &FreezeParams,
+    surface: &mut SurfaceLoop,
+    surface_params: &SurfaceParams,
+    covers: [Option<[f64; 4]>; 2],
 ) -> Option<(BedSide, FrozenTarget, Option<Instant>)> {
     let mut expires_at = None;
     let mut manual = None;
@@ -564,7 +598,7 @@ async fn handle_command<S: AsyncRead + AsyncWrite + Unpin>(
             manual = Some((side, wanted.clone()));
             Some(FrozenCommand::SetTargetTemperature {
                 side,
-                tar: guarded(freeze, freeze_params, state, side, wanted),
+                tar: guarded(freeze, freeze_params, surface, surface_params, covers, state, side, wanted),
             })
         }
         Command::SetPower {
@@ -584,7 +618,7 @@ async fn handle_command<S: AsyncRead + AsyncWrite + Unpin>(
                 BedSide::Left => state.left_target.as_ref(),
                 BedSide::Right => state.right_target.as_ref(),
             };
-            let last = freeze.setpoint(side).or(echoed);
+            let last = surface.setpoint(side).or(echoed);
             let wanted = FrozenTarget {
                 enabled: on,
                 temp: power_on_temp(last),
@@ -593,7 +627,7 @@ async fn handle_command<S: AsyncRead + AsyncWrite + Unpin>(
             manual = Some((side, wanted.clone()));
             Some(FrozenCommand::SetTargetTemperature {
                 side,
-                tar: guarded(freeze, freeze_params, state, side, wanted),
+                tar: guarded(freeze, freeze_params, surface, surface_params, covers, state, side, wanted),
             })
         }
         Command::Prime => Some(FrozenCommand::Prime),
@@ -631,30 +665,37 @@ fn readings(state: &FrozenState, side: BedSide) -> Readings {
     }
 }
 
-/// Run a wanted target through the freeze guard, logging when the guard
-/// changes what a *live user command* actually does.
+/// Run a wanted (dial) target through the surface loop and the freeze guard,
+/// logging when the guard changes what a *live user command* actually does.
+#[allow(clippy::too_many_arguments)]
 fn guarded(
     freeze: &mut FreezeGuard,
     params: &FreezeParams,
+    surface: &mut SurfaceLoop,
+    surface_params: &SurfaceParams,
+    covers: [Option<[f64; 4]>; 2],
     state: &FrozenState,
     side: BedSide,
     wanted: FrozenTarget,
 ) -> FrozenTarget {
-    let effective = freeze.effective(
-        side,
-        wanted.clone(),
-        readings(state, side),
-        Instant::now(),
-        params,
-    );
-    if freeze.status(side).thawing && effective != wanted {
+    let now = Instant::now();
+    let water = surface.adjust(side, wanted.clone(), covers[side as usize], now, surface_params);
+    let effective = freeze.effective(side, water.clone(), readings(state, side), now, params);
+    if freeze.status(side).thawing && effective != water {
         log::warn!(
             "Manual target on {side:?} accepted, but the side is thawing a frozen heat exchanger — \
              cooling stays paused until the thaw ends, then ramps to {}",
-            wanted.temp
+            water.temp
         );
     }
     effective
+}
+
+/// Each side's cover zones (°C) from the shared snapshot, for the surface
+/// loop. The sensor manager writes them; `None` until it has.
+fn covers(status: &StatusTx) -> [Option<[f64; 4]>; 2] {
+    let s = status.borrow();
+    [s.left.cover_temps_c, s.right.cover_temps_c]
 }
 
 /// Publish the freeze guard's per-side status (snapshot + retained MQTT) when
@@ -810,6 +851,9 @@ fn get_next_command(
     overrides: &mut ManualOverrides,
     freeze: &mut FreezeGuard,
     freeze_params: &FreezeParams,
+    surface: &mut SurfaceLoop,
+    surface_params: &SurfaceParams,
+    covers: [Option<[f64; 4]>; 2],
     watch: &mut FrozenWatch,
 ) -> Option<FrozenCommand> {
     let now = Instant::now();
@@ -830,6 +874,7 @@ fn get_next_command(
     let now_zoned = Timestamp::now().to_zoned(timezone.clone());
 
     // Per side: the schedule's target, unless a live manual override holds —
+    // offset by the surface loop (the dial is a mattress-surface target) —
     // then through the freeze guard, which may ramp it or force a thaw. The
     // guard's answer is what gets compared against the MCU's echo below, so
     // a thaw's hold frame is re-sent until the firmware confirms it.
@@ -844,7 +889,8 @@ fn get_next_command(
             &now_zoned,
         );
         let wanted = resolve_target(overrides.side_mut(&side), wanted, side, now);
-        freeze.effective(side, wanted, readings(state, side), now, freeze_params)
+        let water = surface.adjust(side, wanted, covers[side as usize], now, surface_params);
+        freeze.effective(side, water, readings(state, side), now, freeze_params)
     };
 
     if now.duration_since(timers.last_left_temp) > TEMP_INT {

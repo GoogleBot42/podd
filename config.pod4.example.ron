@@ -153,4 +153,17 @@
     //     detect_hold_s: 1200,       // ...lasting this long, not recovering = frozen
     //     thaw_s: 180,               // cooling paused (pump on) before resuming
     // ),
+
+    // Surface control is on by default: the dial sets the mattress surface
+    // temperature (mean of the side's cover thermistors) and podd offsets the
+    // water setpoint to reach it, within these bounds. Only uncomment to tune
+    // or (`enabled: false`) to send the dial straight to the water.
+    //
+    // surface_control: (
+    //     enabled: true,
+    //     max_cool_offset_c: 5.0,  // water at most this far below the dial
+    //     max_heat_offset_c: 2.0,  // ...and at most this far above it
+    //     gain_per_hour: 1.0,      // offset °C/h per °C of surface error
+    //     deadband_c: 0.5,         // surface error ignored within this band
+    // ),
 )

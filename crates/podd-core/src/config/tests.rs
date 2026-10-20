@@ -245,3 +245,25 @@ fn freeze_protection_round_trips_through_save_format() {
     let s = ron::ser::to_string(&cfg).unwrap();
     assert_eq!(parse_freeze(&s), cfg);
 }
+
+#[tokio::test]
+async fn surface_control_is_on_by_default_when_absent() {
+    for path in ["example_solo.ron", "example_couples.ron"] {
+        let config = Config::load(path).await.unwrap();
+        assert_eq!(config.surface_control, SurfaceControlConfig::default());
+        assert!(config.surface_control.enabled);
+    }
+}
+
+#[test]
+fn surface_control_partial_block_fills_defaults_and_round_trips() {
+    let opts = ron::Options::default().with_default_extension(Extensions::IMPLICIT_SOME);
+    let sc: SurfaceControlConfig = opts.from_str("(max_cool_offset_c: 3.0)").unwrap();
+    assert_eq!(sc.max_cool_offset_c, 3.0);
+    assert_eq!(sc.max_heat_offset_c, 2.0);
+    assert!(sc.enabled);
+    let off: SurfaceControlConfig = opts.from_str("(enabled: false)").unwrap();
+    assert!(!off.enabled);
+    let s = ron::ser::to_string(&sc).unwrap();
+    assert_eq!(opts.from_str::<SurfaceControlConfig>(&s).unwrap(), sc);
+}

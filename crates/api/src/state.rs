@@ -270,7 +270,9 @@ impl StateStore {
 /// falling back to the previous side's values for anything the snapshot leaves
 /// unknown (`None` current/target temps).
 fn side_from_snapshot(side: &SideSnapshot, prev: &SideStatus) -> SideStatus {
-    let current_f = side.current_temp_c.map(c_to_f);
+    // The mattress surface when surface control has a fresh reading (the
+    // dial is a surface target then), else the water.
+    let current_f = side.surface_temp_c.or(side.current_temp_c).map(c_to_f);
     let target_f = side.target_temp_c.map(|c| c_to_f(c).round() as i32);
     SideStatus {
         current_temperature_f: current_f.unwrap_or(prev.current_temperature_f),

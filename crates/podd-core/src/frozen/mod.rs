@@ -1,4 +1,5 @@
 pub mod freeze;
+pub mod surface;
 pub mod fwlog;
 pub mod sample;
 pub mod manager;

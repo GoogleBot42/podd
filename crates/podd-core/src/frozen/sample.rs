@@ -3,7 +3,9 @@
 //!
 //! Temperatures are °C. A target is a number (°C, on), `"off"`, or `null`
 //! (not known yet). Per side: `water` (Frozen probe), `want` (schedule /
-//! manual override), `eff` (what the freeze guard let through — what podd
+//! manual override, after the surface loop's offset), `dial` (the setpoint
+//! the user / schedule asked for), `surf` (the surface loop's water offset,
+//! °C), `eff` (what the freeze guard let through — what podd
 //! sends), `mcu` (what the firmware echoed back as its setpoint), `tx`
 //! (setpoint frames sent since the previous sample), `ovr` (a manual
 //! override holds), `guard` (see [`GuardDiag`]).
@@ -12,6 +14,7 @@ use serde_json::{Value, json};
 use tokio::time::{Duration, Instant};
 
 use super::freeze::{FreezeGuard, FreezeParams, GuardDiag};
+use super::surface::SurfaceLoop;
 use super::state::FrozenState;
 use crate::bus::DeviceSnapshot;
 use pod_proto::frozen::packet::FrozenTarget;
@@ -26,6 +29,7 @@ pub const IDLE_EVERY: Duration = Duration::from_secs(60);
 pub struct Extra<'a> {
     pub freeze: &'a FreezeGuard,
     pub params: &'a FreezeParams,
+    pub surface: &'a SurfaceLoop,
     pub snapshot: &'a DeviceSnapshot,
     /// Setpoint frames sent per side (left, right) since the last sample.
     pub sends: [u32; 2],
@@ -64,10 +68,14 @@ fn side(
     g: &GuardDiag,
     sends: u32,
     ovr: bool,
+    dial: Option<&FrozenTarget>,
+    surf: f64,
 ) -> Value {
     json!({
         "water": water.map(c),
         "want": tgt(g.wanted.as_ref()),
+        "dial": tgt(dial),
+        "surf": surf,
         "eff": tgt(g.effective.as_ref()),
         "mcu": tgt(mcu),
         "tx": sends,
@@ -113,8 +121,14 @@ pub fn build(state: &mut FrozenState, x: &Extra, now: Instant) -> Value {
         "water_full": state.water_full,
         "priming": state.is_priming,
         "guard_on": x.params.enabled,
-        "left": side(t.map(|t| t.left_temp), state.left_target.as_ref(), &dl, x.sends[0], x.overrides[0]),
-        "right": side(t.map(|t| t.right_temp), state.right_target.as_ref(), &dr, x.sends[1], x.overrides[1]),
+        "left": side(
+            t.map(|t| t.left_temp), state.left_target.as_ref(), &dl, x.sends[0], x.overrides[0],
+            x.surface.setpoint(BedSide::Left), x.surface.offset_c(BedSide::Left),
+        ),
+        "right": side(
+            t.map(|t| t.right_temp), state.right_target.as_ref(), &dr, x.sends[1], x.overrides[1],
+            x.surface.setpoint(BedSide::Right), x.surface.offset_c(BedSide::Right),
+        ),
         "fw": state.fw.take(),
         "cover": cover,
         "presence": [snap.presence_left, snap.presence_right],
@@ -153,6 +167,7 @@ mod tests {
         let x = Extra {
             freeze: &guard,
             params: &p,
+            surface: &SurfaceLoop::default(),
             snapshot: &snap,
             sends: [0, 2],
             overrides: [false, true],

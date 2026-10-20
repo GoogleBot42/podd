@@ -59,6 +59,10 @@ pub struct SideSnapshot {
     /// right. `None` until the sensor MCU has reported. Independent of the
     /// Frozen MCU's water probe, so `cover_check` can cross-check it.
     pub cover_temps_c: Option<[f64; 4]>,
+    /// The mattress surface temperature the surface loop is controlling on
+    /// (mean of `cover_temps_c`), °C. `None` while surface control is off or
+    /// the cover readings are stale — the API then reports the water.
+    pub surface_temp_c: Option<f64>,
 }
 
 /// A latest-value snapshot of everything the `api` handlers (device status +

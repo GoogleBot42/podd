@@ -130,6 +130,33 @@ Status: `SideSnapshot.is_thawing` / `freeze_count` → `deviceStatus.<side>.isTh
 with no config; the optional `freeze_protection` block in `config.ron` tunes
 or disables it.
 
+## Surface control (closed loop on the cover thermistors)
+
+The Frozen MCU regulates the water at the hub, but a sleeper feels the
+mattress surface. Body heat and a weaker pump leave the surface far above the
+water: on the live bed (2026-10-18/19) the right water held its 25.56 °C
+setpoint while the cover zones under the sleeper sat at 29–31 °C. Stock
+firmware controls on water as well; podd adds an outer loop in
+`podd-core::frozen::surface`, ahead of the freeze guard on both the tick and
+live commands:
+
+- The dial (schedule or manual override) is a **surface** target. The
+  surface is the mean of the side's four cover zones (channels 0/2/3/4 left,
+  1/5/6/7 right; see `sensor::manager::LEFT_ZONES`).
+- An offset is integrated from the surface error, at `gain_per_hour` (1 °C/h
+  per °C), with a `deadband_c` (0.5 °C). It is applied in 0.25 °C steps and
+  bounded to −`max_cool_offset_c` (5 °C) … +`max_heat_offset_c` (2 °C) around
+  the dial, and never below 15 °C or above 40 °C unless the dial is. The
+  water target is dial + offset, and the freeze guard still ramps it.
+- Cover readings unchanged for 10 min count as stale. The offset then decays
+  back to zero with a 10 min time constant. A side that is off holds no offset.
+- The API's `targetTemperatureF` stays the dial. `currentTemperatureF` is the
+  surface while the loop has a fresh reading, and the water otherwise.
+  Telemetry samples carry `dial` and `surf` (the applied offset) per side.
+
+On by default; the optional `surface_control` block in `config.ron` tunes it,
+and `enabled: false` sends the dial straight to the water as before.
+
 ## Telemetry recorder (thermal flight recorder)
 
 `podd-core::recorder` keeps an on-device record detailed enough to diagnose
