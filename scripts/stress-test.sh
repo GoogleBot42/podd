@@ -26,6 +26,16 @@ POLL=30
 # the daily prime.
 QUICK=${QUICK:-0}
 STOP_AT=${STOP_AT:-}
+# Resolve STOP_AT to the next such UTC time as an epoch, so a run that crosses
+# midnight (start 23:15, STOP_AT=0240) does not stop at once. ${x#0} strips
+# the leading zero so "08"/"09" are not read as bad octal.
+stop_epoch=
+if [ -n "$STOP_AT" ]; then
+    h=${STOP_AT%??}; m=${STOP_AT#??}
+    stop_s=$(( ${h#0} * 3600 + ${m#0} * 60 ))
+    now=$(date +%s)
+    stop_epoch=$(( now + (stop_s - now % 86400 + 86400) % 86400 ))
+fi
 # SIDES="left": run only these sides, in this order (default "right left").
 SIDES=${SIDES:-right left}
 
@@ -53,7 +63,7 @@ abort() {
 hold() {
     end=$(( $(date +%s) + $1 * 60 ))
     while [ "$(date +%s)" -lt "$end" ]; do
-        if [ -n "$STOP_AT" ] && [ "$(date -u +%H%M)" -ge "$STOP_AT" ]; then
+        if [ -n "$stop_epoch" ] && [ "$(date +%s)" -ge "$stop_epoch" ]; then
             abort "STOP_AT $STOP_AT reached"
         fi
         p=$(wget -q -O - "$API/metrics/presence" 2>/dev/null) || abort "presence endpoint not answering"
