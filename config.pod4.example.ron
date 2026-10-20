@@ -163,7 +163,8 @@
     //     enabled: true,
     //     max_cool_offset_c: 5.0,  // water at most this far below the dial
     //     max_heat_offset_c: 0.0,  // ...and at most this far above it (0: cooling only)
-    //     gain_per_hour: 1.0,      // offset °C/h per °C of surface error
+    //     proportional: 1.0,       // immediate water offset °C per °C of surface error
+    //     gain_per_hour: 1.0,      // plus this much more per hour (slow trim)
     //     deadband_c: 0.5,         // surface error ignored within this band
     // ),
 )

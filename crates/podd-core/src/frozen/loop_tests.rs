@@ -442,7 +442,8 @@ async fn surface_loop_cools_the_water_until_the_surface_meets_the_dial() {
 }
 
 /// Power off and on again with surface control holding an offset: the side
-/// comes back at the dial (the offset reset), and the API shows the dial.
+/// comes back with the integral reset (only the proportional response to
+/// the surface right now), and the API shows the dial.
 #[tokio::test(start_paused = true)]
 async fn surface_offset_resets_across_power_off_on() {
     use std::sync::Arc;
@@ -455,7 +456,8 @@ async fn surface_offset_resets_across_power_off_on() {
         let dial = held(Right, 2556);
         let _feeder = h.feed_cover(Right, 3.0, Arc::new(AtomicBool::new(false)));
         h.run_for(secs(1800)).await;
-        assert!(h.mcu().target[1].as_ref().is_some_and(|t| t.temp < 2556 - 100), "premise: offset held");
+        let before = h.mcu().target[1].clone().expect("right on");
+        assert!(before.temp < 2556 - 100, "premise: offset held");
 
         h.send(Command::SetPower { side: Right, on: false, duration_s: 0 }).await;
         h.run_for(secs(15)).await;
@@ -465,7 +467,12 @@ async fn surface_offset_resets_across_power_off_on() {
         h.run_for(secs(1)).await;
         assert_eq!(h.target_c(Right), Some(shown(&dial)));
         let first_on = h.mcu().setpoints.iter().rev().find(|r| r.side == Right && r.tar.enabled).cloned();
-        assert_eq!(first_on.map(|r| r.tar), Some(dial), "power-on starts from the dial, not the old offset");
+        let first_on = first_on.expect("a power-on frame").tar;
+        // the integral restarted: no deeper than before the off, at most the dial
+        assert!(
+            first_on.temp >= before.temp && first_on.temp <= dial.temp + 3,
+            "power-on frame {first_on:?} (held {before:?} before the off)"
+        );
     })
     .await
 }

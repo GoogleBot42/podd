@@ -60,7 +60,9 @@ pub struct SurfaceParams {
     pub max_cool: i32,
     /// centi-°C
     pub max_heat: i32,
-    /// Offset change per second, per centi-°C of error.
+    /// Immediate offset per unit of surface error (°C per °C).
+    pub kp: f64,
+    /// Integral offset change per second, per centi-°C of error.
     pub gain_per_s: f64,
     /// centi-°C
     pub deadband: i32,
@@ -73,6 +75,7 @@ impl From<&SurfaceControlConfig> for SurfaceParams {
             enabled: c.enabled,
             max_cool: centi(c.max_cool_offset_c, 800),
             max_heat: centi(c.max_heat_offset_c, 400),
+            kp: c.proportional.clamp(0.0, 3.0),
             gain_per_s: c.gain_per_hour.clamp(0.0, 4.0) / 3600.0,
             deadband: centi(c.deadband_c, 300).max(10),
         }
@@ -87,9 +90,10 @@ impl Default for SurfaceParams {
 
 #[derive(Debug, Default)]
 struct Side {
-    /// Integrated offset, centi-°C (negative = water colder than the dial).
-    offset: f64,
-    /// The offset currently applied (`offset` rounded to [`STEP`]).
+    /// Integral part of the offset, centi-°C (negative = water colder).
+    integral: f64,
+    /// The offset currently applied (proportional + integral, rounded to
+    /// [`STEP`]).
     applied: i32,
     last_tick: Option<Instant>,
     /// The latest cover reading and when it last changed.
@@ -173,7 +177,7 @@ impl SurfaceLoop {
         s.surface = fresh.filter(|_| p.enabled);
 
         if !p.enabled || !dial.enabled {
-            s.offset = 0.0;
+            s.integral = 0.0;
             s.applied = 0;
             return dial;
         }
@@ -185,18 +189,35 @@ impl SurfaceLoop {
         let settled = water.is_some_and(|w| {
             (i32::from(w) - (i32::from(dial.temp) + s.applied)).abs() <= SETTLED
         });
+        // The surface error outside the deadband (soft: continuous at its
+        // edge, so the proportional part never jumps), centi-°C.
+        let mut proportional = 0.0;
         match fresh {
             Some(surface) => {
                 let err = surface * 100.0 - f64::from(dial.temp);
-                if settled && err.abs() > f64::from(p.deadband) {
-                    s.offset -= err * p.gain_per_s * dt.as_secs_f64();
+                let e = err.signum() * (err.abs() - f64::from(p.deadband)).max(0.0);
+                // Immediate: a surface 2 °C too warm takes ~2 °C off the
+                // water at once (second night, 2026-10-20: the integral
+                // alone took 40 min to move 0.5 °C while the sleeper's
+                // surface climbed to 27.7 °C).
+                proportional = -p.kp * e;
+                if settled {
+                    s.integral -= e * p.gain_per_s * dt.as_secs_f64();
                 }
             }
-            None => s.offset *= (-dt.as_secs_f64() / DECAY.as_secs_f64()).exp(),
+            None => s.integral *= (-dt.as_secs_f64() / DECAY.as_secs_f64()).exp(),
         }
-        s.offset = s.offset.clamp(-f64::from(p.max_cool), f64::from(p.max_heat));
+        let (lo, hi) = (-f64::from(p.max_cool), f64::from(p.max_heat));
+        s.integral = s.integral.clamp(lo, hi);
+        let offset = (proportional + s.integral).clamp(lo, hi);
 
-        let applied = (s.offset / f64::from(STEP)).round() as i32 * STEP;
+        // Hysteresis: hold the applied step until the offset is clearly past
+        // it, so sensor jitter at a rounding boundary can't chatter frames.
+        let applied = if (offset - f64::from(s.applied)).abs() >= 0.75 * f64::from(STEP) {
+            (offset / f64::from(STEP)).round() as i32 * STEP
+        } else {
+            s.applied
+        };
         if applied != s.applied {
             log::info!(
                 "Surface control [{side:?}]: water offset {:+.2}°C (dial {:.2}°C, surface {})",
@@ -259,16 +280,19 @@ mod tests {
     }
 
     #[test]
-    fn a_warm_surface_cools_the_water_slowly_and_boundedly() {
-        // Live 2026-10-19, right side: dial 25.56 °C, cover ~28.6 °C.
+    fn a_warm_surface_cools_the_water_at_once_then_trims_to_the_bound() {
+        // Live 2026-10-20, right side: dial 25.56 °C, the sleeper's surface
+        // at ~28.6 °C. The first tick already takes the error outside the
+        // deadband off the water: 3.04 − 0.5 = 2.54 → −2.5 °C.
         let p = SurfaceParams::default();
         let mut l = SurfaceLoop::default();
         let t0 = Instant::now();
-        // 10 minutes in: ~3 °C error at 1 °C/h/°C -> about -0.5 °C
-        let out = run(&mut l, Right, on(2556), 28.6, t0, 60, &p);
-        assert!((2500..=2535).contains(&out.temp), "{out:?}");
-        // hours later: pinned at the 5 °C cooling bound, never past it
-        let out = run(&mut l, Right, on(2556), 28.6, t0 + TICK * 60, 3000, &p);
+        let out = run(&mut l, Right, on(2556), 28.6, t0, 1, &p);
+        assert_eq!(l.offset_c(Right), -2.5);
+        assert!((2303..=2309).contains(&out.temp), "{out:?}");
+        // the integral keeps trimming while the surface stays warm, up to
+        // the 5 °C cooling bound and never past it
+        let out = run(&mut l, Right, on(2556), 28.6, t0 + TICK, 3000, &p);
         assert_eq!(out.temp, 2056);
         assert_eq!(l.offset_c(Right), -5.0);
     }
@@ -295,18 +319,17 @@ mod tests {
 
     #[test]
     fn no_integration_while_the_water_is_still_getting_there() {
-        // Bedtime warm-up: water far below the dial, cover at room
-        // temperature. Even a configured cooling error must not integrate.
+        // A ramp in progress: water 4 °C off its target, surface 1 °C warm.
+        // The proportional part acts at once; the integral must not grow.
         let p = SurfaceParams::default();
         let mut l = SurfaceLoop::default();
         let t0 = Instant::now();
         for i in 0..720 {
             let j = (i % 2) as f64 * 0.01;
-            // surface "too warm" vs a cold dial, but the water is 4 °C off target
-            let out = l.adjust(Right, on(2000), Some([25.0 + j; 4]), Some(2400), t0 + TICK * i, &p);
-            assert_eq!(out, on(2000));
+            let out = l.adjust(Right, on(2000), Some([21.0 + j; 4]), Some(2400), t0 + TICK * i, &p);
+            assert_eq!(out, on(1950).delimiter_safe(Right), "tick {i}");
         }
-        assert_eq!(l.offset_c(Right), 0.0);
+        assert_eq!(l.offset_c(Right), -0.5);
     }
 
     #[test]
@@ -343,13 +366,16 @@ mod tests {
         let mut l = SurfaceLoop::default();
         let t0 = Instant::now();
         run(&mut l, Right, on(2556), 30.0, t0, 2000, &p);
+        assert_eq!(l.offset_c(Right), -5.0);
         let off = FrozenTarget::default();
         assert_eq!(l.adjust(Right, off.clone(), Some([30.0; 4]), Some(2056), t0 + TICK * 2000, &p), off);
         assert_eq!(l.offset_c(Right), 0.0);
         assert_eq!(l.setpoint(Right), Some(&on(2556)));
-        // back on: starts from the dial, not the old bound
+        // back on: only the proportional part (4.45 − 0.5 → −4.0), the
+        // integral starts over
         let out = l.adjust(Right, on(2556), Some([30.01; 4]), Some(2556), t0 + TICK * 2001, &p);
-        assert_eq!(out, on(2556));
+        assert_eq!(l.offset_c(Right), -4.0);
+        assert_eq!(out, on(2156).delimiter_safe(Right));
     }
 
     #[test]
@@ -364,12 +390,12 @@ mod tests {
 
     #[test]
     fn a_long_gap_between_ticks_integrates_at_most_a_minute() {
-        let p = SurfaceParams::default();
+        let p = SurfaceParams { kp: 0.0, ..SurfaceParams::default() };
         let mut l = SurfaceLoop::default();
         let t0 = Instant::now();
         l.adjust(Right, on(2556), Some([30.0; 4]), Some(2556), t0, &p);
         l.adjust(Right, on(2556), Some([30.01; 4]), Some(2556), t0 + Duration::from_secs(3600), &p);
-        // 4.4 °C error for (capped) 60 s at 1 °C/h/°C = -0.07 °C -> rounds to 0
+        // 3.9 °C error for (capped) 60 s at 1 °C/h/°C = −0.07 °C → rounds to 0
         assert_eq!(l.offset_c(Right), 0.0);
     }
 
@@ -392,12 +418,14 @@ mod tests {
             enabled: true,
             max_cool_offset_c: 50.0,
             max_heat_offset_c: -3.0,
+            proportional: 9.0,
             gain_per_hour: 100.0,
             deadband_c: 0.0,
         });
         assert_eq!(p.max_cool, 800);
         assert_eq!(p.max_heat, 0);
         assert!((p.gain_per_s - 4.0 / 3600.0).abs() < 1e-12);
+        assert_eq!(p.kp, 3.0);
         assert_eq!(p.deadband, 10);
     }
 }
