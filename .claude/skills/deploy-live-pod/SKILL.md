@@ -265,6 +265,13 @@ repo, not only in on-device comments.
   (verify the sha); long on-device greps over the 48 MB journal do not
   survive, so write them to `/tmp` on-device and read the result back in a
   separate short call.
+- **Watching the live journal from a Monitor: only line-buffered stages.**
+  `ssh … 'journalctl -u podd -f -o cat' | grep --line-buffered …` works.
+  Adding `| cut …` (or any stage that block-buffers into a pipe) delivered
+  nothing for 60 min of a prime while the log was full of matches
+  (2026-10-19). Use `-o cat` to drop the prefix instead of cutting it.
+  Also, the four "empty" phases at the start of a prime (~26 min) log no
+  `total failed` lines, so silence there is normal.
 - **Concurrent sessions deploy too.** More than one agent session can be
   working this repo at once, and deploys have landed minutes apart
   (2026-08-16: two deploys 03:24:57 and 03:26:52 UTC). After your swap,
