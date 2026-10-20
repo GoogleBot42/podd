@@ -679,7 +679,9 @@ fn guarded(
     wanted: FrozenTarget,
 ) -> FrozenTarget {
     let now = Instant::now();
-    let water = surface.adjust(side, wanted.clone(), covers[side as usize], now, surface_params);
+    let water = surface.adjust(
+        side, wanted.clone(), covers[side as usize], readings(state, side).water, now, surface_params,
+    );
     let effective = freeze.effective(side, water.clone(), readings(state, side), now, params);
     if freeze.status(side).thawing && effective != water {
         log::warn!(
@@ -889,7 +891,9 @@ fn get_next_command(
             &now_zoned,
         );
         let wanted = resolve_target(overrides.side_mut(&side), wanted, side, now);
-        let water = surface.adjust(side, wanted, covers[side as usize], now, surface_params);
+        let water = surface.adjust(
+            side, wanted, covers[side as usize], readings(state, side).water, now, surface_params,
+        );
         freeze.effective(side, water, readings(state, side), now, freeze_params)
     };
 
