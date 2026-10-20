@@ -26,6 +26,8 @@ POLL=30
 # the daily prime.
 QUICK=${QUICK:-0}
 STOP_AT=${STOP_AT:-}
+# SIDES="left": run only these sides, in this order (default "right left").
+SIDES=${SIDES:-right left}
 
 say() {
     echo "$(date -u +%FT%TZ) $*" >> "$LOG"
@@ -75,7 +77,7 @@ say "START stress test"
 both_off
 phase baseline 10 ''
 
-for side in right left; do
+for side in $SIDES; do
     if [ "$QUICK" != 1 ]; then
         phase "$side-heat-95F" 30 "{\"$side\":{\"targetTemperatureF\":95}}"
     fi
